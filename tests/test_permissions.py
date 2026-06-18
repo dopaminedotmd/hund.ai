@@ -44,6 +44,22 @@ def test_self_publish_always_blocked(tmp_path):
         assert d.allowed is False
 
 
+def test_write_to_tcb_file_blocked(tmp_path):
+    eng = PermissionEngine(workspace_root=tmp_path)
+    d = eng.classify("write_file", {"path": "hund_cli/agent/safety.py"})
+    assert d.risk is RiskLevel.BLOCKED
+    assert d.allowed is False
+    assert "tcb" in d.reason.lower()
+
+
+def test_write_to_tcb_dir_blocked(tmp_path):
+    eng = PermissionEngine(workspace_root=tmp_path)
+    d = eng.classify("write_file", {"path": "hund_cli/updater/apply.py"})
+    assert d.risk is RiskLevel.BLOCKED
+    assert d.allowed is False
+    assert "tcb" in d.reason.lower()
+
+
 def test_unknown_tool_is_confirm(tmp_path):
     eng = PermissionEngine(workspace_root=tmp_path)
     d = eng.classify("mystery_tool", {})

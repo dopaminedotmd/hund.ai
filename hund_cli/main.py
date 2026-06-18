@@ -5,7 +5,9 @@ Körningen nås via entrypoint `hund = "hund_cli.main:app"` i pyproject.toml.
 """
 from __future__ import annotations
 
+import json
 import sys
+from pathlib import Path
 
 # Windows console defaultar till cp1252 → kraschar på å/ä/ö/Σ i piped output.
 # Tvinga UTF-8 tidigt (review flaggade Windows-encoding som verklig risk).
@@ -34,10 +36,12 @@ learning_app = typer.Typer(help="Lokal learning/gap-events. Aldrig extern upload
 proposals_app = typer.Typer(help="Self-improvement proposals (deklarativa, human-gated).")
 knowledge_app = typer.Typer(help="Kunskapsenheter (LFU/MRU).")
 stats_app = typer.Typer(help="Statistik och base stats.")
+privacy_app = typer.Typer(help="Privacy/redaction. Offline, ingen upload.")
 app.add_typer(learning_app, name="learning")
 app.add_typer(proposals_app, name="proposals")
 app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(stats_app, name="stats")
+app.add_typer(privacy_app, name="privacy")
 
 
 @app.callback(invoke_without_command=True)
@@ -134,7 +138,9 @@ def propose() -> None:
         console.print("[red]API-nyckel saknas.[/red]")
         return
 
-    gap_text = "\n".join(f"- [{g[2]}] {g[3]}" for g in gaps)
+    from .learning.redactor import redact_text
+
+    gap_text = "\n".join(f"- [{g[2]}] {redact_text(g[3]).text}" for g in gaps)
     sysp = (
         "Du granskar gap-events (kunskapsluckor) och föreslår EN deklarativ "
         "förbättring av Hunds beteende. Svara ENDAST med giltig JSON, inga "
@@ -178,6 +184,41 @@ def verify() -> None:
     """Verifiera Hund-systemet (persona laddad, permission-block aktivt)."""
     console.print("[green]verify[/green]: hund_cli importerar OK.")
     console.print(f"version: {__version__}")
+
+
+def _privacy_input(text: str, file: Path | None) -> str:
+    if file:
+        return file.read_text(encoding="utf-8", errors="replace")
+    if text:
+        return text
+    console.print("[red]ange --text eller --file[/red]")
+    raise typer.Exit(1)
+
+
+@privacy_app.command("check")
+def privacy_check(
+    text: str = typer.Option("", "--text", "-t", help="Text att redaktera."),
+    file: Path | None = typer.Option(None, "--file", "-f", help="Fil att läsa och redaktera."),
+) -> None:
+    """Förhandsgranska redaction lokalt. Ingen data lämnar maskinen."""
+    from .learning.redactor import redact_text
+
+    result = redact_text(_privacy_input(text, file))
+    console.print(result.text, markup=False, highlight=False)
+    console.print(f"risk: {result.risk_level}")
+    console.print("blocked_fields: " + (", ".join(result.blocked_fields) or "none"))
+
+
+@privacy_app.command("preview-export")
+def privacy_preview_export(
+    text: str = typer.Option("", "--text", "-t", help="Text att förhandsgranska."),
+    file: Path | None = typer.Option(None, "--file", "-f", help="Fil att läsa."),
+) -> None:
+    """Visa structured-only JSON som skulle kunna exporteras. Ingen upload."""
+    from .learning.redactor import build_export_preview
+
+    payload = build_export_preview(_privacy_input(text, file), source="privacy_cli")
+    console.print(json.dumps(payload, ensure_ascii=False, indent=2), markup=False, highlight=False)
 
 
 if __name__ == "__main__":

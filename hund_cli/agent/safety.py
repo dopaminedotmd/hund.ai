@@ -38,6 +38,17 @@ _TOOL_BASE_RISK: dict[str, RiskLevel] = {
 }
 
 
+TCB_FILES = {
+    "hund_cli/agent/safety.py",
+    "hund_cli/learning/redactor.py",
+    "hund_cli/main.py",
+}
+
+TCB_DIRS = {
+    "hund_cli/updater",
+}
+
+
 @dataclass
 class Decision:
     risk: RiskLevel
@@ -61,12 +72,19 @@ class PermissionEngine:
         if target and tool in {"write_file", "delete_file"}:
             try:
                 resolved = (self.workspace_root / target).resolve()
-                resolved.relative_to(self.workspace_root)
+                rel = resolved.relative_to(self.workspace_root).as_posix()
             except (ValueError, OSError):
                 return (
                     f"Skrivning utanför workspace ({self.workspace_root}) "
                     f"är blockerat som default."
                 )
+            
+            # 3. Skrivning till TCB-filer / TCB-kataloger = blockerat.
+            if rel in TCB_FILES:
+                return f"Skrivning till TCB-fil ({rel}) är blockerad (TCB-skydd)."
+            for tcb_dir in TCB_DIRS:
+                if rel.startswith(tcb_dir + "/"):
+                    return f"Skrivning till TCB-katalog ({rel}) är blockerad (TCB-skydd)."
         return None
 
     def classify(self, tool: str, args: dict | None = None) -> Decision:

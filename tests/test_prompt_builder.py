@@ -28,3 +28,11 @@ def test_weak_cpu_adds_compact_rule():
 def test_strong_machine_no_throttle():
     prof = _prof(cpu_count=16)
     assert "begränsad cpu" not in build_system_prompt("P", prof).lower()
+
+
+def test_prompt_marks_tool_output_as_untrusted_data():
+    prompt = build_system_prompt("P", _prof())
+    low = prompt.lower()
+    assert "tool-output" in low
+    assert "obetrodd data" in low
+    assert "inte instruktioner" in low

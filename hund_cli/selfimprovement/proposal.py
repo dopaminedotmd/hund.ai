@@ -6,6 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from ..learning.redactor import redact_text
 from ..store.sqlite import connect
 
 # TCB-skydd: change_type tvingas deklarativ. Core-kod får aldrig föreslås.
@@ -87,15 +88,19 @@ def build_from_gaps(gaps: list, llm_summary: dict) -> Proposal:
     ct = llm_summary.get("change_type", "runtime_policy")
     if ct not in ALLOWED_CHANGE_TYPES:  # TCB-skydd: tvinga deklarativ
         ct = "runtime_policy"
+
+    def safe_field(name: str, default: str = "") -> str:
+        return redact_text(str(llm_summary.get(name, default))).text
+
     return Proposal(
         id=str(uuid.uuid4()),
         created_at=datetime.now(timezone.utc).isoformat(),
-        title=llm_summary.get("title", "(ingen titel)"),
-        problem=llm_summary.get("problem", ""),
-        proposed_change=llm_summary.get("proposed_change", ""),
+        title=safe_field("title", "(ingen titel)"),
+        problem=safe_field("problem"),
+        proposed_change=safe_field("proposed_change"),
         change_type=ct,
-        risk=llm_summary.get("risk", "unknown"),
-        tests_needed=llm_summary.get("tests_needed", ""),
+        risk=safe_field("risk", "unknown"),
+        tests_needed=safe_field("tests_needed"),
         related_gaps=[g[0] for g in gaps],
     )
 
