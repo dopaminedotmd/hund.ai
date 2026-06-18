@@ -21,7 +21,7 @@ from ..persona import load_persona
 from ..providers.base import Message
 from ..providers.openai_compatible import OpenAICompatibleClient
 from ..secrets import load_api_key
-from ..store.sqlite import connect
+from ..store.sqlite import connect_requests
 from ..tools import registry
 from ..tools.default_tools import register_defaults
 from .prompt_builder import build_system_prompt
@@ -122,53 +122,49 @@ def run_repl() -> int:
         f"({profile.os}, {profile.cpu_count} kärnor, ws: {workspace.name}). " + HELP
     )
 
-    conn = connect()
-    try:
-        while True:
-            try:
-                user = console.input("[bold]du>[/bold] ").strip()
-            except (EOFError, KeyboardInterrupt):
-                console.print("")
-                break
-            if not user:
-                continue
-            if user in ("/exit", "/quit"):
-                break
-            if user == "/stats":
-                _show_stats(console, conn)
-                continue
-            if user == "/profile":
-                console.print(profile.summary())
-                continue
-            if user == "/tools":
-                console.print(
-                    ", ".join(f"{t.name}({t.base_risk})" for t in registry.all_tools())
-                )
-                continue
-
-            messages.append(Message(role="user", content=user))
-            # Matcha skills mot senaste användartexten → endast relevanta injiceras.
-            messages[0] = Message(
-                role="system",
-                content=assemble_system_prompt(
-                    persona, profile, knowledge=knowledge,
-                    policy_rules=policy_rules, skills=skills, user_text=user,
-                ),
+    while True:
+        try:
+            user = console.input("[bold]du>[/bold] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            console.print("")
+            break
+        if not user:
+            continue
+        if user in ("/exit", "/quit"):
+            break
+        if user == "/stats":
+            _show_stats(console)
+            continue
+        if user == "/profile":
+            console.print(profile.summary())
+            continue
+        if user == "/tools":
+            console.print(
+                ", ".join(f"{t.name}({t.base_risk})" for t in registry.all_tools())
             )
-            # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
-            comp = maybe_compress(messages)
-            if comp.compressed:
-                messages[:] = comp.messages
-                console.print(
-                    f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
-                )
-            _agent_turn(console, client, messages, schemas, engine, cfg, conn)
-    finally:
-        conn.close()
+            continue
+
+        messages.append(Message(role="user", content=user))
+        # Matcha skills mot senaste användartexten → endast relevanta injiceras.
+        messages[0] = Message(
+            role="system",
+            content=assemble_system_prompt(
+                persona, profile, knowledge=knowledge,
+                policy_rules=policy_rules, skills=skills, user_text=user,
+            ),
+        )
+        # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
+        comp = maybe_compress(messages)
+        if comp.compressed:
+            messages[:] = comp.messages
+            console.print(
+                f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
+            )
+        _agent_turn(console, client, messages, schemas, engine, cfg)
     return 0
 
 
-def _agent_turn(console, client, messages, schemas, engine, cfg, conn) -> None:
+def _agent_turn(console, client, messages, schemas, engine, cfg) -> None:
     """Kör agenten (streaming) tills text-svar eller iteration-cap."""
     for _ in range(MAX_TOOL_ROUNDS):
         parts: list[str] = []
@@ -189,12 +185,12 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, conn) -> None:
 
         if not result.tool_calls:
             messages.append(Message(role="assistant", content=result.text))
-            _log_request(conn, cfg, result, tool_calls=0)
+            _log_request(cfg, result, tool_calls=0)
             console.print()
             return
 
         # Tool-anrop — logga, dispatch varje (med användarens godkännande)
-        _log_request(conn, cfg, result, tool_calls=len(result.tool_calls))
+        _log_request(cfg, result, tool_calls=len(result.tool_calls))
         messages.append(
             Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
         )
@@ -205,29 +201,36 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, conn) -> None:
     console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
 
 
-def _log_request(conn, cfg: HundConfig, result, tool_calls: int) -> None:
-    conn.execute(
-        """INSERT INTO requests
-           (id, created_at, task_class, model_requested, model_actual, provider,
-            finish_reason, prompt_tokens, completion_tokens, latency_ms)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (
-            str(uuid.uuid4()),
-            datetime.now(timezone.utc).isoformat(),
-            "tool_call" if tool_calls else "conversation",
-            cfg.provider.model,
-            cfg.provider.model,
-            cfg.provider.base_url,
-            result.finish_reason,
-            result.prompt_tokens,
-            result.completion_tokens,
-            result.latency_ms,
-        ),
-    )
-    conn.commit()
+def _log_request(cfg: HundConfig, result, tool_calls: int) -> None:
+    """Logga request till logs/requests.db. Får ej krascha agentloopen."""
+    try:
+        conn = connect_requests()
+        conn.execute(
+            """INSERT INTO requests
+               (id, created_at, task_class, model_requested, model_actual, provider,
+                finish_reason, prompt_tokens, completion_tokens, latency_ms)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()),
+                datetime.now(timezone.utc).isoformat(),
+                "tool_call" if tool_calls else "conversation",
+                cfg.provider.model,
+                cfg.provider.model,
+                cfg.provider.base_url,
+                result.finish_reason,
+                result.prompt_tokens,
+                result.completion_tokens,
+                result.latency_ms,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
-def _show_stats(console: Console, conn) -> None:
+def _show_stats(console: Console) -> None:
+    conn = connect_requests()
     row = conn.execute(
         """SELECT COUNT(*),
                   COALESCE(SUM(prompt_tokens),0),
@@ -235,6 +238,7 @@ def _show_stats(console: Console, conn) -> None:
                   COALESCE(SUM(latency_ms),0)
            FROM requests"""
     ).fetchone()
+    conn.close()
     n, tin, tout, lat = row
     console.print(
         f"[bold]stats[/bold] · requests: {n} · "

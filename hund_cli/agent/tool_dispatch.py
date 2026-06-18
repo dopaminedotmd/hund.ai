@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 from rich.console import Console
 
-from ..store.sqlite import connect
+from ..store.sqlite import connect_tool_events
 from ..tools import registry
 from .safety import PermissionEngine, RiskLevel
 
@@ -31,9 +31,9 @@ def _parse(tc: dict) -> tuple[str, dict]:
 
 
 def _log_tool(tool: str, risk: str, outcome: str, success: int) -> None:
-    """Logga tool-event för base stats. Får ej krascha agentloopen."""
+    """Logga tool-event till logs/tool_events.db. Får ej krascha agentloopen."""
     try:
-        conn = connect()
+        conn = connect_tool_events()
         conn.execute(
             """INSERT INTO tool_events(id, created_at, tool, risk, outcome, success)
                VALUES (?,?,?,?,?,?)""",

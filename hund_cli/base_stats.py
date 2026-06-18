@@ -5,7 +5,7 @@ Tool Judgment (tool success rate, högre=bättre). Grov nivå: strong/ok/weak/n-
 """
 from __future__ import annotations
 
-from .store.sqlite import connect
+from .store.sqlite import connect_requests, connect_tool_events
 
 
 def _level_higher_better(val, great, ok) -> str:
@@ -27,7 +27,7 @@ def _level_lower_better(val, great, ok) -> str:
 
 
 def compute() -> dict:
-    conn = connect()
+    conn = connect_requests()
     r = conn.execute(
         """SELECT COUNT(*),
                   COALESCE(SUM(prompt_tokens + completion_tokens), 0),
@@ -35,7 +35,9 @@ def compute() -> dict:
            FROM requests"""
     ).fetchone()
     n, total_tokens, total_lat = r
+    conn.close()
 
+    conn = connect_tool_events()
     te = conn.execute(
         "SELECT COUNT(*), COALESCE(SUM(success), 0) FROM tool_events WHERE outcome='ran'"
     ).fetchone()

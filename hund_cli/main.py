@@ -521,9 +521,9 @@ def learning_study(
 @stats_app.callback(invoke_without_command=True)
 def stats_default(ctx: typer.Context) -> None:
     """Token/latency-sammanställning."""
-    from .store.sqlite import connect
+    from .store.sqlite import connect_requests
 
-    conn = connect()
+    conn = connect_requests()
     row = conn.execute(
         """SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0),
                   COALESCE(SUM(completion_tokens),0), COALESCE(SUM(latency_ms),0)

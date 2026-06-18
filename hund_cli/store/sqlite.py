@@ -1,27 +1,20 @@
-"""SQLite store — sessions, request-stats, gap events.
+"""SQLite stores — core + separerade prestanda-DBs.
 
-En databas (hund.db) istället för många .jsonl. Ger aggregering + `hund stats`
-gratis. Schemas initieras idempotente. Stub i 0.1.0; fullständigt i fas 1.
+Tre anslutningar (fas 9.5 Del D bröt ut requests/tool_events ur monoliten):
+  - connect()              → hund.db        (core: gap_events, proposals, domains)
+  - connect_requests()     → logs/requests.db
+  - connect_tool_events()  → logs/tool_events.db
+
+Schemas initieras idempotente. knowledge_units flyttas till JSON i Del C och
+lämnar därmed core-DB:n; gamla rader migreras via `hund migrate`.
 """
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
+# Core-DB: det som inte är rå prestandadata.
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS requests (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    task_class TEXT,
-    model_requested TEXT,
-    model_actual TEXT,
-    provider TEXT,
-    finish_reason TEXT,
-    prompt_tokens INTEGER DEFAULT 0,
-    completion_tokens INTEGER DEFAULT 0,
-    latency_ms INTEGER DEFAULT 0
-);
-
 CREATE TABLE IF NOT EXISTS gap_events (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -46,6 +39,13 @@ CREATE TABLE IF NOT EXISTS proposals (
     rollback_note TEXT DEFAULT ''             -- Fas 8: rollback-instruktion
 );
 
+CREATE TABLE IF NOT EXISTS domains (
+    domain TEXT PRIMARY KEY,
+    status TEXT DEFAULT 'candidate',  -- candidate|active|primary|stale
+    confidence TEXT,                   -- low|medium|high
+    detected_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS knowledge_units (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -58,7 +58,24 @@ CREATE TABLE IF NOT EXISTS knowledge_units (
     fail_count INTEGER DEFAULT 0,
     source TEXT                  -- manual|study|gap
 );
+"""
 
+REQUESTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS requests (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    task_class TEXT,
+    model_requested TEXT,
+    model_actual TEXT,
+    provider TEXT,
+    finish_reason TEXT,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    latency_ms INTEGER DEFAULT 0
+);
+"""
+
+TOOL_EVENTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS tool_events (
     id TEXT PRIMARY KEY,
     created_at TEXT NOT NULL,
@@ -67,29 +84,42 @@ CREATE TABLE IF NOT EXISTS tool_events (
     outcome TEXT,                -- ran|approved|declined|blocked|error
     success INTEGER DEFAULT 0    -- 1 om tool körde utan fel
 );
-
-CREATE TABLE IF NOT EXISTS domains (
-    domain TEXT PRIMARY KEY,
-    status TEXT DEFAULT 'candidate',  -- candidate|active|primary|stale
-    confidence TEXT,                   -- low|medium|high
-    detected_at TEXT
-);
 """
 
 
+def _open(path: Path, schema: str) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path)
+    conn.executescript(schema)
+    return conn
+
+
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
+    """Core-DB: gap_events, proposals, domains."""
     from ..paths import db_path as default_db_path
 
     path = db_path or default_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.executescript(SCHEMA)
+    conn = _open(path, SCHEMA)
     _migrate(conn)
     return conn
 
 
+def connect_requests(db_path: Path | None = None) -> sqlite3.Connection:
+    """logs/requests.db — token/latency per LLM-request."""
+    from ..paths import requests_db_path as default_path
+
+    return _open(db_path or default_path(), REQUESTS_SCHEMA)
+
+
+def connect_tool_events(db_path: Path | None = None) -> sqlite3.Connection:
+    """logs/tool_events.db — verktygsanrop, risk, outcome."""
+    from ..paths import tool_events_db_path as default_path
+
+    return _open(db_path or default_path(), TOOL_EVENTS_SCHEMA)
+
+
 def _migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent schema migrations för befintliga databaser.
+    """Idempotent schema migrations för befintliga core-databaser.
 
     Fas 8: lägg till verification_required + rollback_note till proposals
     om de saknas (äldre DB som skapades innan fas 8).
