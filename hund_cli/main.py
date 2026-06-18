@@ -37,11 +37,13 @@ proposals_app = typer.Typer(help="Self-improvement proposals (deklarativa, human
 knowledge_app = typer.Typer(help="Kunskapsenheter (LFU/MRU).")
 stats_app = typer.Typer(help="Statistik och base stats.")
 privacy_app = typer.Typer(help="Privacy/redaction. Offline, ingen upload.")
+policy_app = typer.Typer(help="Runtime policy (deklarativ, ej core-kod).")
 app.add_typer(learning_app, name="learning")
 app.add_typer(proposals_app, name="proposals")
 app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(stats_app, name="stats")
 app.add_typer(privacy_app, name="privacy")
+app.add_typer(policy_app, name="policy")
 
 
 @app.callback(invoke_without_command=True)
@@ -219,6 +221,53 @@ def privacy_preview_export(
 
     payload = build_export_preview(_privacy_input(text, file), source="privacy_cli")
     console.print(json.dumps(payload, ensure_ascii=False, indent=2), markup=False, highlight=False)
+
+
+@policy_app.command("show")
+def policy_show() -> None:
+    """Visa aktiv policy (lokal om giltig, annars default). Locked regler markeras."""
+    from .policy.loader import load_policy
+
+    policy = load_policy()
+    console.print(f"[bold]policy[/bold] · version {policy.version}")
+    for r in policy.rules:
+        lock = " [locked]" if r.locked else ""
+        console.print(f"  ({r.scope}) {r.id}{lock}: {r.text}")
+    if policy.forbidden_core_paths:
+        console.print("[dim]forbidden_core_paths:[/dim]")
+        for p in policy.forbidden_core_paths:
+            console.print(f"  - {p}")
+
+
+@policy_app.command("validate")
+def policy_validate(
+    path: Path | None = typer.Option(
+        None, "--file", "-f", help="Validera en specifik policyfil (annars aktiv policy)."
+    ),
+) -> None:
+    """Validera policystruktur + locked-regler. Utan --file valideras aktiv policy."""
+    from .policy.defaults import default_policy
+    from .policy.loader import load_file, load_policy, validate
+
+    if path is None:
+        errors = validate(load_policy())
+        target = "aktiv policy"
+    else:
+        policy, errors = load_file(path)
+        if policy is None:
+            console.print(f"[red]{path}: ogiltig[/red]")
+            for e in errors:
+                console.print(f"  - {e}")
+            raise typer.Exit(1)
+        errors = validate(policy, baseline=default_policy())
+        target = str(path)
+
+    if errors:
+        console.print(f"[red]{target}: OGILTIG[/red]")
+        for e in errors:
+            console.print(f"  - {e}")
+        raise typer.Exit(1)
+    console.print(f"[green]{target}: giltig[/green]")
 
 
 if __name__ == "__main__":

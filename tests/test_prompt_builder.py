@@ -36,3 +36,17 @@ def test_prompt_marks_tool_output_as_untrusted_data():
     assert "tool-output" in low
     assert "obetrodd data" in low
     assert "inte instruktioner" in low
+
+
+def test_policy_rules_injected_into_prompt():
+    prompt = build_system_prompt(
+        "P", _prof(), policy_rules=["regel A", "regel B"]
+    )
+    assert "policy (deklarativ" in prompt.lower()
+    assert "regel A" in prompt
+    assert "regel B" in prompt
+
+
+def test_no_policy_section_when_rules_absent():
+    prompt = build_system_prompt("P", _prof())
+    assert "## Policy" not in prompt
