@@ -38,12 +38,14 @@ knowledge_app = typer.Typer(help="Kunskapsenheter (LFU/MRU).")
 stats_app = typer.Typer(help="Statistik och base stats.")
 privacy_app = typer.Typer(help="Privacy/redaction. Offline, ingen upload.")
 policy_app = typer.Typer(help="Runtime policy (deklarativ, ej core-kod).")
+skills_app = typer.Typer(help="Deklarativa skills (inte exekverbar kod).")
 app.add_typer(learning_app, name="learning")
 app.add_typer(proposals_app, name="proposals")
 app.add_typer(knowledge_app, name="knowledge")
 app.add_typer(stats_app, name="stats")
 app.add_typer(privacy_app, name="privacy")
 app.add_typer(policy_app, name="policy")
+app.add_typer(skills_app, name="skills")
 
 
 @app.callback(invoke_without_command=True)
@@ -268,6 +270,88 @@ def policy_validate(
             console.print(f"  - {e}")
         raise typer.Exit(1)
     console.print(f"[green]{target}: giltig[/green]")
+
+
+# ---- skills ----
+@skills_app.command("list")
+def skills_list() -> None:
+    """Lista giltiga skills (builtins + HundHome)."""
+    from .skills.loader import load_skills
+
+    skills = load_skills()
+    if not skills:
+        console.print("(inga skills)")
+        return
+    for s in skills:
+        console.print(f"[bold]{s.status}[/bold] {s.name} ({s.domain}) — {s.when_to_use[:60]}")
+
+
+@skills_app.command("show")
+def skills_show(name: str = typer.Argument(..., help="skill-namn")) -> None:
+    """Visa en skill."""
+    from .skills.loader import get_skill
+
+    s = get_skill(name)
+    if not s:
+        console.print(f"[yellow]ingen skill '{name}'[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"[bold]{s.name}[/bold] ({s.domain}) [{s.status}]")
+    console.print(f"safety: {s.safety_level}")
+    console.print(f"when: {s.when_to_use}")
+    console.print(f"triggers: {', '.join(s.triggers)}")
+    console.print("steps:")
+    for st in s.steps:
+        console.print(f"  - {st}")
+    console.print(f"forbidden: {', '.join(s.forbidden_actions)}")
+    console.print(f"verification: {', '.join(s.verification)}")
+
+
+@skills_app.command("validate")
+def skills_validate(
+    path: Path = typer.Argument(..., help="sökväg till skill-JSON"),
+) -> None:
+    """Validera en skill-fil innan add."""
+    from .skills.loader import load_file
+
+    skill, errors = load_file(path)
+    if errors:
+        console.print(f"[red]{path}: OGILTIG[/red]")
+        for e in errors:
+            console.print(f"  - {e}")
+        raise typer.Exit(1)
+    console.print(f"[green]{path}: giltig[/green] ({skill.name})")
+
+
+@skills_app.command("add")
+def skills_add(
+    path: Path = typer.Argument(..., help="sökväg till skill-JSON att lägga till"),
+) -> None:
+    """Validera + kopiera en skill till HundHome/skills/."""
+    from .skills.loader import add_skill
+
+    skill, errors = add_skill(path)
+    if errors:
+        console.print(f"[red]{path}: OGILTIG[/red]")
+        for e in errors:
+            console.print(f"  - {e}")
+        raise typer.Exit(1)
+    console.print(f"[green]skill tillagd[/green] {skill.name}")
+
+
+@skills_app.command("match")
+def skills_match(
+    text: str = typer.Argument(..., help="uppgiftstext att matcha mot"),
+) -> None:
+    """Matcha uppgiftstext mot aktiva skills (max top 3)."""
+    from .skills.loader import load_skills
+    from .skills.matcher import match
+
+    hits = match(load_skills(), text)
+    if not hits:
+        console.print("(inga skill-träffar)")
+        return
+    for s in hits:
+        console.print(f"- {s.summary()}", markup=False)
 
 
 if __name__ == "__main__":

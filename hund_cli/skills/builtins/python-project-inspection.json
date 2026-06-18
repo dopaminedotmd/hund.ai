@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "name": "python-project-inspection",
+  "domain": "software-development",
+  "status": "active",
+  "triggers": ["pytest", "pyproject.toml", "uv run", ".py"],
+  "when_to_use": "När användaren arbetar i ett Python-projekt och vill inspektera, testa eller förstå koden.",
+  "steps": [
+    "Läs pyproject.toml för att förstå beroenden och entrypoints.",
+    "Kör relevanta tester med uv run pytest innan du föreslår ändringar.",
+    "Använd sökverktyg för att hitta definitioner, inte gissa."
+  ],
+  "required_tools": ["read_file", "search_files", "terminal"],
+  "forbidden_actions": ["delete", "push", "self_update", "apply_update", "modify_tcb"],
+  "safety_level": "confirm_for_write",
+  "verification": ["uv run pytest"],
+  "examples": []
+}

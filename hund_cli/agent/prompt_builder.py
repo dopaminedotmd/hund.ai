@@ -32,6 +32,7 @@ def build_system_prompt(
     project_context: str = "",
     knowledge: list[tuple[str, str]] | None = None,
     policy_rules: list[str] | None = None,
+    skill_summaries: list[str] | None = None,
 ) -> str:
     parts: list[str] = [persona, "", "## Din miljö (du lever här)"]
     parts.append(f"- OS: {profile.os} {profile.os_version}")
@@ -62,6 +63,11 @@ def build_system_prompt(
         parts.append("")
         parts.append("## Policy (deklarativ, ej överträdbar)")
         parts.extend(f"- {r}" for r in policy_rules)
+
+    if skill_summaries:
+        parts.append("")
+        parts.append("## Relevanta skills (sammanfattning, ej fulla instruktioner)")
+        parts.extend(f"- {s}" for s in skill_summaries)
 
     if knowledge:
         parts.append("")
