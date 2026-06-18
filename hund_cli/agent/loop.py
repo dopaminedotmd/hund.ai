@@ -32,6 +32,51 @@ HELP = "[dim]/exit · /stats · /profile · /tools[/dim]"
 MAX_TOOL_ROUNDS = 8
 
 
+def _safe_policy_rules() -> list[str]:
+    try:
+        from ..policy.loader import load_policy
+
+        return load_policy().prompt_rules()
+    except Exception:
+        return []
+
+
+def _safe_skills() -> list:
+    try:
+        from ..skills.loader import load_skills
+
+        return load_skills()
+    except Exception:
+        return []
+
+
+def assemble_system_prompt(
+    persona: str,
+    profile,
+    *,
+    knowledge: list[tuple[str, str]] | None = None,
+    policy_rules: list[str] | None = None,
+    skills: list | None = None,
+    user_text: str = "",
+) -> str:
+    """Bygg systemprompt med deklarativa lager.
+
+    Policy är session-stabil. Skills matchas mot senaste användartexten så bara
+    relevanta sammanfattningar injiceras (inte hela biblioteket). Ren funktion
+    → testbar utan provider/DB.
+    """
+    from ..skills.matcher import summaries as _summaries
+
+    summ = _summaries(skills or [], user_text) if user_text else []
+    return build_system_prompt(
+        persona,
+        profile,
+        knowledge=knowledge or None,
+        policy_rules=policy_rules or None,
+        skill_summaries=summ or None,
+    )
+
+
 def run_repl() -> int:
     console = Console()
     cfg = HundConfig.load()
@@ -58,7 +103,12 @@ def run_repl() -> int:
         knowledge = kstore.top_k(domain_hint, k=5) or kstore.top_k("general", k=5)
     except Exception:
         knowledge = []
-    system_prompt = build_system_prompt(persona, profile, knowledge=knowledge)
+    policy_rules = _safe_policy_rules()
+    skills = _safe_skills()
+    system_prompt = assemble_system_prompt(
+        persona, profile, knowledge=knowledge, policy_rules=policy_rules,
+        skills=skills, user_text="",
+    )
     client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     messages: list[Message] = [Message(role="system", content=system_prompt)]
 
@@ -92,6 +142,14 @@ def run_repl() -> int:
                 continue
 
             messages.append(Message(role="user", content=user))
+            # Matcha skills mot senaste användartexten → endast relevanta injiceras.
+            messages[0] = Message(
+                role="system",
+                content=assemble_system_prompt(
+                    persona, profile, knowledge=knowledge,
+                    policy_rules=policy_rules, skills=skills, user_text=user,
+                ),
+            )
             _agent_turn(console, client, messages, schemas, engine, cfg, conn)
     finally:
         conn.close()
