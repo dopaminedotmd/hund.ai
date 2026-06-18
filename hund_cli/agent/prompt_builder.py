@@ -30,6 +30,7 @@ def build_system_prompt(
     persona: str,
     profile: EnvironmentProfile,
     project_context: str = "",
+    knowledge: list[tuple[str, str]] | None = None,
 ) -> str:
     parts: list[str] = [persona, "", "## Din miljö (du lever här)"]
     parts.append(f"- OS: {profile.os} {profile.os_version}")
@@ -47,6 +48,12 @@ def build_system_prompt(
         parts.append("")
         parts.append("## Beteenderegler baserade på din miljö")
         parts.extend(f"- {r}" for r in rules)
+
+    if knowledge:
+        parts.append("")
+        parts.append("## Relevant kunskap (LFU/MRU top-K för domän)")
+        for trigger, rule in knowledge:
+            parts.append(f"- ({trigger}) {rule}")
 
     if project_context:
         parts.append("")

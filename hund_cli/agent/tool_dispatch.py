@@ -10,9 +10,12 @@ Flöde per tool_call:
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import datetime, timezone
 
 from rich.console import Console
 
+from ..store.sqlite import connect
 from ..tools import registry
 from .safety import PermissionEngine, RiskLevel
 
@@ -27,6 +30,21 @@ def _parse(tc: dict) -> tuple[str, dict]:
         return name, {"_raw_arguments": raw}
 
 
+def _log_tool(tool: str, risk: str, outcome: str, success: int) -> None:
+    """Logga tool-event för base stats. Får ej krascha agentloopen."""
+    try:
+        conn = connect()
+        conn.execute(
+            """INSERT INTO tool_events(id, created_at, tool, risk, outcome, success)
+               VALUES (?,?,?,?,?,?)""",
+            (str(uuid.uuid4()), datetime.now(timezone.utc).isoformat(), tool, risk, outcome, success),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
 def dispatch_tool_call(
     tc: dict,
     engine: PermissionEngine,
@@ -39,11 +57,13 @@ def dispatch_tool_call(
     decision = engine.classify(name, args)
 
     if decision.risk is RiskLevel.BLOCKED:
+        _log_tool(name, decision.risk.value, "blocked", 0)
         console.print(f"[red]BLOCKERAD[/red] {name} — {decision.reason}")
         return f"[blocked] {decision.reason}"
 
     if not (decision.risk is RiskLevel.SAFE and auto_approve_safe):
         if noninteractive:
+            _log_tool(name, decision.risk.value, "declined", 0)
             console.print(f"[yellow]NEKAD[/yellow] (noninteractive) {name} {args}")
             return f"[declined: {decision.risk} kräver godkännande]"
         preview = json.dumps(args, ensure_ascii=False)
@@ -58,10 +78,15 @@ def dispatch_tool_call(
             .lower()
         )
         if ans not in {"j", "y", "ja", "yes"}:
+            _log_tool(name, decision.risk.value, "declined", 0)
             console.print("[dim]nekad av användare[/dim]")
             return "[declined by user]"
+        _log_tool(name, decision.risk.value, "approved", 0)
 
     result = registry.call(name, args)
+    success = 0 if result.startswith("[error]") else 1
+    _log_tool(name, decision.risk.value, "ran", success)
     shown = result if len(result) <= 120 else result[:120] + "…"
     console.print(f"[dim]tool {name} -> {shown}[/dim]")
     return result
+

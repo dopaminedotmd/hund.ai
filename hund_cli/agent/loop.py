@@ -50,7 +50,15 @@ def run_repl() -> int:
 
     profile = profile_environment(workspace=workspace)
     persona = load_persona()
-    system_prompt = build_system_prompt(persona, profile)
+    # V1-domain-hint = workspace-dirnamn; top-K kunskap om domänen finns.
+    domain_hint = workspace.name
+    try:
+        from ..knowledge import store as kstore
+
+        knowledge = kstore.top_k(domain_hint, k=5) or kstore.top_k("general", k=5)
+    except Exception:
+        knowledge = []
+    system_prompt = build_system_prompt(persona, profile, knowledge=knowledge)
     client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     messages: list[Message] = [Message(role="system", content=system_prompt)]
 

@@ -31,7 +31,13 @@ console = Console()
 
 # Sub-apps
 learning_app = typer.Typer(help="Lokal learning/gap-events. Aldrig extern upload.")
+proposals_app = typer.Typer(help="Self-improvement proposals (deklarativa, human-gated).")
+knowledge_app = typer.Typer(help="Kunskapsenheter (LFU/MRU).")
+stats_app = typer.Typer(help="Statistik och base stats.")
 app.add_typer(learning_app, name="learning")
+app.add_typer(proposals_app, name="proposals")
+app.add_typer(knowledge_app, name="knowledge")
+app.add_typer(stats_app, name="stats")
 
 
 @app.callback(invoke_without_command=True)
@@ -103,23 +109,67 @@ def setup() -> None:
 
 
 @app.command()
-def stats() -> None:
-    """Visa lokal token/latency-statistik från SQLite."""
-    from .store.sqlite import connect
+def propose() -> None:
+    """Hund sammanfattar öppna gaps till ett DEKLARATIVT förslag (ej kod).
 
-    conn = connect()
-    row = conn.execute(
-        """SELECT COUNT(*),
-                  COALESCE(SUM(prompt_tokens),0),
-                  COALESCE(SUM(completion_tokens),0),
-                  COALESCE(SUM(latency_ms),0)
-           FROM requests"""
-    ).fetchone()
-    conn.close()
-    n, tin, tout, lat = row
+    Säkerhet: change_type tvingas runtime_policy/skill/hundk/prompt/test.
+    Core/TCB får aldrig föreslås. Kräver human gate (hund proposals approve).
+    """
+    import json
+
+    from .config import HundConfig
+    from .learning.observer import list_gap_events
+    from .providers.base import Message
+    from .providers.openai_compatible import OpenAICompatibleClient
+    from .secrets import load_api_key
+    from .selfimprovement import proposal as P
+
+    cfg = HundConfig.load()
+    key = load_api_key(cfg.provider.api_key_env)
+    gaps = list_gap_events(status="open")
+    if not gaps:
+        console.print("(inga öppna gaps att föreslå från — logga med `hund learning gap`).")
+        return
+    if not key:
+        console.print("[red]API-nyckel saknas.[/red]")
+        return
+
+    gap_text = "\n".join(f"- [{g[2]}] {g[3]}" for g in gaps)
+    sysp = (
+        "Du granskar gap-events (kunskapsluckor) och föreslår EN deklarativ "
+        "förbättring av Hunds beteende. Svara ENDAST med giltig JSON, inga "
+        "markdown-backticks: "
+        '{"title","problem","proposed_change",'
+        '"change_type" (en av: runtime_policy|skill|hundk|prompt|test),'
+        '"risk","tests_needed"}. '
+        "change_type får ALDRIG vara core/engine/safety/updater — de är TCB."
+    )
+    client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
+    try:
+        r = client.complete([Message(role="system", content=sysp),
+                             Message(role="user", content=f"Gaps:\n{gap_text}")])
+    except RuntimeError as e:
+        console.print(f"[red]{e}[/red]")
+        return
+
+    text = r.text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    try:
+        summary = json.loads(text)
+    except json.JSONDecodeError:
+        console.print("[red]kunde ej tolka svaret som JSON:[/red]")
+        console.print(text[:400])
+        return
+
+    prop = P.build_from_gaps(gaps, summary)
+    P.create(prop)
+    console.print(prop.as_markdown())
     console.print(
-        f"[bold]Hund stats[/bold] · requests: {n} · "
-        f"tokens in/out: {tin}/{tout} · total latency: {lat}ms"
+        f"[green]proposal skapad[/green] {prop.id[:8]} — "
+        f"granska: `hund proposals show {prop.id[:8]}`"
     )
 
 
@@ -166,3 +216,133 @@ def learning_close(gid_prefix: str = typer.Argument(..., help="id-prefix")) -> N
 
     n = set_gap_status(gid_prefix, "closed")
     console.print(f"stängde {n} gap." if n else "[yellow]inget gap matchade[/yellow]")
+
+
+@learning_app.command("study")
+def learning_study(
+    gid_prefix: str = typer.Argument(..., help="gap-id-prefix att studera"),
+    rule: str = typer.Option(..., "--rule", "-r", help="Destillerad regel från studien."),
+    trigger: str = typer.Option("", "--trigger", "-t"),
+) -> None:
+    """Studera ett gap → destillera till en knowledge unit (lokal mastery)."""
+    from .knowledge import store as kstore
+    from .learning.observer import list_gap_events
+
+    gaps = list_gap_events()
+    match = next((g for g in gaps if g[0].startswith(gid_prefix)), None)
+    if not match:
+        console.print("[yellow]inget gap matchade prefix[/yellow]")
+        return
+    domain = match[2] or "general"
+    trig = trigger or (match[3][:30])
+    uid = kstore.add(domain=domain, trigger=trig, rule=rule, source="study")
+    console.print(f"[green]knowledge unit skapad[/green] {uid[:8]} · {domain}")
+    console.print(f"[dim]regel: {rule}[/dim]")
+
+
+# ---- stats ----
+@stats_app.callback(invoke_without_command=True)
+def stats_default(ctx: typer.Context) -> None:
+    """Token/latency-sammanställning."""
+    from .store.sqlite import connect
+
+    conn = connect()
+    row = conn.execute(
+        """SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0),
+                  COALESCE(SUM(completion_tokens),0), COALESCE(SUM(latency_ms),0)
+           FROM requests"""
+    ).fetchone()
+    conn.close()
+    n, tin, tout, lat = row
+    console.print(
+        f"[bold]stats[/bold] · requests: {n} · tokens in/out: {tin}/{tout} · "
+        f"total latency: {lat}ms"
+    )
+
+
+@stats_app.command("base")
+def stats_base() -> None:
+    """3 base stats (råa ur loggen, inga fejkade %)."""
+    from .base_stats import compute
+
+    s = compute()
+    console.print("[bold]Hund base stats[/bold]")
+    for k, v in s.items():
+        name = k.replace("_", " ").title()
+        val = next((x for x in v.values() if x is not None), "n/a")
+        console.print(f"  {name:20} ({v['level']})  {val}")
+
+
+# ---- proposals ----
+@proposals_app.command("list")
+def proposals_list(
+    status: str = typer.Option(None, "--status", "-s"),
+) -> None:
+    """Lista proposals."""
+    from .selfimprovement import proposal as P
+
+    props = P.list_proposals(status)
+    if not props:
+        console.print("(inga proposals)")
+        return
+    for p in props:
+        console.print(f"[{p.status}] {p.id[:8]} ({p.change_type}) {p.title}")
+
+
+@proposals_app.command("show")
+def proposals_show(pid: str = typer.Argument(..., help="id-prefix")) -> None:
+    """Visa en proposal."""
+    from .selfimprovement import proposal as P
+
+    p = P.get(pid)
+    if not p:
+        console.print("[yellow]ingen proposal matchade[/yellow]")
+        return
+    console.print(p.as_markdown())
+
+
+@proposals_app.command("approve")
+def proposals_approve(pid: str = typer.Argument(...)) -> None:
+    """Mänsklig gate: godkänn en proposal (markerar, applicerar ej auto)."""
+    from .selfimprovement import proposal as P
+
+    n = P.set_status(pid, "approved")
+    console.print(f"[green]godkänd[/green] {n} proposal." if n else "[yellow]ingen match[/yellow]")
+    console.print("[dim]observera: Hund applicerar ALDRIG auto. Ändra filer manuellt.[/dim]")
+
+
+@proposals_app.command("reject")
+def proposals_reject(pid: str = typer.Argument(...)) -> None:
+    from .selfimprovement import proposal as P
+
+    n = P.set_status(pid, "rejected")
+    console.print(f"avvisad {n} proposal." if n else "[yellow]ingen match[/yellow]")
+
+
+# ---- knowledge ----
+@knowledge_app.command("add")
+def knowledge_add(
+    rule: str = typer.Option(..., "--rule", "-r"),
+    domain: str = typer.Option("general", "--domain", "-d"),
+    trigger: str = typer.Option("", "--trigger", "-t"),
+) -> None:
+    """Lägg till en knowledge unit manuellt."""
+    from .knowledge import store as kstore
+
+    uid = kstore.add(domain=domain, trigger=trigger or rule[:30], rule=rule)
+    console.print(f"[green]unit skapad[/green] {uid[:8]} · {domain}")
+
+
+@knowledge_app.command("list")
+def knowledge_list(
+    domain: str = typer.Option(None, "--domain", "-d"),
+) -> None:
+    """Lista knowledge units (LFU-ordning)."""
+    from .knowledge import store as kstore
+
+    rows = kstore.list_units(domain)
+    if not rows:
+        console.print("(inga knowledge units — lägg till med `hund knowledge add`)")
+        return
+    for uid, dom, trig, rule, freq, succ in rows:
+        console.print(f"{uid} [{dom}] freq={freq} ok={succ} ({trig}) {rule[:50]}")
