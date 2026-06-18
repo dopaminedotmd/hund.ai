@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+
+# venv / uv
+.venv/
+venv/
+.python-version
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# secrets — ALDRIG commita
+.env
+.env.*
+*.key
+*.pem
+secrets/
+
+# Hund local data (skapas vid körning, ej repo)
+hund_local/
+*.hundk.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+Thumbs.db
+.DS_Store
