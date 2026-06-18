@@ -25,6 +25,7 @@ from ..store.sqlite import connect
 from ..tools import registry
 from ..tools.default_tools import register_defaults
 from .prompt_builder import build_system_prompt
+from .context import maybe_compress
 from .safety import PermissionEngine
 from .tool_dispatch import dispatch_tool_call
 
@@ -154,6 +155,13 @@ def run_repl() -> int:
                     policy_rules=policy_rules, skills=skills, user_text=user,
                 ),
             )
+            # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
+            comp = maybe_compress(messages)
+            if comp.compressed:
+                messages[:] = comp.messages
+                console.print(
+                    f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
+                )
             _agent_turn(console, client, messages, schemas, engine, cfg, conn)
     finally:
         conn.close()
