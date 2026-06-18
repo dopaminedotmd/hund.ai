@@ -1,0 +1,14 @@
+# Normalisera line-endings — slutar CRLF-varningar
+* text=auto eol=lf
+
+# Plattformsspecifika scripts behåller nativ eol
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.sh    text eol=lf
+
+# Binärt
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
