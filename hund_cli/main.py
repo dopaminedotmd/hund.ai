@@ -39,6 +39,7 @@ stats_app = typer.Typer(help="Statistik och base stats.")
 privacy_app = typer.Typer(help="Privacy/redaction. Offline, ingen upload.")
 policy_app = typer.Typer(help="Runtime policy (deklarativ, ej core-kod).")
 skills_app = typer.Typer(help="Deklarativa skills (inte exekverbar kod).")
+domains_app = typer.Typer(help="Domain detection (grovt, offline).")
 app.add_typer(learning_app, name="learning")
 app.add_typer(proposals_app, name="proposals")
 app.add_typer(knowledge_app, name="knowledge")
@@ -46,6 +47,7 @@ app.add_typer(stats_app, name="stats")
 app.add_typer(privacy_app, name="privacy")
 app.add_typer(policy_app, name="policy")
 app.add_typer(skills_app, name="skills")
+app.add_typer(domains_app, name="domains")
 
 
 @app.callback(invoke_without_command=True)
@@ -352,6 +354,48 @@ def skills_match(
         return
     for s in hits:
         console.print(f"- {s.summary()}", markup=False)
+
+
+# ---- domains ----
+@domains_app.command("detect")
+def domains_detect(
+    domain: str = typer.Option(None, "--domain", "-d", help="manuell domain-override"),
+) -> None:
+    """Detektera domän från current workspace (offline)."""
+    from pathlib import Path
+
+    from .domains import detector as ddet
+
+    workspace = Path.cwd()
+    det = ddet.detect(workspace, manual=domain)
+    ddet.record_detection(det)
+    console.print(f"[bold]primary:[/bold] {det.primary} ({det.primary_confidence})")
+    for cand in det.candidates:
+        console.print(f"  candidate: {cand}")
+
+
+@domains_app.command("list")
+def domains_list() -> None:
+    """Visa kända domäner + status."""
+    from .domains import detector as ddet
+
+    rows = ddet.list_domains()
+    if not rows:
+        console.print("(inga domäner detekterade — kör `hund domains detect`)")
+        return
+    for domain, status, confidence, detected_at in rows:
+        console.print(f"[bold]{status}[/bold] {domain} ({confidence}) — {detected_at}")
+
+
+@domains_app.command("set-primary")
+def domains_set_primary(
+    domain: str = typer.Argument(..., help="domain att göra primär"),
+) -> None:
+    """Sätt primary domain manuellt (styr knowledge top-K)."""
+    from .domains import detector as ddet
+
+    ddet.set_primary(domain)
+    console.print(f"[green]primary satt:[/green] {domain}")
 
 
 if __name__ == "__main__":

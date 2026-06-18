@@ -65,6 +65,13 @@ CREATE TABLE IF NOT EXISTS tool_events (
     outcome TEXT,                -- ran|approved|declined|blocked|error
     success INTEGER DEFAULT 0    -- 1 om tool körde utan fel
 );
+
+CREATE TABLE IF NOT EXISTS domains (
+    domain TEXT PRIMARY KEY,
+    status TEXT DEFAULT 'candidate',  -- candidate|active|primary|stale
+    confidence TEXT,                   -- low|medium|high
+    detected_at TEXT
+);
 """
 
 

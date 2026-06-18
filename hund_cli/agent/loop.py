@@ -95,13 +95,17 @@ def run_repl() -> int:
 
     profile = profile_environment(workspace=workspace)
     persona = load_persona()
-    # V1-domain-hint = workspace-dirnamn; top-K kunskap om domänen finns.
-    domain_hint = workspace.name
+    # Domain-detection styr knowledge top-K (Fas 4). Offline, ingen provider.
     try:
+        from ..domains import detector as ddet
         from ..knowledge import store as kstore
 
+        detection = ddet.detect(workspace)
+        ddet.record_detection(detection)
+        domain_hint = ddet.get_primary() or detection.primary
         knowledge = kstore.top_k(domain_hint, k=5) or kstore.top_k("general", k=5)
     except Exception:
+        domain_hint = workspace.name
         knowledge = []
     policy_rules = _safe_policy_rules()
     skills = _safe_skills()
