@@ -13,7 +13,26 @@ bor i ett separat `hund-system` och kopplas in som default assets senare.
 
 ## Status
 
-`0.1.0` — skelett + byggkontrakt. Se `docs/mvp.md`.
+`0.1.0` — **minimal functional core**. Se `docs/mvp.md`.
+
+Implementerade system:
+
+| System | Status |
+|---|---|
+| REPL-agentloop (BYOK, streaming, tool calling) | ✅ klart |
+| Privacy/Redactor TCB | ✅ klart |
+| Runtime policy (deklarativt beteendelager) | ✅ klart |
+| Skill-system v1 (skills, matcher, validator) | ✅ klart |
+| Domain detection v1 (SQLite, CLI) | ✅ klart |
+| Context compression v1 (deterministisk) | ✅ klart |
+| Eval/regression library (10 smoke-cases) | ✅ klart |
+| Self-improvement proposals (human-gated) | ✅ klart |
+| Installer hardening (SHA-manifest, verify) | ✅ klart |
+| UI/TUI | ⏸ avsiktligt uppskjuten |
+
+> **UI är avsiktligt borttagen / uppskjuten.** En fungerande funktionskärna
+> (tests, privacy, policy, skills, domains, eval) måste vara verifierad och
+> dogfoodad innan någon terminal-UI byggs. Se `docs/plans/HUND_NEXT_BUILD_PLAN.md §4.1`.
 
 ## Snabbstart (dev)
 
@@ -42,6 +61,7 @@ I REPL: `/tools`, `/stats`, `/profile`, `/exit`.
 
 - `docs/architecture.md` — tre-skiktad arkitektur, TCB, gränssnittskontrakt, valda beslut.
 - `docs/mvp.md` — MVP Definition of Done, första 10 bygguppgifterna, vad som skjuts upp.
+- `docs/plans/HUND_NEXT_BUILD_PLAN.md` — fas-plan för funktionskärnan, UI-gate och dogfooding.
 
 ## Licens
 

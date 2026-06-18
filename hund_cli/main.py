@@ -40,6 +40,7 @@ privacy_app = typer.Typer(help="Privacy/redaction. Offline, ingen upload.")
 policy_app = typer.Typer(help="Runtime policy (deklarativ, ej core-kod).")
 skills_app = typer.Typer(help="Deklarativa skills (inte exekverbar kod).")
 domains_app = typer.Typer(help="Domain detection (grovt, offline).")
+eval_app = typer.Typer(help="Eval/benchmark/regression (bevisbarhet).")
 app.add_typer(learning_app, name="learning")
 app.add_typer(proposals_app, name="proposals")
 app.add_typer(knowledge_app, name="knowledge")
@@ -48,6 +49,7 @@ app.add_typer(privacy_app, name="privacy")
 app.add_typer(policy_app, name="policy")
 app.add_typer(skills_app, name="skills")
 app.add_typer(domains_app, name="domains")
+app.add_typer(eval_app, name="eval")
 
 
 @app.callback(invoke_without_command=True)
@@ -396,6 +398,63 @@ def domains_set_primary(
 
     ddet.set_primary(domain)
     console.print(f"[green]primary satt:[/green] {domain}")
+
+
+# ---- eval ----
+@eval_app.command("run")
+def eval_run(
+    gap_on_fail: bool = typer.Option(
+        False, "--gap-on-fail", help="Logga lokala gap-events för misslyckade evals."
+    ),
+) -> None:
+    """Kör alla eval-cases (deterministiska, offline)."""
+    from .evals.runner import run_all
+    from .learning.observer import add_gap_event
+
+    results = run_all()
+    passed = sum(1 for r in results if r.passed)
+    for r in results:
+        mark = "[green]PASS[/green]" if r.passed else "[red]FAIL[/red]"
+        console.print(f"  {mark} {r.name} — {r.detail}")
+    console.print(f"\n[bold]{passed}/{len(results)} passed[/bold]")
+    if gap_on_fail:
+        for r in results:
+            if not r.passed:
+                add_gap_event(f"eval {r.name}: {r.detail}", domain="eval")
+        console.print("[dim]misslyckade evals loggade som gap-events[/dim]")
+    if passed < len(results):
+        raise typer.Exit(1)
+
+
+@eval_app.command("list")
+def eval_list() -> None:
+    """Lista tillgängliga eval-cases."""
+    from .evals.runner import list_cases
+
+    for name in list_cases():
+        console.print(f"- {name}")
+
+
+@eval_app.command("add-regression")
+def eval_add_regression(
+    name: str = typer.Argument(..., help="case-namn"),
+    subject: str = typer.Option("$pyproject", "--subject", "-s",
+                                help="$pyproject | $file:<path> | <text>"),
+    contains: str = typer.Option("", "--contains", "-c",
+                                 help="komma-separerade strängar som måste finnas"),
+    not_contains: str = typer.Option("", "--not-contains", "-n",
+                                     help="komma-separerade strängar som inte får finnas"),
+) -> None:
+    """Lägg till ett text-assert regression-case lokalt."""
+    from .evals.runner import add_regression
+
+    target = add_regression(
+        name,
+        subject,
+        contains=[s.strip() for s in contains.split(",") if s.strip()],
+        not_contains=[s.strip() for s in not_contains.split(",") if s.strip()],
+    )
+    console.print(f"[green]regression case skapat[/green] {target}")
 
 
 if __name__ == "__main__":

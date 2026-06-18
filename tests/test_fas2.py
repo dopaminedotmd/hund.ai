@@ -1,6 +1,8 @@
 """Fas 2 — self-improvement (I) + mastery (J) enhetstester."""
 from __future__ import annotations
 
+import uuid
+
 from hund_cli.base_stats import compute
 from hund_cli.knowledge import store as kstore
 from hund_cli.selfimprovement import proposal as P
@@ -32,7 +34,7 @@ def test_proposal_crud_roundtrip():
 
 # ---- J: knowledge (LFU/MRU) ----
 def test_knowledge_lfu_orders_by_frequency():
-    d = "testdomain_lfu"
+    d = f"testdomain_lfu_{uuid.uuid4().hex}"
     u1 = kstore.add(d, "trig1", "rule1")
     u2 = kstore.add(d, "trig2", "rule2")
     kstore.bump_usage(u1)  # u1 mer frekvent

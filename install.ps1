@@ -1,18 +1,42 @@
 <#
 .SYNOPSIS
   Hund CLI installer for Windows (PowerShell 5.1+).
+
 .DESCRIPTION
   Bootstraps uv, clones hund-cli, installs a global `hund` command.
-  SECURITY TODO (review): pin to a release commit-SHA + verify a checksum on
-  this script before `iex`. Currently fetches latest main — acceptable for
-  pre-release dev, not for public stable.
+
+  SECURITY: Detta skript hämtar och exekverar kod från internet.
+  För produktionsanvändning, pinna till en release-SHA och verifiera
+  SHA256-checksumman för detta skript innan du kör det.
+
+  SHA-PINNING (rekommenderas för stable):
+    Sätt $env:HUND_RELEASE_SHA till önskat commit SHA (minst 7 tecken).
+    Installeraren checkar ut den pinnade committen istf branch-HEAD.
+    Exempel:
+      $env:HUND_RELEASE_SHA = "37947cb"
+      irm https://raw.githubusercontent.com/.../install.ps1 | iex
+
+  CHECKSUM-VERIFIERING (för CI/release-pipeline):
+    Verifiera detta skript mot release-manifestet innan exekvering:
+      $manifest = Invoke-RestMethod https://your-release-host/manifest.json
+      $actual = (Get-FileHash install.ps1 -Algorithm SHA256).Hash.ToLower()
+      if ($actual -ne $manifest.install_ps1_sha256) { throw "SHA256 MISMATCH" }
+
+  DEV-LÄGE: Utan HUND_RELEASE_SHA hämtas latest main — OK för dev, EJ för publik stable.
+
 .EXAMPLE
+  # Dev (latest main):
   irm https://raw.githubusercontent.com/dopaminedotmd/hund-cli/main/install.ps1 | iex
+
+  # Stable (pinnad):
+  $env:HUND_RELEASE_SHA = "37947cb"; irm .../install.ps1 | iex
 #>
 $ErrorActionPreference = 'Stop'
 
 $Repo    = 'https://github.com/dopaminedotmd/hund-cli'
 $Target  = Join-Path $env:LOCALAPPDATA 'hund-cli'
+# Läs optional release-SHA från miljövariabel (sätts av CI eller användare)
+$ReleaseSha = $env:HUND_RELEASE_SHA
 
 function Assert-PowerShell {
     if ($PSVersionTable.PSVersion.Major -lt 5) {
@@ -38,18 +62,26 @@ function Ensure-Uv {
 function Get-HundCli {
     if (Test-Path (Join-Path $Target 'pyproject.toml')) {
         Write-Host "uppdaterar $Target ..."
-        git -C $Target pull
-        return
+        git -C $Target fetch origin
+    } else {
+        Write-Host "klonar till $Target ..."
+        git clone $Repo $Target
     }
-    Write-Host "klonar till $Target ..."
-    git clone $Repo $Target
+
+    if ($ReleaseSha) {
+        Write-Host "pinnar till release SHA: $ReleaseSha"
+        git -C $Target checkout $ReleaseSha
+    } else {
+        Write-Warning "HUND_RELEASE_SHA ej satt — hämtar latest main (dev-läge, ej för publik stable)"
+        git -C $Target pull
+    }
 }
 
 Assert-PowerShell
 Ensure-Uv
 Get-HundCli
 
-Write-Host "installerar globalt kommando `hund` ..."
+Write-Host "installerar globalt kommando ``hund`` ..."
 uv tool install --force --from $Target hund-cli
 
 if (Get-Command hund -ErrorAction SilentlyContinue) {
@@ -58,5 +90,6 @@ if (Get-Command hund -ErrorAction SilentlyContinue) {
     Write-Host "  setx HUND_API_KEY `"sk-...`"   (ny terminal efteråt)"
     Write-Host "  hund"
 } else {
-    Write-Warning "`hund` ej i PATH än. Starta ny terminal (PATH uppdateras)."
+    Write-Warning "``hund`` ej i PATH än. Starta ny terminal (PATH uppdateras)."
 }
+

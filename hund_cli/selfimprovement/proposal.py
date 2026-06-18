@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ..learning.redactor import redact_text
@@ -12,9 +13,19 @@ from ..store.sqlite import connect
 # TCB-skydd: change_type tvingas deklarativ. Core-kod får aldrig föreslås.
 ALLOWED_CHANGE_TYPES = {"runtime_policy", "skill", "hundk", "prompt", "test"}
 
+# Change-types som kräver rollback_note (alla write-nära typer).
+WRITE_CHANGE_TYPES = {"runtime_policy", "skill", "hundk"}
+
+# Mönster för råa filinnehåll — blockeras ur förslag.
+_RAW_CONTENT_PATTERNS = [
+    re.compile(r"^(?:content|file_content|raw_content)$", re.IGNORECASE),
+]
+_RAW_CONTENT_MAX_CHARS = 500  # Fält som är längre än så misstänks vara rådata
+
 _COLS = [
     "id", "created_at", "title", "problem", "proposed_change",
     "change_type", "risk", "tests_needed", "related_gaps", "status",
+    "verification_required", "rollback_note",
 ]
 
 
@@ -30,15 +41,26 @@ class Proposal:
     tests_needed: str
     related_gaps: list
     status: str = "proposed"
+    # Fas 8 — v1.5 fält
+    verification_required: bool = True  # alltid True, kan inte sättas False
+    rollback_note: str = ""             # obligatoriskt för write-nära change_types
 
     def as_markdown(self) -> str:
+        rollback_section = (
+            f"\n## Rollback\n{self.rollback_note}\n"
+            if self.rollback_note
+            else "\n## Rollback\n*(ej angiven)*\n"
+        )
+        verification = "✅ krävs" if self.verification_required else "⚠️ ej satt"
         return (
             f"# Proposal {self.id[:8]} — {self.title}\n\n"
-            f"status: **{self.status}** · type: `{self.change_type}` · risk: {self.risk}\n\n"
+            f"status: **{self.status}** · type: `{self.change_type}` · risk: {self.risk}"
+            f" · verifiering: {verification}\n\n"
             f"## Problem\n{self.problem}\n\n"
             f"## Föreslagen ändring ({self.change_type})\n{self.proposed_change}\n\n"
             f"## Tester som krävs\n{self.tests_needed or '(ingen)'}\n\n"
             f"## Relaterade gaps\n{', '.join(self.related_gaps) or '(ingen)'}\n"
+            + rollback_section
         )
 
 
@@ -49,6 +71,7 @@ def create(p: Proposal) -> None:
         (
             p.id, p.created_at, p.title, p.problem, p.proposed_change,
             p.change_type, p.risk, p.tests_needed, json.dumps(p.related_gaps), p.status,
+            int(p.verification_required), p.rollback_note,
         ),
     )
     conn.commit()
@@ -75,6 +98,7 @@ def get(pid_prefix: str) -> Proposal | None:
 
 
 def set_status(pid_prefix: str, status: str) -> int:
+    """Markerar status i DB. Applicerar ALDRIG ändringen på systemet."""
     conn = connect()
     cur = conn.execute("UPDATE proposals SET status=? WHERE id LIKE ?", (status, pid_prefix + "%"))
     conn.commit()
@@ -83,14 +107,33 @@ def set_status(pid_prefix: str, status: str) -> int:
     return n
 
 
-def build_from_gaps(gaps: list, llm_summary: dict) -> Proposal:
+def _is_raw_file_content(name: str, value: str) -> bool:
+    """Returnerar True om ett fält misstänks innehålla rå fildata."""
+    for pat in _RAW_CONTENT_PATTERNS:
+        if pat.match(name):
+            return True
+    # Heuristik: mycket långa fält med radbrytningar är sannolikt råinnehåll
+    if len(value) > _RAW_CONTENT_MAX_CHARS and "\n" in value:
+        return True
+    return False
+
+
+def build_from_gaps(gaps: list, llm_summary: dict) -> "Proposal":
     """gaps: list of gap-rows; llm_summary: dikterade fält från LLM."""
     ct = llm_summary.get("change_type", "runtime_policy")
     if ct not in ALLOWED_CHANGE_TYPES:  # TCB-skydd: tvinga deklarativ
         ct = "runtime_policy"
 
     def safe_field(name: str, default: str = "") -> str:
-        return redact_text(str(llm_summary.get(name, default))).text
+        raw = str(llm_summary.get(name, default))
+        # Fas 8: blockera råa filinnehåll — ersätt med placeholder
+        if _is_raw_file_content(name, raw):
+            return "[REDACTED: raw file content not allowed in proposals]"
+        return redact_text(raw).text
+
+    # rollback_note är obligatoriskt för write-nära typer
+    rollback_raw = str(llm_summary.get("rollback_note", ""))
+    rollback = redact_text(rollback_raw).text if rollback_raw else ""
 
     return Proposal(
         id=str(uuid.uuid4()),
@@ -102,13 +145,26 @@ def build_from_gaps(gaps: list, llm_summary: dict) -> Proposal:
         risk=safe_field("risk", "unknown"),
         tests_needed=safe_field("tests_needed"),
         related_gaps=[g[0] for g in gaps],
+        verification_required=True,  # alltid obligatorisk
+        rollback_note=rollback,
     )
 
 
 def _row(r) -> Proposal:
-    d = dict(zip(_COLS, r))
+    # Hantera både gamla rader (utan de nya kolumnerna) och nya
+    if len(r) >= len(_COLS):
+        d = dict(zip(_COLS, r))
+    else:
+        # Bakåtkompatibilitet: gamla rader saknar verification_required + rollback_note
+        old_cols = _COLS[:len(r)]
+        d = dict(zip(old_cols, r))
     try:
-        d["related_gaps"] = json.loads(d["related_gaps"] or "[]")
+        d["related_gaps"] = json.loads(d.get("related_gaps") or "[]")
     except json.JSONDecodeError:
         d["related_gaps"] = []
+    d.setdefault("verification_required", True)
+    d.setdefault("rollback_note", "")
+    # Konvertera int → bool för verification_required
+    d["verification_required"] = bool(d["verification_required"])
     return Proposal(**d)
+

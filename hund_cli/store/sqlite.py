@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS proposals (
     risk TEXT,
     tests_needed TEXT,
     related_gaps TEXT,           -- JSON-lista av gap-id
-    status TEXT DEFAULT 'proposed'  -- proposed|approved|rejected|applied
+    status TEXT DEFAULT 'proposed',  -- proposed|approved|rejected|applied
+    verification_required INTEGER DEFAULT 1,  -- Fas 8: alltid 1 (True)
+    rollback_note TEXT DEFAULT ''             -- Fas 8: rollback-instruktion
 );
 
 CREATE TABLE IF NOT EXISTS knowledge_units (
@@ -82,4 +84,26 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Idempotent schema migrations för befintliga databaser.
+
+    Fas 8: lägg till verification_required + rollback_note till proposals
+    om de saknas (äldre DB som skapades innan fas 8).
+    """
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(proposals)")
+    }
+    if "verification_required" not in existing:
+        conn.execute(
+            "ALTER TABLE proposals ADD COLUMN verification_required INTEGER DEFAULT 1"
+        )
+    if "rollback_note" not in existing:
+        conn.execute(
+            "ALTER TABLE proposals ADD COLUMN rollback_note TEXT DEFAULT ''"
+        )
+    conn.commit()
