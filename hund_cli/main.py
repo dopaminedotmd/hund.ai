@@ -159,8 +159,16 @@ def propose() -> None:
         "markdown-backticks: "
         '{"title","problem","proposed_change",'
         '"change_type" (en av: runtime_policy|skill|hundk|prompt|test),'
-        '"risk","tests_needed"}. '
-        "change_type får ALDRIG vara core/engine/safety/updater — de är TCB."
+        '"risk" (low|medium|high),"tests_needed","rollback_note". '
+        "change_type får ALDRIG vara core/engine/safety/updater — de är TCB. "
+        "Om change_type=skill, inkludera DESSUTOM fält för att bygga en "
+        "oföränderlig, deklarativ skill-fil: "
+        '"skill_name" (kebab-case), "skill_domain", "skill_triggers" (lista), '
+        '"skill_steps" (lista), "skill_forbidden" (lista — OBLIGATORISK, t.ex. '
+        '["delete","push","modify_tcb"]), "skill_verification" (lista — '
+        'OBLIGATORISK, hur man bekräftar att skillen verkligen applicerades), '
+        'valfritt "skill_required_tools" och "skill_when_to_use". '
+        "En skill utan forbidden_actions och verification är OGILTIG."
     )
     client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     try:
@@ -723,13 +731,53 @@ def proposals_show(pid: str = typer.Argument(..., help="id-prefix")) -> None:
 
 
 @proposals_app.command("approve")
-def proposals_approve(pid: str = typer.Argument(...)) -> None:
-    """Mänsklig gate: godkänn en proposal (markerar, applicerar ej auto)."""
+def proposals_approve(
+    pid: str = typer.Argument(..., help="id-prefix"),
+    apply: bool = typer.Option(
+        False, "--apply", "-a",
+        help="Applicera skill-förslag automatiskt (skapar skill-fil i brain/skills/)",
+    ),
+) -> None:
+    """Mänsklig gate: godkänn en proposal.
+
+    Utan --apply: markerar bara "approved" (applicerar ingenting).
+    Med --apply + change_type=skill: bygger + validerar + skriver skill-fil,
+    sätter status "applied". Stänger self-improvement-loopen.
+    """
+    import json as _json
+
     from .selfimprovement import proposal as P
 
+    p = P.get(pid)
+    if not p:
+        console.print("[yellow]ingen proposal matchade[/yellow]")
+        return
+
+    if apply:
+        if p.change_type != "skill":
+            console.print(
+                f"[yellow]--apply stöds endast för change_type=skill "
+                f"(denna är {p.change_type}). Applicera manuellt.[/yellow]"
+            )
+            return
+        try:
+            raw = _json.loads(p.raw_summary) if p.raw_summary else {}
+        except _json.JSONDecodeError:
+            console.print("[red]raw_summary korrupt — kan ej bygga skill.[/red]")
+            return
+        ok, msg = P.apply_skill_proposal(p, raw)
+        if ok:
+            P.set_status(p.id[:8], "applied")
+            console.print(f"[green]skill skapad + applicerad:[/green] {msg}")
+            console.print("[dim]lista: `hund skills list` · visa: `hund skills show <namn>`[/dim]")
+        else:
+            console.print(f"[red]kunde ej applicera:[/red] {msg}")
+        return
+
+    # default: markera bara approved (ursprungligt beteende)
     n = P.set_status(pid, "approved")
     console.print(f"[green]godkänd[/green] {n} proposal." if n else "[yellow]ingen match[/yellow]")
-    console.print("[dim]observera: Hund applicerar ALDRIG auto. Ändra filer manuellt.[/dim]")
+    console.print("[dim]applicera med: hund proposals approve <id> --apply[/dim]")
 
 
 @proposals_app.command("reject")

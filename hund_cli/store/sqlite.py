@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS proposals (
     related_gaps TEXT,           -- JSON-lista av gap-id
     status TEXT DEFAULT 'proposed',  -- proposed|approved|rejected|applied
     verification_required INTEGER DEFAULT 1,  -- Fas 8: alltid 1 (True)
-    rollback_note TEXT DEFAULT ''             -- Fas 8: rollback-instruktion
+    rollback_note TEXT DEFAULT '',            -- Fas 8: rollback-instruktion
+    raw_summary TEXT DEFAULT ''               -- Fas 9.6: LLM:ens fulla JSON (redakterad)
 );
 
 CREATE TABLE IF NOT EXISTS domains (
@@ -122,5 +123,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "rollback_note" not in existing:
         conn.execute(
             "ALTER TABLE proposals ADD COLUMN rollback_note TEXT DEFAULT ''"
+        )
+    # Fas 9.6: raw_summary — LLM:ens fulla JSON-svar (för apply --apply).
+    if "raw_summary" not in existing:
+        conn.execute(
+            "ALTER TABLE proposals ADD COLUMN raw_summary TEXT DEFAULT ''"
         )
     conn.commit()
