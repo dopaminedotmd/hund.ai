@@ -6,6 +6,7 @@ Körningen nås via entrypoint `hund = "hund_cli.main:app"` i pyproject.toml.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +31,18 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+
+def _start_opentui() -> None:
+    """Start OpenTUI via Bun and wait for it to exit."""
+    tui_dir = Path(__file__).resolve().parent.parent / "tui"
+    bun = Path.home() / "AppData" / "Local" / "hermes" / "node" / "node_modules" / "bun" / "bin" / "bun.exe"
+    if not bun.exists():
+        bun = Path("bun")  # fallback — hoppas på PATH
+    process = subprocess.Popen([str(bun), "run", "start"], cwd=tui_dir)
+    exit_code = process.wait()
+    if exit_code:
+        raise typer.Exit(exit_code)
 
 
 # ── Sub-apps ────────────────────────────────────────────────────────────────
@@ -73,8 +86,13 @@ def _root(
         console.print(f"hund {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        console.print(app.get_help(ctx))
-        raise typer.Exit()
+        _start_opentui()
+
+
+@app.command()
+def repl() -> None:
+    """Start OpenTUI explicitly."""
+    _start_opentui()
 
 
 @app.command()
