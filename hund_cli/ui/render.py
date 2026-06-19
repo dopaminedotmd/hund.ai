@@ -20,11 +20,8 @@ def _mini_bar(pct: int, width: int = 8) -> str:
 
 
 def _status_mascot(mascot: Text) -> Text:
-    """Behåll en kompakt maskot; pixel-art ersätts med dess statusikon."""
-    plain = mascot.plain.strip()
-    if "\n" in plain or not plain:
-        return Text("🐕")
-    return mascot.copy()
+    """Kompakt statusindikator — 'hund' istället för pixel-art i statusraden."""
+    return Text("hund ", style="bold")
 
 
 def render_status(
@@ -37,9 +34,10 @@ def render_status(
     """Rendera statusrad: maskot, version, domän, session och meddelanden."""
     status = Text()
     status.append_text(_status_mascot(mascot))
-    status.append(f" Hund {__version__}", style="bold green")
+    status.append(f"Hund {__version__}", style="bold green")
     status.append(" · ", style="dim")
-    status.append(f"{'🔒' if locked else '🧭'} {domain}")
+    dom = domain or "general"
+    status.append(f"{'[LAST] ' if locked else ''}{dom}")
     status.append(" · ", style="dim")
     status.append(f"session #{session_id[:8]}")
     status.append(" · ", style="dim")

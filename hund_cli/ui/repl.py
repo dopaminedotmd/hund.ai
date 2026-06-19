@@ -1,11 +1,11 @@
-"""Hunds terminal-UI — enkel, fungerande.
+"""Hunds terminal-UI — panel-baserad, clean.
 
-Ingen Rich Layout/Live (för buggig med screen=True + input).
-Istället: rendera status överst, konversation därunder, basrad sist,
-med Rich-färger. Input med vanlig console.input().
+Tre sektioner med Rich Panel-borders: status, konversation, basrad.
+Sekventiell rendering — ingen Layout/Live.
 """
 
 from rich.console import Console
+from rich.panel import Panel
 from rich.text import Text
 
 from ..base_stats import compute
@@ -18,15 +18,9 @@ from .render import render_baserad, render_status
 console = Console()
 
 
-def _update_status(
-    session_id: str, msg_count: int, domain: str
-) -> None:
-    status = render_status(render_mascot(), session_id, msg_count, domain, locked=True)
-    console.print(status)
-
-
-def _update_baserad() -> None:
-    console.print(render_baserad(compute()))
+def _section(content, **kw):
+    """Rendera en Panel-sektion utan border overflow."""
+    return Panel(content, padding=(0, 1), border_style="dim", **kw)
 
 
 def run_repl_ui() -> int:
@@ -43,60 +37,65 @@ def run_repl_ui() -> int:
     rt = _init_runtime()
     if not rt.key:
         console.print(
-            f"[red]API-nyckel saknas.[/red] Sätt med `hund setup` eller "
+            f"[red]API-nyckel saknas.[/red] Satt med `hund setup` eller "
             f"`setx {rt.cfg.provider.api_key_env} \"sk-...\"`."
         )
         return 1
 
-    # Intro
-    console.print()
-    _update_status(rt.session_id, 0, rt.domain_hint)
-    _update_baserad()
-    console.print()
+    def _print_header(msg_count=0):
+        mascot = render_mascot()
+        status = render_status(mascot, rt.session_id, msg_count, rt.domain_hint, locked=True)
+        console.print(_section(status))
+        console.print(_section(render_baserad(compute())))
 
-    class SimpleSink:
-        def thinking(self, msg: str = "hund undersöker") -> None:
-            console.print(f"[dim]{msg}...[/dim]")
+    _print_header()
 
-        def chunk(self, text: str) -> None:
-            console.print(text, end="", markup=False, highlight=False)
+    class Sink:
+        def thinking(self, msg="hund undersoker"):
+            console.print(f"  [dim]{msg}...[/dim]")
 
-        def end_assistant(self) -> None:
-            console.print()
-
-        def error(self, msg: str) -> None:
-            console.print(msg)
-
-        def tool_start(self, name: str, args: dict) -> None:
-            target = ""
-            for key in ("path", "pattern", "command", "query", "target"):
-                val = args.get(key)
-                if val:
-                    target = str(val)
-                    break
-            console.print(tool_line(name, target))
-
-        def tool_result(self, name: str, shown: str) -> None:
+        def clear_thinking(self):
             pass
 
-        def blocked(self, name: str, reason: str) -> None:
-            console.print(f"[red]BLOCKERAD[/red] {name} — {reason}")
+        def chunk(self, text):
+            console.print(text, end="", markup=False, highlight=False)
 
-        def declined(self, name: str, reason: str) -> None:
-            console.print(f"[dim]{name} nekad — {reason}[/dim]")
+        def end_assistant(self):
+            console.print()
 
-        def confirm(self, prompt: str) -> bool:
-            answer = console.input(prompt + " ").strip().lower()
+        def error(self, msg):
+            console.print(f"  {msg}")
+
+        def tool_start(self, name, args):
+            target = ""
+            for k in ("path", "pattern", "command", "query", "target"):
+                v = args.get(k)
+                if v:
+                    target = str(v)
+                    break
+            console.print(f"  {tool_line(name, target)}")
+
+        def tool_result(self, name, shown):
+            pass
+
+        def blocked(self, name, reason):
+            console.print(f"  [red]BLOCKERAD[/red] {name} — {reason}")
+
+        def declined(self, name, reason):
+            console.print(f"  [dim]{name} nekad — {reason}[/dim]")
+
+        def confirm(self, prompt):
+            answer = console.input(f"  {prompt} ").strip().lower()
             return answer in {"j", "ja", "y", "yes"}
 
         on_chunk = chunk
         on_thinking = thinking
         on_error = error
 
-        def on_tool(self, name: str, args: dict) -> None:
+        def on_tool(self, name, args):
             self.tool_start(name, args)
 
-    sink = SimpleSink()
+    sink = Sink()
 
     while True:
         try:
@@ -116,7 +115,7 @@ def run_repl_ui() -> int:
             continue
         if user == "/tools":
             console.print(
-                ", ".join(f"{tool.name}({tool.base_risk})" for tool in registry.all_tools())
+                ", ".join(f"{t.name}({t.base_risk})" for t in registry.all_tools())
             )
             continue
 
@@ -138,9 +137,10 @@ def run_repl_ui() -> int:
         if compressed.compressed:
             rt.messages[:] = compressed.messages
             console.print(
-                f"[dim]({compressed.dropped_turns} turns komprimerade)[/dim]"
+                f"  [dim]({compressed.dropped_turns} turns komprimerade)[/dim]"
             )
 
+        console.print()
         _agent_turn(
             console,
             rt.client,
@@ -153,12 +153,6 @@ def run_repl_ui() -> int:
         )
         console.print()
         info = S.info(rt.session_id)
-        _update_status(
-            rt.session_id,
-            info["message_count"] if info else len(rt.messages) - 1,
-            rt.domain_hint,
-        )
-        _update_baserad()
-        console.print()
+        _print_header(info["message_count"] if info else len(rt.messages) - 1)
 
     return 0
