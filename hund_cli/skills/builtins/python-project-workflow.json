@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "python-project-workflow",
+  "domain": "software-development",
+  "status": "active",
+  "triggers": ["pytest", "uv", "pyproject.toml", ".py", "lint", "format", "build", "ruff", "mypy"],
+  "when_to_use": "När användaren arbetar i ett Python-projekt. Utökar python-project-inspection med lint, format, build och test-workflows.",
+  "steps": [
+    "Innan ändringar: kör uv run pytest för att etablera baseline.",
+    "Efter ändringar: kör uv run pytest igen för att verifiera inga regressioner.",
+    "Föreslå linting med ruff och typkontroll med mypy när relevant.",
+    "Använd uv för pakethantering och körning — inte pip eller python direkt.",
+    "Vid byggfel: läs felet, spåra till källfilen, föreslå minimal fix."
+  ],
+  "required_tools": ["read_file", "search_files", "terminal"],
+  "forbidden_actions": ["delete", "push"],
+  "safety_level": "confirm_for_write",
+  "verification": ["uv run pytest"],
+  "examples": []
+}

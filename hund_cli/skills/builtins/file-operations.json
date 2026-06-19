@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "file-operations",
+  "domain": "general",
+  "status": "active",
+  "triggers": ["write", "delete", "patch", "create", "remove", "overwrite", "modify"],
+  "when_to_use": "När filer ska skapas, ändras eller raderas. Skyddade sökvägar respekteras alltid.",
+  "steps": [
+    "Kontrollera att sökvägen inte är skyddad (system/, apps/, brain/, config).",
+    "För destruktiva operationer (delete, overwrite): fråga användaren först.",
+    "För overwrite: skapa backup innan ändring.",
+    "Verifiera att filen skrevs korrekt efter operationen."
+  ],
+  "required_tools": ["read_file", "write_file", "terminal"],
+  "forbidden_actions": ["delete", "modify_tcb"],
+  "safety_level": "confirm_for_write",
+  "verification": ["read_file efter write för att bekräfta innehåll"],
+  "examples": []
+}

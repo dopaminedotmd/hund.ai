@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "systematic-debugging",
+  "domain": "software-development",
+  "status": "active",
+  "triggers": ["error", "bug", "traceback", "exception", "crash", "failed", "fix", "debug"],
+  "when_to_use": "När ett fel har uppstått och måste förstås innan det åtgärdas. 4-fas: förstå → reproducera → diagnostisera → fixa.",
+  "steps": [
+    "Fas 1 — Förstå: Läs felmeddelandet noggrant. Identifiera exakt var felet uppstår.",
+    "Fas 2 — Reproducera: Kör relevant test eller kommando för att återskapa felet.",
+    "Fas 3 — Diagnostisera: Spåra rotorsaken, inte symptomet. Använd sökverktyg för att hitta definitioner.",
+    "Fas 4 — Fixa: Gör minimal ändring som adresserar rotorsaken. Verifiera att felet är borta och inga regressioner.",
+    "Föreslå aldrig en fix utan att ha gått igenom alla fyra faserna."
+  ],
+  "required_tools": ["read_file", "search_files", "terminal"],
+  "forbidden_actions": ["push", "delete"],
+  "safety_level": "read_only",
+  "verification": ["uv run pytest efter fix"],
+  "examples": []
+}

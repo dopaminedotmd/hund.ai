@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "name": "git-safety",
+  "domain": "software-development",
+  "status": "active",
+  "triggers": ["git", "commit", "push", "branch", "merge", "rebase", "pull request"],
+  "when_to_use": "När git-operationer ska utföras. Status före diff, diff före commit, aldrig push utan uttryckligt godkännande.",
+  "steps": [
+    "Kör git status för att se aktuellt tillstånd.",
+    "Kör git diff --stat för att se vad som ändrats.",
+    "Visa sammanfattning av ändringar för användaren före commit.",
+    "Begär uttryckligt godkännande före push — aldrig pusha automatiskt.",
+    "Blockera force-push och rebase utan användarens explicita kommando."
+  ],
+  "required_tools": ["terminal"],
+  "forbidden_actions": ["push", "force_push", "rebase"],
+  "safety_level": "confirm_for_write",
+  "verification": ["git status"],
+  "examples": []
+}

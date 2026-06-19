@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "environment-profiling",
+  "domain": "general",
+  "status": "active",
+  "triggers": ["doctor", "system", "install", "setup", "hardware", "OS", "cpu", "gpu", "ram", "environment"],
+  "when_to_use": "När Hund behöver förstå eller visa sin hårdvarumiljö. Hund lever i denna maskin — profilen är Hunds hem.",
+  "steps": [
+    "Kör hund doctor för att hämta aktuell miljöprofil (OS, CPU, GPU, RAM, hostname, verktyg).",
+    "Presentera profilen som 'Hunds hem' — inte som en teknisk rapport.",
+    "Notera begränsningar (svag CPU, lite RAM, saknade verktyg) och anpassa beteende.",
+    "Vid 'install' eller 'setup': verifiera att nödvändiga verktyg finns (git, python, uv, node)."
+  ],
+  "required_tools": ["terminal"],
+  "forbidden_actions": ["delete", "push"],
+  "safety_level": "read_only",
+  "verification": ["hund doctor"],
+  "examples": []
+}

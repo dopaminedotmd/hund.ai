@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "name": "knowledge-gap-detection",
+  "domain": "general",
+  "status": "active",
+  "triggers": ["*"],
+  "when_to_use": "INTERN — körs efter varje turn via loop-krok, inte via triggermatchning. Identifierar när Hund saknar domänkunskap och loggar gap-events.",
+  "steps": [
+    "Efter varje svar: reflektera över om Hund saknade kunskap för att ge ett bättre svar.",
+    "Om ja: identifiera domänen (shopify, python, git, etc).",
+    "Logga gap-event till hund.db med domän, trigger-ord och en kort beskrivning av vad som saknades.",
+    "Föreslå inte en study eller proposal automatiskt — bara logga gapet."
+  ],
+  "required_tools": [],
+  "forbidden_actions": ["delete", "modify_tcb"],
+  "safety_level": "read_only",
+  "verification": ["kontrollera att gap-event loggats till hund.db"],
+  "examples": []
+}
