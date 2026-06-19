@@ -80,16 +80,21 @@ def assemble_system_prompt(
     )
 
 
-def run_repl() -> int:
-    console = Console()
+def _init_runtime():
+    """Gemensam init för REPL och Rich-UI. Returnerar SimpleNamespace.
+
+    Sätter upp cfg/key, workspace+tools, engine, profil, persona, domain+knowledge,
+    policy, skills, memory, systemprompt, provider-client, messages + en ny session.
+    Returnerar ns med .key=False-instans (bara cfg+key) om nyckel saknas — anroparen
+    avgör hur det ska visas. Återanvänds av både run_repl (plain) och ui.repl.run_repl_ui
+    så ingen agent-logik dupliceras.
+    """
+    import types
+
     cfg = HundConfig.load()
     key = load_api_key(cfg.provider.api_key_env)
     if not key:
-        console.print(
-            f"[red]API-nyckel saknas.[/red] Sätt med `hund setup` eller "
-            f"`setx {cfg.provider.api_key_env} \"sk-...\"`."
-        )
-        return 1
+        return types.SimpleNamespace(cfg=cfg, key=None)
 
     workspace = (cfg.workspace_root or Path.cwd()).resolve()
     register_defaults(workspace)
@@ -126,6 +131,57 @@ def run_repl() -> int:
     client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     messages: list[Message] = [Message(role="system", content=system_prompt)]
 
+    from . import sessions as S
+
+    session_id = S.create()
+
+    return types.SimpleNamespace(
+        cfg=cfg, key=key, workspace=workspace, schemas=schemas, engine=engine,
+        profile=profile, persona=persona, domain_hint=domain_hint, knowledge=knowledge,
+        policy_rules=policy_rules, skills=skills, memory_lines=memory_lines,
+        client=client, messages=messages, session_id=session_id,
+    )
+
+
+def _stats_text() -> str:
+    """Token/latency-rad som markup-sträng. Delas av REPL och UI."""
+    conn = connect_requests()
+    row = conn.execute(
+        """SELECT COUNT(*), COALESCE(SUM(prompt_tokens),0),
+                  COALESCE(SUM(completion_tokens),0), COALESCE(SUM(latency_ms),0)
+           FROM requests"""
+    ).fetchone()
+    conn.close()
+    n, tin, tout, lat = row
+    return (
+        f"[bold]stats[/bold] · requests: {n} · "
+        f"tokens in/out: {tin}/{tout} · total latency: {lat}ms"
+    )
+
+
+def run_repl() -> int:
+    console = Console()
+    rt = _init_runtime()
+    if not rt.key:
+        console.print(
+            f"[red]API-nyckel saknas.[/red] Sätt med `hund setup` eller "
+            f"`setx {rt.cfg.provider.api_key_env} \"sk-...\"`."
+        )
+        return 1
+
+    cfg = rt.cfg
+    client = rt.client
+    messages = rt.messages
+    schemas = rt.schemas
+    engine = rt.engine
+    profile = rt.profile
+    persona = rt.persona
+    knowledge = rt.knowledge
+    policy_rules = rt.policy_rules
+    skills = rt.skills
+    memory_lines = rt.memory_lines
+    workspace = rt.workspace
+
     # Sessions (fas 9.5 Del B): återuppta senaste aktiv eller skapa ny.
     from . import sessions as S
 
@@ -145,7 +201,7 @@ def run_repl() -> int:
                 messages.append(Message(role=role, content=content))
             console.print(f"[dim]återupptog {active['message_count']} meddelanden.[/dim]")
     if session_id is None:
-        session_id = S.create()
+        session_id = rt.session_id
 
     console.print(
         f"[bold green]Hund {__version__}[/bold green] — agent i din maskin "
@@ -247,30 +303,62 @@ def _session_save(session_id: str | None, role: str, content: str) -> None:
         pass
 
 
-def _agent_turn(console, client, messages, schemas, engine, cfg, session_id) -> None:
-    """Kör agenten (streaming) tills text-svar eller iteration-cap."""
+def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, sink=None) -> None:
+    """Kör agenten (streaming) tills text-svar eller iteration-cap.
+
+    sink (valfritt, duck-typed UI-sink). Givet → streaming/thinking/fel och
+    tool-anrop styrs via sink (se sink-protokollet nedan). Saknas → exakt dagens
+    console-beteende (print rakt ut).
+
+    Sink-protokoll:
+      sink.thinking(msg=...)      innan första token (startar prick-animation)
+      sink.clear_thinking()       vid första token / fel (stoppar animation)
+      sink.chunk(text)            strömmad assistant-token
+      sink.end_assistant()        newline efter strömmad text
+      sink.error(markup)          felrad
+    Dessutom agerar sink som tool-hooks mot dispatch_tool_call (tool_start,
+    confirm, tool_result, blocked, declined) när det givet.
+    """
     for _ in range(MAX_TOOL_ROUNDS):
         parts: list[str] = []
+        if sink is not None:
+            sink.thinking()
+        first = True
         try:
             for chunk in client.stream(messages, tools=schemas):
                 parts.append(chunk)
-                console.print(chunk, end="", markup=False, highlight=False)
+                if sink is not None:
+                    if first:
+                        sink.clear_thinking()
+                        first = False
+                    sink.chunk(chunk)
+                else:
+                    console.print(chunk, end="", markup=False, highlight=False)
         except RuntimeError as e:
-            console.print(f"\n[red]{e}[/red]" if parts else f"[red]{e}[/red]")
+            msg = f"\n[red]{e}[/red]" if parts else f"[red]{e}[/red]"
+            if sink is not None:
+                if first:
+                    sink.clear_thinking()
+                sink.error(msg)
+            else:
+                console.print(msg)
             messages.pop()  # rensa misslyckad user-msg
             return
 
         result = client.last_result
         assert result is not None
         result.text = "".join(parts)
-        if parts:
+        if parts and sink is not None:
+            sink.end_assistant()
+        elif parts:
             console.print()  # newline efter live-text
 
         if not result.tool_calls:
             messages.append(Message(role="assistant", content=result.text))
             _session_save(session_id, "assistant", result.text)
             _log_request(cfg, result, tool_calls=0)
-            console.print()
+            if sink is None:
+                console.print()
             return
 
         # Tool-anrop — logga, dispatch varje (med användarens godkännande)
@@ -280,11 +368,14 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id) -> 
         )
         _session_save(session_id, "assistant", result.text or "")
         for tc in result.tool_calls:
-            outcome = dispatch_tool_call(tc, engine, console)
+            outcome = dispatch_tool_call(tc, engine, console, hooks=sink)
             tc_id = tc.get("id") if isinstance(tc, dict) else None
             messages.append(Message(role="tool", content=outcome, tool_call_id=tc_id))
             _session_save(session_id, "tool", outcome)
-    console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
+    if sink is not None:
+        sink.error("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]")
+    else:
+        console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
 
 
 def _log_request(cfg: HundConfig, result, tool_calls: int) -> None:
@@ -316,17 +407,4 @@ def _log_request(cfg: HundConfig, result, tool_calls: int) -> None:
 
 
 def _show_stats(console: Console) -> None:
-    conn = connect_requests()
-    row = conn.execute(
-        """SELECT COUNT(*),
-                  COALESCE(SUM(prompt_tokens),0),
-                  COALESCE(SUM(completion_tokens),0),
-                  COALESCE(SUM(latency_ms),0)
-           FROM requests"""
-    ).fetchone()
-    conn.close()
-    n, tin, tout, lat = row
-    console.print(
-        f"[bold]stats[/bold] · requests: {n} · "
-        f"tokens in/out: {tin}/{tout} · total latency: {lat}ms"
-    )
+    console.print(_stats_text())

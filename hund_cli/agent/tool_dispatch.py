@@ -52,41 +52,71 @@ def dispatch_tool_call(
     *,
     auto_approve_safe: bool = True,
     noninteractive: bool = False,
+    hooks=None,
 ) -> str:
+    """Kör ett tool-anrop genom säkerhetscirkeln. Returnerar tool-resultatsträng.
+
+    hooks (valfritt, duck-typed) — när givet styrs UI-output via callbacks istället
+    för console.print/input. Säkerhetsvägen (classify/block/approve) är densamma
+    oavsett hooks. hooks=None = exakt tidigare console-beteende.
+
+    Sink-protokoll (se agent/loop.py):
+      hooks.tool_start(name, args)     innan körning (≈ "● läser X")
+      hooks.confirm(prompt) -> bool    True = tillåt (ersätter console.input)
+      hooks.tool_result(name, shown)   efter körning
+      hooks.blocked(name, reason)
+      hooks.declined(name, reason)
+    """
     name, args = _parse(tc)
     decision = engine.classify(name, args)
 
     if decision.risk is RiskLevel.BLOCKED:
         _log_tool(name, decision.risk.value, "blocked", 0)
-        console.print(f"[red]BLOCKERAD[/red] {name} — {decision.reason}")
+        if hooks is not None:
+            hooks.blocked(name, decision.reason)
+        else:
+            console.print(f"[red]BLOCKERAD[/red] {name} — {decision.reason}")
         return f"[blocked] {decision.reason}"
 
     if not (decision.risk is RiskLevel.SAFE and auto_approve_safe):
         if noninteractive:
             _log_tool(name, decision.risk.value, "declined", 0)
-            console.print(f"[yellow]NEKAD[/yellow] (noninteractive) {name} {args}")
-            return f"[declined: {decision.risk} kräver godkännande]"
+            reason = f"{decision.risk} kräver godkännande"
+            if hooks is not None:
+                hooks.declined(name, reason)
+            else:
+                console.print(f"[yellow]NEKAD[/yellow] (noninteractive) {name} {args}")
+            return f"[declined: {reason}]"
         preview = json.dumps(args, ensure_ascii=False)
         if len(preview) > 200:
             preview = preview[:200] + "…"
-        ans = (
-            console.input(
-                f"[yellow]{decision.risk.upper()}[/yellow] Hund vill köra "
-                f"[bold]{name}[/bold] {preview} — tillåt? [j/N] "
-            )
-            .strip()
-            .lower()
+        prompt = (
+            f"[yellow]{decision.risk.upper()}[/yellow] Hund vill köra "
+            f"[bold]{name}[/bold] {preview} — tillåt? [j/N]"
         )
-        if ans not in {"j", "y", "ja", "yes"}:
+        if hooks is not None:
+            approved = hooks.confirm(prompt)
+        else:
+            ans = console.input(prompt + " ").strip().lower()
+            approved = ans in {"j", "y", "ja", "yes"}
+        if not approved:
             _log_tool(name, decision.risk.value, "declined", 0)
-            console.print("[dim]nekad av användare[/dim]")
+            if hooks is not None:
+                hooks.declined(name, "nekad av användare")
+            else:
+                console.print("[dim]nekad av användare[/dim]")
             return "[declined by user]"
         _log_tool(name, decision.risk.value, "approved", 0)
 
+    if hooks is not None:
+        hooks.tool_start(name, args)
     result = registry.call(name, args)
     success = 0 if result.startswith("[error]") else 1
     _log_tool(name, decision.risk.value, "ran", success)
     shown = result if len(result) <= 120 else result[:120] + "…"
-    console.print(f"[dim]tool {name} -> {shown}[/dim]")
+    if hooks is not None:
+        hooks.tool_result(name, shown)
+    else:
+        console.print(f"[dim]tool {name} -> {shown}[/dim]")
     return result
 
