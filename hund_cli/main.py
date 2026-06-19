@@ -194,6 +194,34 @@ def verify() -> None:
     console.print(f"version: {__version__}")
 
 
+@app.command()
+def migrate(
+    from_version: str = typer.Option(
+        "v1", "--from", help="Källversion (v1 = monolit hund.db). Idempotent."
+    ),
+) -> None:
+    """Migrera v1 → v2: monolit hund.db → brain/ + logs/ struktur.
+
+    Flyttar knowledge_units (SQLite→JSON), skills/, policy.json till brain/, och
+    requests/tool_events till logs/. Idempotent — säker att köra flera gånger.
+    """
+    from .knowledge.migrate import migrate as run_migrate
+
+    report = run_migrate()
+    console.print("[bold]hund migrate[/bold] — v1 → v2")
+    if not report["migrated"]:
+        console.print("[dim]ingen gammal hund.db hittades — brain/-struktur säkerställd.[/dim]")
+    console.print(
+        f"  knowledge: {report['domains']} domäner, {report['units']} units (merge per id)"
+    )
+    console.print(f"  skills flyttade: {report['skills']}")
+    console.print(f"  policy flyttad: {'ja' if report['policy'] else 'nej'}")
+    console.print(f"  logs: {report['requests']} requests, {report['tool_events']} tool_events")
+    if report["backup"]:
+        console.print(f"  [dim]backup: {report['backup']}[/dim]")
+    console.print("[green]migrering klar.[/green]")
+
+
 def _privacy_input(text: str, file: Path | None) -> str:
     if file:
         return file.read_text(encoding="utf-8", errors="replace")
@@ -330,7 +358,7 @@ def skills_validate(
 def skills_add(
     path: Path = typer.Argument(..., help="sökväg till skill-JSON att lägga till"),
 ) -> None:
-    """Validera + kopiera en skill till HundHome/skills/."""
+    """Validera + kopiera en skill till brain/skills/."""
     from .skills.loader import add_skill
 
     skill, errors = add_skill(path)

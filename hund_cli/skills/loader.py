@@ -1,8 +1,8 @@
-"""Skill-loader — läs giltiga skills från HundHome/skills/ + paketerade builtins.
+"""Skill-loader — läs giltiga skills från brain/skills/ + paketerade builtins.
 
 Lagringsformat v1: JSON-filer, en skill per fil (`<name>.json`). Paketet skeppar
-inbyggda skills i `builtins/`; användare kan lägga egna i HundHome/skills/ som
-skuggar builtins med samma namn.
+inbyggda skills i `builtins/`; användare kan lägga egna i HundHome/brain/skills/
+(fas 9.5 Del C) som skuggar builtins med samma namn.
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ def skills_dir(home: Path | None = None) -> Path:
     from ..paths import hund_home
 
     base = home if home is not None else hund_home()
-    return base / "skills"
+    return base / "brain" / "skills"
 
 
 def _builtins_dir() -> Path:
@@ -68,7 +68,7 @@ def load_file(path: Path) -> tuple[Skill | None, list[str]]:
 
 
 def add_skill(path: Path, home: Path | None = None) -> tuple[Skill | None, list[str]]:
-    """Kopiera en giltig skill-fil till HundHome/skills/. Return (skill, errors)."""
+    """Kopiera en giltig skill-fil till brain/skills/. Return (skill, errors)."""
     skill, errors = load_file(path)
     if errors or skill is None:
         return None, errors

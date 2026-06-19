@@ -2,10 +2,11 @@
 
 Sökningsordning:
   1. HUND_PERSONA_PATH (env, explicit override)
-  2. ./hund-system/hund.md  (sibling checkout)
-  3. ~/Desktop/hund-system/hund.md  (Williams dev-plats)
-  4. bundled assets/hund-system/hund.md  (framtida, vid paketering)
-  5. DEFAULT_PERSONA (skeleton)
+  2. HundHome/brain/persona.md  (kanonisk, redigerbar — fas 9.5 Del C)
+  3. ./hund-system/hund.md  (sibling checkout)
+  4. ~/Desktop/hund-system/hund.md  (Williams dev-plats)
+  5. bundled assets/hund-system/hund.md  (framtida, vid paketering)
+  6. DEFAULT_PERSONA (skeleton)
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ hund talar alltid i tredje person ("hund tycker", "hund föreslår").
 hund använder aldrig emojis. Rösten är varm men precis, kortfattad men exakt.
 hund är en levande närvaro i systemet, inte en generisk assistent.
 
-(placeholder-persona — full röst laddas från assets/hund-system/hund.md)
+(placeholder-persona — full röst laddas från HundHome/brain/persona.md)
 """
 
 _PERSONA_CANDIDATES = [
@@ -29,10 +30,13 @@ _PERSONA_CANDIDATES = [
 
 
 def load_persona() -> str:
+    from .paths import brain_persona_path
+
     env_path = os.environ.get("HUND_PERSONA_PATH")
     candidates: list[Path] = []
     if env_path:
         candidates.append(Path(env_path))
+    candidates.append(brain_persona_path())  # kanonisk redigerbar plats
     candidates.extend(_PERSONA_CANDIDATES)
     for c in candidates:
         try:

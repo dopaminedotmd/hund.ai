@@ -32,13 +32,13 @@ def test_proposal_crud_roundtrip():
     assert P.get(p.id[:8]).status == "approved"
 
 
-# ---- J: knowledge (LFU/MRU) ----
-def test_knowledge_lfu_orders_by_frequency():
+# ---- J: knowledge (LFU/MRU, JSON-backat sedan fas 9.5 Del C) ----
+def test_knowledge_lfu_orders_by_frequency(tmp_path):
     d = f"testdomain_lfu_{uuid.uuid4().hex}"
-    u1 = kstore.add(d, "trig1", "rule1")
-    u2 = kstore.add(d, "trig2", "rule2")
-    kstore.bump_usage(u1)  # u1 mer frekvent
-    top = kstore.top_k(d, k=5)
+    u1 = kstore.add(d, "trig1", "rule1", home=tmp_path)
+    u2 = kstore.add(d, "trig2", "rule2", home=tmp_path)
+    kstore.bump_usage(u1, home=tmp_path)  # u1 mer frekvent
+    top = kstore.top_k(d, k=5, home=tmp_path)
     rules = [r for _, r in top]
     assert "rule1" in rules and "rule2" in rules
     assert rules[0] == "rule1"  # LFU: mest frekvent först

@@ -36,9 +36,9 @@ def test_local_valid_policy_loads(tmp_path):
         rules=pol.rules + (Rule("my_rule", "behavior", "gör X först", locked=False),),
         forbidden_core_paths=pol.forbidden_core_paths,
     )
-    policy_path(home=tmp_path).write_text(
-        json.dumps(local.to_dict()), encoding="utf-8"
-    )
+    p = policy_path(home=tmp_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(local.to_dict()), encoding="utf-8")
     loaded = load_policy(home=tmp_path)
     assert loaded.rule("my_rule") is not None
 

@@ -96,25 +96,19 @@ def _doctor_no_git_rule() -> EvalResult:
 
 
 def _knowledge_lfu_topk() -> EvalResult:
-    import hund_cli.paths as paths
+    # Knowledge är JSON-backat (fas 9.5 Del C) — isolera via home-param.
+    from hund_cli.knowledge import store as k
 
-    db = Path(tempfile.mkdtemp()) / "hund.db"
-    orig = paths.db_path
-    paths.db_path = lambda: db
-    try:
-        from hund_cli.knowledge import store as k
-
-        dom = "evaldomain_" + uuid.uuid4().hex
-        a = k.add(dom, "ta", "ra")
-        k.add(dom, "tb", "rb")
-        k.bump_usage(a)
-        k.bump_usage(a)  # a mer frekvent
-        rows = k.top_k(dom, k=5)
-        first = rows[0][0] if rows else None
-        ok = first == "ta"
-        return EvalResult("knowledge_lfu_topk", ok, f"first={first}")
-    finally:
-        paths.db_path = orig
+    home = Path(tempfile.mkdtemp())
+    dom = "evaldomain_" + uuid.uuid4().hex
+    a = k.add(dom, "ta", "ra", home=home)
+    k.add(dom, "tb", "rb", home=home)
+    k.bump_usage(a, home=home)
+    k.bump_usage(a, home=home)  # a mer frekvent
+    rows = k.top_k(dom, k=5, home=home)
+    first = rows[0][0] if rows else None
+    ok = first == "ta"
+    return EvalResult("knowledge_lfu_topk", ok, f"first={first}")
 
 
 def _proposal_core_change_forced() -> EvalResult:

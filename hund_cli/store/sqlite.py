@@ -5,8 +5,8 @@ Tre anslutningar (fas 9.5 Del D bröt ut requests/tool_events ur monoliten):
   - connect_requests()     → logs/requests.db
   - connect_tool_events()  → logs/tool_events.db
 
-Schemas initieras idempotente. knowledge_units flyttas till JSON i Del C och
-lämnar därmed core-DB:n; gamla rader migreras via `hund migrate`.
+Schemas initieras idempotente. knowledge_units flyttades till JSON i Del C
+(brain/knowledge/*.json); gamla SQLite-rader migreras via `hund migrate`.
 """
 from __future__ import annotations
 
@@ -44,19 +44,6 @@ CREATE TABLE IF NOT EXISTS domains (
     status TEXT DEFAULT 'candidate',  -- candidate|active|primary|stale
     confidence TEXT,                   -- low|medium|high
     detected_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS knowledge_units (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    domain TEXT,
-    trigger TEXT,                -- nyckelord som aktiverar unit
-    rule TEXT,                   -- själva regeln/lärdomen
-    frequency INTEGER DEFAULT 0, -- LFU: hur ofta använt
-    last_used TEXT,              -- MRU: senast använt
-    success_count INTEGER DEFAULT 0,
-    fail_count INTEGER DEFAULT 0,
-    source TEXT                  -- manual|study|gap
 );
 """
 

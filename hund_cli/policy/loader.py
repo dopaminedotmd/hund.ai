@@ -19,11 +19,11 @@ _VALID_SCOPES = {"prompt", "behavior"}
 
 
 def policy_path(home: Path | None = None) -> Path:
-    """Sökväg till lokal policy.json i HundHome."""
+    """Sökväg till lokal policy.json — brain/policy.json (fas 9.5 Del C)."""
     from ..paths import hund_home
 
     base = home if home is not None else hund_home()
-    return base / "policy.json"
+    return base / "brain" / "policy.json"
 
 
 def validate(policy: Policy, *, baseline: Policy | None = None) -> list[str]:
