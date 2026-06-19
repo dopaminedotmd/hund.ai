@@ -1,12 +1,7 @@
 """Prompt-builder — monterar systemprompt.
 
 DIFFERENTIATORN: miljöprofilen (doctor) injiceras HÄR som beteenderegler, så
-Hundens beteende ändras av hårdvaran. Inte dekoration — funktionellt.
-
-Exempel på regler som aktiveras av profilen:
-  - has_git=False  -> "blockera repo-operationer, fråga användaren"
-  - has_python=False -> "föreslå PowerShell-alternativ"
-  - svag CPU        -> "håll svar kompakta, undvik tunga bakgrundsjobb"
+Hundens beteende ändras av hårdvaran. GPU, RAM, hostname — allt syns.
 """
 from __future__ import annotations
 
@@ -21,6 +16,8 @@ def capability_rules(profile: EnvironmentProfile) -> list[str]:
         rules.append("python saknas -> föreslå PowerShell-alternativ istället för python-script")
     if (profile.cpu_count or 99) <= 4:
         rules.append("begränsad CPU -> håll svar kompakta, undvik tunga bakgrundsjobb")
+    if profile.total_ram_gb and profile.total_ram_gb < 8:
+        rules.append("lågt RAM (<8GB) -> var extra sparsam med minneskrävande operationer")
     if profile.has_node:
         rules.append("node finns -> kan föreslå npm/node-baserade lösningar")
     return rules
@@ -35,9 +32,30 @@ def build_system_prompt(
     skill_summaries: list[str] | None = None,
 ) -> str:
     parts: list[str] = [persona, "", "## Din miljö (du lever här)"]
-    parts.append(f"- OS: {profile.os} {profile.os_version}")
+
+    # OS
+    os_display = profile.os_caption or f"{profile.os} {profile.os_version}"
+    parts.append(f"- OS: {os_display} ({profile.os_arch})" if profile.os_arch else f"- OS: {os_display}")
+    parts.append(f"- Hostname: {profile.hostname or 'okänd'}")
+
+    # CPU
     parts.append(f"- CPU: {profile.processor or 'okänd'} ({profile.cpu_count} kärnor)")
+
+    # GPU
+    if profile.gpu_model:
+        gpu_line = f"- GPU: {profile.gpu_model}"
+        if profile.gpu_vram_mb:
+            gpu_line += f" ({profile.gpu_vram_gb:.1f}GB VRAM)"
+        parts.append(gpu_line)
+
+    # RAM
+    if profile.total_ram_gb:
+        parts.append(f"- RAM: {profile.total_ram_gb:.1f}GB")
+
+    # Shell
     parts.append(f"- Shell: {profile.shell}")
+
+    # Verktyg
     parts.append(
         "- Verktyg: "
         + ", ".join(
@@ -45,6 +63,7 @@ def build_system_prompt(
         )
     )
 
+    # Beteenderegler baserade på hårdvara
     rules = capability_rules(profile)
     if rules:
         parts.append("")
