@@ -15,6 +15,11 @@ Layout (växer in):
     │   ├── policy.json
     │   ├── skills/
     │   └── knowledge/
+    ├── memory/              # persistent användarminne (fas 9.5 Del A)
+    │   ├── user.md
+    │   └── environment.md
+    ├── sessions/            # sessionsarkiv + FTS5 (fas 9.5 Del B)
+    │   └── sessions.db
     ├── experience/          # telemetry/learning lokalt
     └── backups/             # rollback snapshots
 """
@@ -40,6 +45,8 @@ def ensure_home() -> Path:
     (home / "logs").mkdir(parents=True, exist_ok=True)
     (home / "brain" / "skills").mkdir(parents=True, exist_ok=True)
     (home / "brain" / "knowledge").mkdir(parents=True, exist_ok=True)
+    (home / "memory").mkdir(parents=True, exist_ok=True)
+    (home / "sessions").mkdir(parents=True, exist_ok=True)
     return home
 
 
@@ -84,3 +91,25 @@ def brain_policy_path() -> Path:
 
 def brain_persona_path() -> Path:
     return brain_dir() / "persona.md"
+
+
+def memory_dir() -> Path:
+    """Persistent användarminne — ej under brain/. Fas 9.5 Del A."""
+    return hund_home() / "memory"
+
+
+def memory_user_path() -> Path:
+    return memory_dir() / "user.md"
+
+
+def memory_env_path() -> Path:
+    return memory_dir() / "environment.md"
+
+
+def sessions_dir() -> Path:
+    """Sessionsarkiv + FTS5-index. Fas 9.5 Del B."""
+    return hund_home() / "sessions"
+
+
+def sessions_db_path() -> Path:
+    return sessions_dir() / "sessions.db"

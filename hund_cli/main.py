@@ -41,6 +41,8 @@ policy_app = typer.Typer(help="Runtime policy (deklarativ, ej core-kod).")
 skills_app = typer.Typer(help="Deklarativa skills (inte exekverbar kod).")
 domains_app = typer.Typer(help="Domain detection (grovt, offline).")
 eval_app = typer.Typer(help="Eval/benchmark/regression (bevisbarhet).")
+memory_app = typer.Typer(help="Persistent användarminne (user.md + environment.md).")
+sessions_app = typer.Typer(help="Sessionsarkiv + fulltext-sök.")
 app.add_typer(learning_app, name="learning")
 app.add_typer(proposals_app, name="proposals")
 app.add_typer(knowledge_app, name="knowledge")
@@ -50,6 +52,8 @@ app.add_typer(policy_app, name="policy")
 app.add_typer(skills_app, name="skills")
 app.add_typer(domains_app, name="domains")
 app.add_typer(eval_app, name="eval")
+app.add_typer(memory_app, name="memory")
+app.add_typer(sessions_app, name="sessions")
 
 
 @app.callback(invoke_without_command=True)
@@ -220,6 +224,58 @@ def migrate(
     if report["backup"]:
         console.print(f"  [dim]backup: {report['backup']}[/dim]")
     console.print("[green]migrering klar.[/green]")
+
+
+# ---- memory (fas 9.5 Del A) ----
+@memory_app.command("show")
+def memory_show() -> None:
+    """Visa allt persistent minne (user.md + environment.md)."""
+    from . import memory as M
+
+    M.ensure_seed()
+    console.print(M.show(), markup=True, highlight=False)
+
+
+@memory_app.command("update")
+def memory_update(
+    name: str = typer.Argument("user", help="vilket minne (endast 'user' stöds)."),
+) -> None:
+    """Interaktiv uppdatering av user.md (en bullet per rad, tom rad avslutar)."""
+    from . import memory as M
+
+    if name != "user":
+        console.print(f"[red]okänt minne '{name}'[/red] (endast 'user' stöds)")
+        raise typer.Exit(1)
+    M.ensure_seed()
+    console.print("[bold]nuvarande user.md-bullets:[/bold]")
+    for b in M.user_bullets():
+        console.print(f"  - {b}", markup=False)
+    console.print("[dim]nya bullets, en per rad. tom rad avslutar.[/dim]")
+    lines: list[str] = []
+    while True:
+        try:
+            line = console.input("[bold]bullet>[/bold] ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not line:
+            break
+        clean = line[2:].strip() if line.startswith("- ") else line
+        if clean:
+            lines.append(clean)
+    text = "\n".join(f"- {l}" for l in lines)
+    p = M.update_user(text)
+    console.print(f"[green]sparat:[/green] {p} ({len(lines)} bullets)")
+
+
+@memory_app.command("refresh-env")
+def memory_refresh_env() -> None:
+    """Kör doctor → skriv/overskriv environment.md (hårdvarusnapshot)."""
+    from . import memory as M
+    from .doctor import profile_environment
+
+    profile = profile_environment()
+    p = M.refresh_env(profile, force=True)
+    console.print(f"[green]environment.md uppdaterad:[/green] {p}")
 
 
 def _privacy_input(text: str, file: Path | None) -> str:

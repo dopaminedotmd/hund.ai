@@ -59,11 +59,12 @@ def assemble_system_prompt(
     policy_rules: list[str] | None = None,
     skills: list | None = None,
     user_text: str = "",
+    memory_lines: list[str] | None = None,
 ) -> str:
     """Bygg systemprompt med deklarativa lager.
 
-    Policy är session-stabil. Skills matchas mot senaste användartexten så bara
-    relevanta sammanfattningar injiceras (inte hela biblioteket). Ren funktion
+    Policy/memory är session-stabila. Skills matchas mot senaste användartexten så
+    bara relevanta sammanfattningar injiceras (inte hela biblioteket). Ren funktion
     → testbar utan provider/DB.
     """
     from ..skills.matcher import summaries as _summaries
@@ -75,6 +76,7 @@ def assemble_system_prompt(
         knowledge=knowledge or None,
         policy_rules=policy_rules or None,
         skill_summaries=summ or None,
+        memory_lines=memory_lines or None,
     )
 
 
@@ -110,9 +112,16 @@ def run_repl() -> int:
         knowledge = []
     policy_rules = _safe_policy_rules()
     skills = _safe_skills()
+    # Persistent minne (fas 9.5 Del A): seed user.md, snapshot env vid första körning.
+    from .. import memory as _memory
+
+    _memory.ensure_seed()
+    if not _memory.env_path().exists():
+        _memory.refresh_env(profile)
+    memory_lines = _memory.inject()
     system_prompt = assemble_system_prompt(
         persona, profile, knowledge=knowledge, policy_rules=policy_rules,
-        skills=skills, user_text="",
+        skills=skills, user_text="", memory_lines=memory_lines,
     )
     client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     messages: list[Message] = [Message(role="system", content=system_prompt)]
@@ -151,6 +160,7 @@ def run_repl() -> int:
             content=assemble_system_prompt(
                 persona, profile, knowledge=knowledge,
                 policy_rules=policy_rules, skills=skills, user_text=user,
+                memory_lines=memory_lines,
             ),
         )
         # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.

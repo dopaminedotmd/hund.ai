@@ -30,8 +30,18 @@ def build_system_prompt(
     knowledge: list[tuple[str, str]] | None = None,
     policy_rules: list[str] | None = None,
     skill_summaries: list[str] | None = None,
+    memory_lines: list[str] | None = None,
 ) -> str:
-    parts: list[str] = [persona, "", "## Din miljö (du lever här)"]
+    parts: list[str] = [persona]
+
+    # Persistent minne (user.md) — EFTER persona, FÖRE miljöprofilen (fas 9.5 Del A)
+    if memory_lines:
+        parts.append("")
+        parts.append("## Persistent minne")
+        parts.extend(f"- {m}" for m in memory_lines)
+
+    parts.append("")
+    parts.append("## Din miljö (du lever här)")
 
     # OS
     os_display = profile.os_caption or f"{profile.os} {profile.os_version}"
