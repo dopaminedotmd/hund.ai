@@ -34,7 +34,7 @@ class LiveSink:
 
     def _refresh(self) -> None:
         content = Group(*self.conv_lines) if self.conv_lines else Text("")
-        self.layout["conversation"].update(Panel(content, padding=(0, 1)))
+        self.layout["conversation"].update(Panel(content, padding=(0, 1), border_style="dim"))
         self.live.refresh()
 
     def add_line(self, line: Text | str, *, markup: bool = False) -> int:
@@ -149,8 +149,8 @@ def _update_fixed_zones(
     domain: str,
 ) -> None:
     status = render_status(render_mascot(), session_id, msg_count, domain, locked=True)
-    layout["status"].update(Panel(status, height=1, padding=0))
-    layout["baserad"].update(Panel(render_baserad(compute()), height=1, padding=0))
+    layout["status"].update(Panel(status, height=1, padding=0, border_style="dim"))
+    layout["baserad"].update(Panel(render_baserad(compute()), height=1, padding=0, border_style="dim"))
 
 
 def run_repl_ui() -> int:
@@ -182,7 +182,7 @@ def run_repl_ui() -> int:
         Layout(name="baserad", size=1),
     )
     conv_lines: list[Text] = []
-    layout["conversation"].update(Panel(Text(""), padding=(0, 1)))
+    layout["conversation"].update(Panel(Text(""), padding=(0, 1), border_style="dim"))
     _update_fixed_zones(
         layout,
         session_id=rt.session_id,
@@ -195,7 +195,7 @@ def run_repl_ui() -> int:
         live.refresh()
         while True:
             try:
-                user = live.console.input("[bold green]du>[/bold green] ").strip()
+                user = live.console.input("").strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not user:
