@@ -195,7 +195,7 @@ def run_repl_ui() -> int:
         live.refresh()
         while True:
             try:
-                user = live.console.input("").strip()
+                user = live.console.input("[bold green]du>[/bold green] ").strip()
             except (EOFError, KeyboardInterrupt):
                 break
             if not user:
