@@ -26,7 +26,7 @@ def test_render_baserad_handles_three_honest_stats():
 
     rendered = render_baserad(stats).plain
 
-    assert rendered.startswith("TEF strong │ SPD ok │ JDG weak 62% ")
+    assert rendered.startswith("TEF strong | SPD ok | JDG weak 62% ")
     assert "████░░░░" in rendered
     assert rendered.endswith("/exit · /stats · /profile · /tools")
 
