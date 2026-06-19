@@ -33,7 +33,14 @@ class LiveSink:
         self._lock = threading.RLock()
 
     def _refresh(self) -> None:
-        content = Group(*self.conv_lines) if self.conv_lines else Text("")
+        # Ankra konversationen i botten — nyaste meddelandet närmast basraden
+        term_h = self.live.console.size.height
+        panel_h = max(1, term_h - 4)  # minus status(1) + baserad(1) + panel borders(2)
+        visible = self.conv_lines[-panel_h:] if len(self.conv_lines) > panel_h else self.conv_lines
+        # Pad från toppen så innehållet skjuts ner
+        pad_count = max(0, panel_h - len(visible))
+        padded = [Text("")] * pad_count + list(visible)
+        content = Group(*padded) if padded else Text("")
         self.layout["conversation"].update(Panel(content, padding=(0, 1), border_style="dim"))
         self.live.refresh()
 
