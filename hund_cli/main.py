@@ -278,6 +278,66 @@ def memory_refresh_env() -> None:
     console.print(f"[green]environment.md uppdaterad:[/green] {p}")
 
 
+# ---- sessions (fas 9.5 Del B) ----
+@sessions_app.command("list")
+def sessions_list(
+    limit: int = typer.Option(10, "--limit", "-n", help="antal sessioner"),
+) -> None:
+    """Senaste sessioner."""
+    from .agent import sessions as S
+
+    rows = S.list_sessions(limit=limit)
+    if not rows:
+        console.print("(inga sessioner ännu)")
+        return
+    for sid, created, title, count, act in rows:
+        mark = "*" if act else " "
+        console.print(f"{mark} #{sid[:8]} ({count} msg) {title[:40]} — {created}", markup=False)
+
+
+@sessions_app.command("show")
+def sessions_show(
+    sid: str = typer.Argument(..., help="session-id (prefix OK)"),
+) -> None:
+    """Visa metadata + meddelandecount för en session."""
+    from .agent import sessions as S
+
+    info = S.info(sid)
+    if not info:
+        console.print(f"[yellow]ingen session '{sid}'[/yellow]")
+        raise typer.Exit(1)
+    console.print(f"[bold]#{info['id'][:8]}[/bold] {'(aktiv)' if info['active'] else ''}")
+    console.print(f"title: {info['title'] or '(ingen)'}", markup=False)
+    console.print(f"skapad: {info['created_at']}", markup=False)
+    console.print(f"meddelanden: {info['message_count']}")
+
+
+@sessions_app.command("search")
+def sessions_search(
+    q: str = typer.Argument(..., help="fulltext-sökterm"),
+) -> None:
+    """Fulltext-sök över alla sessionsmeddelanden (FTS5)."""
+    from .agent import sessions as S
+
+    rows = S.search(q)
+    if not rows:
+        console.print(f"(inga träffar för '{q}')")
+        return
+    for session_id, role, snip, created in rows:
+        console.print(f"#{session_id[:8]} [{role}] {snip} — {created}", markup=False)
+
+
+@sessions_app.command("delete")
+def sessions_delete(
+    sid: str = typer.Argument(..., help="session-id (prefix OK)"),
+) -> None:
+    """Radera en session + dess meddelanden."""
+    from .agent import sessions as S
+
+    n = S.delete(sid)
+    console.print(f"[green]raderade[/green] {n} session." if n else "[yellow]ingen match[/yellow]")
+
+
 def _privacy_input(text: str, file: Path | None) -> str:
     if file:
         return file.read_text(encoding="utf-8", errors="replace")

@@ -126,9 +126,31 @@ def run_repl() -> int:
     client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     messages: list[Message] = [Message(role="system", content=system_prompt)]
 
+    # Sessions (fas 9.5 Del B): återuppta senaste aktiv eller skapa ny.
+    from . import sessions as S
+
+    session_id: str | None = None
+    active = S.get_active()
+    if active and active["message_count"] > 0:
+        try:
+            ans = console.input(
+                f"Återuppta session #{active['id'][:8]} "
+                f"({active['message_count']} meddelanden)? [j/N] "
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = ""
+        if ans in ("j", "ja", "y", "yes"):
+            session_id = active["id"]
+            for role, content in S.history(session_id):
+                messages.append(Message(role=role, content=content))
+            console.print(f"[dim]återupptog {active['message_count']} meddelanden.[/dim]")
+    if session_id is None:
+        session_id = S.create()
+
     console.print(
         f"[bold green]Hund {__version__}[/bold green] — agent i din maskin "
-        f"({profile.os}, {profile.cpu_count} kärnor, ws: {workspace.name}). " + HELP
+        f"({profile.os}, {profile.cpu_count} kärnor, ws: {workspace.name}). "
+        f"[dim]/sessions · /exit[/dim]"
     )
 
     while True:
@@ -153,7 +175,46 @@ def run_repl() -> int:
             )
             continue
 
+        # /sessions — list | search <q> | resume <id> | new
+        if user == "/sessions" or user.startswith("/sessions"):
+            rest = user[len("/sessions"):].strip()
+            if not rest:
+                rows = S.list_sessions(limit=5)
+                if not rows:
+                    console.print("(inga sessioner)")
+                for sid, created, title, count, act in rows:
+                    mark = "*" if act else " "
+                    console.print(f"{mark} #{sid[:8]} ({count}) {title[:40]} — {created}")
+                continue
+            sub, _, arg = rest.partition(" ")
+            arg = arg.strip()
+            if sub == "search":
+                hits = S.search(arg)
+                if not hits:
+                    console.print(f"(inga träffar för '{arg}')")
+                for sid_, role, snip, created in hits:
+                    console.print(f"#{sid_[:8]} [{role}] {snip} — {created}", markup=False)
+                continue
+            if sub == "resume":
+                if S.set_active(arg):
+                    session_id = S.get_active()["id"]
+                    del messages[1:]  # behåll systemprompt
+                    for role, content in S.history(session_id):
+                        messages.append(Message(role=role, content=content))
+                    console.print(f"[green]byt till session #{session_id[:8]}[/green]")
+                else:
+                    console.print(f"[yellow]ingen session matchade '{arg}'[/yellow]")
+                continue
+            if sub == "new":
+                session_id = S.create()
+                del messages[1:]
+                console.print(f"[green]ny session #{session_id[:8]}[/green]")
+                continue
+            console.print("[yellow]användning: /sessions [search <q> | resume <id> | new][/yellow]")
+            continue
+
         messages.append(Message(role="user", content=user))
+        _session_save(session_id, "user", user)
         # Matcha skills mot senaste användartexten → endast relevanta injiceras.
         messages[0] = Message(
             role="system",
@@ -170,11 +231,23 @@ def run_repl() -> int:
             console.print(
                 f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
             )
-        _agent_turn(console, client, messages, schemas, engine, cfg)
+        _agent_turn(console, client, messages, schemas, engine, cfg, session_id)
     return 0
 
 
-def _agent_turn(console, client, messages, schemas, engine, cfg) -> None:
+def _session_save(session_id: str | None, role: str, content: str) -> None:
+    """Spara meddelande till aktiv session. Får ej krascha agentloopen."""
+    if not session_id or not content:
+        return
+    try:
+        from . import sessions as S
+
+        S.add_message(session_id, role, content)
+    except Exception:
+        pass
+
+
+def _agent_turn(console, client, messages, schemas, engine, cfg, session_id) -> None:
     """Kör agenten (streaming) tills text-svar eller iteration-cap."""
     for _ in range(MAX_TOOL_ROUNDS):
         parts: list[str] = []
@@ -195,6 +268,7 @@ def _agent_turn(console, client, messages, schemas, engine, cfg) -> None:
 
         if not result.tool_calls:
             messages.append(Message(role="assistant", content=result.text))
+            _session_save(session_id, "assistant", result.text)
             _log_request(cfg, result, tool_calls=0)
             console.print()
             return
@@ -204,10 +278,12 @@ def _agent_turn(console, client, messages, schemas, engine, cfg) -> None:
         messages.append(
             Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
         )
+        _session_save(session_id, "assistant", result.text or "")
         for tc in result.tool_calls:
             outcome = dispatch_tool_call(tc, engine, console)
             tc_id = tc.get("id") if isinstance(tc, dict) else None
             messages.append(Message(role="tool", content=outcome, tool_call_id=tc_id))
+            _session_save(session_id, "tool", outcome)
     console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
 
 
