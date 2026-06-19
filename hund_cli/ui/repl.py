@@ -1,94 +1,108 @@
-"""Hunds terminal-UI — helt strippad, clean, minimal.
+"""Hunds terminal-UI — luftig, designad, Rich-baserad.
 
-Inga paneler. Inga borders. Inget "hund undersoker".
-En rad status. Konversation. En rad stats. Input.
+Layout per turn:
+  ─── status · stats ───
+  du> input
+
+    indragen respons
+
+  du> _
 """
 
 from rich.console import Console
+from rich.rule import Rule
 from rich.text import Text
 
 from .. import __version__
 from ..base_stats import compute
 from ..providers.base import Message
 from ..tools import registry
-from .render import render_baserad
 
 console = Console()
 CREAM = "#E8E0D5"
+RULE = "#a09080"
 
 
-def _status_line(session_id: str, msg_count: int, domain: str) -> str:
+def _header(session_id: str, msg_count: int, domain: str) -> None:
     dom = domain or "general"
     sid = session_id[:8]
-    return f"hund {__version__}  {dom}  #{sid}  {msg_count} msg"
-
-
-def _stats_line() -> str:
     stats = compute()
     parts = []
     for key in ("token_efficiency", "speed", "tool_judgment"):
-        data = stats.get(key, {})
-        level = data.get("level", "n/a")
-        pct = data.get("success_rate_pct")
-        label = {"token_efficiency": "tef", "speed": "spd", "tool_judgment": "jdg"}[key]
-        part = f"{label} {level}"
+        d = stats.get(key, {})
+        lvl = d.get("level", "n/a")
+        pct = d.get("success_rate_pct")
+        lbl = {"token_efficiency": "tef", "speed": "spd", "tool_judgment": "jdg"}[key]
+        s = f"{lbl} {lvl}"
         if isinstance(pct, (int, float)):
-            part += f" {round(pct)}%"
-        parts.append(part)
-    return "  |  ".join(parts)
+            s += f" {round(pct)}%"
+        parts.append(s)
+
+    left = Text()
+    left.append("hund ", style=f"bold {CREAM}")
+    left.append(f"{__version__}", style=CREAM)
+    left.append(f"  {dom}  #{sid}  {msg_count} msg", style="dim")
+
+    right = Text("  " + "  |  ".join(parts), style="dim")
+
+    console.print(Rule(style=RULE))
+    console.print(left, right)
+    console.print()
+
+
+def _response(text: str) -> None:
+    for line in text.strip().split("\n"):
+        console.print(f"  {line}")
+    console.print()
 
 
 def run_repl_ui() -> int:
     from ..agent import sessions as S
     from ..agent.context import maybe_compress
     from ..agent.loop import (
-        _agent_turn,
-        _init_runtime,
-        _session_save,
-        _stats_text,
-        assemble_system_prompt,
+        _agent_turn, _init_runtime, _session_save,
+        _stats_text, assemble_system_prompt,
     )
 
     rt = _init_runtime()
     if not rt.key:
-        console.print(f"[red]API-nyckel saknas.[/red]")
+        console.print("[red]API-nyckel saknas.[/red]")
         return 1
 
-    # Header — en gång
-    console.print(f"[{CREAM}]{_status_line(rt.session_id, 0, rt.domain_hint)}[/{CREAM}]")
-    console.print(f"[dim]{_stats_line()}[/dim]")
-    console.print()
+    _header(rt.session_id, 0, rt.domain_hint)
+
+    response_buffer: list[str] = []
 
     class Sink:
         def thinking(self, msg=""):
-            pass  # tyst — inget "hund undersoker"
+            pass
 
         def clear_thinking(self):
             pass
 
         def chunk(self, text):
-            console.print(text, end="", markup=False, highlight=False)
+            response_buffer.append(text)
 
         def end_assistant(self):
-            console.print()
+            pass
 
         def error(self, msg):
-            console.print(f"[red]{msg}[/red]")
+            response_buffer.append(f"[red]{msg}[/red]")
 
         def tool_start(self, name, args):
-            pass  # tyst
+            pass
 
         def tool_result(self, name, shown):
             pass
 
         def blocked(self, name, reason):
-            console.print(f"[red]blocked: {name}[/red]")
+            response_buffer.append(f"[red]blocked: {name}[/red]")
 
         def declined(self, name, reason):
-            console.print(f"[dim]nekad: {name}[/dim]")
+            pass
 
         def confirm(self, prompt):
-            return console.input(f"[{CREAM}]{prompt} [j/N][/{CREAM}] ").strip().lower() in {"j", "ja", "y", "yes"}
+            return console.input(f"  [{CREAM}]{prompt} [j/N][/{CREAM}] ").strip().lower() in {"j", "ja", "y", "yes"}
 
         on_chunk = chunk
         on_thinking = thinking
@@ -101,7 +115,7 @@ def run_repl_ui() -> int:
 
     while True:
         try:
-            user = console.input(f"[{CREAM}]du>[/{CREAM}] ").strip()
+            user = console.input(f"[{CREAM}]du> [/{CREAM}]").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not user:
@@ -109,14 +123,19 @@ def run_repl_ui() -> int:
         if user in {"/exit", "/quit"}:
             break
         if user == "/stats":
-            console.print(_stats_text())
+            console.print(f"  {_stats_text()}")
+            console.print()
             continue
         if user == "/profile":
-            console.print(rt.profile.summary())
+            console.print(f"  {rt.profile.summary()}")
+            console.print()
             continue
         if user == "/tools":
-            console.print(", ".join(f"{t.name}" for t in registry.all_tools()))
+            console.print(f"  {', '.join(t.name for t in registry.all_tools())}")
+            console.print()
             continue
+
+        console.print()
 
         rt.messages.append(Message(role="user", content=user))
         _session_save(rt.session_id, "user", user)
@@ -129,19 +148,18 @@ def run_repl_ui() -> int:
                 memory_lines=rt.memory_lines,
             ),
         )
-        compressed = maybe_compress(rt.messages)
-        if compressed.compressed:
-            rt.messages[:] = compressed.messages
+        maybe_compress(rt.messages)
 
+        response_buffer.clear()
         _agent_turn(
             console, rt.client, rt.messages, rt.schemas,
             rt.engine, rt.cfg, rt.session_id, sink=sink,
         )
-        console.print()
+
+        full = "".join(response_buffer)
+        _response(full)
 
         info = S.info(rt.session_id)
-        msg_count = info["message_count"] if info else len(rt.messages) - 1
-        console.print(f"[dim]{_status_line(rt.session_id, msg_count, rt.domain_hint)}  {_stats_line()}[/dim]")
-        console.print()
+        _header(rt.session_id, info["message_count"] if info else len(rt.messages) - 1, rt.domain_hint)
 
     return 0
