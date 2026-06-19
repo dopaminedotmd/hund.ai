@@ -1,0 +1,20 @@
+{
+  "system_name": "hund-system",
+  "schema_version": "1.0",
+  "persona_file": "hund.md",
+  "runtime_policy": "RUNTIME_POLICY.md",
+  "environment_file": ".state/environment.json",
+  "manifest_file": ".state/manifest.json",
+  "memory_summary": "memory_summary.md",
+  "reasoning_bank": "REASONING_BANK.md",
+  "skill_index": "skills/SKILL_INDEX.md",
+  "startup_entrypoint": "scripts/boot_hund.ps1",
+  "compat_entrypoints": {
+    "start": "scripts/start_hund.ps1",
+    "collect_environment": "scripts/collect_environment.ps1",
+    "verify": "scripts/verify_hund.ps1"
+  },
+  "last_verified": null,
+  "environment_is_machine_specific": true,
+  "persona_semantics_locked": true
+}

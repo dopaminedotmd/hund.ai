@@ -63,19 +63,11 @@ def _redactor_known_api_key() -> EvalResult:
 def _provider_no_key_fails_clean() -> EvalResult:
     from hund_cli import secrets
 
-    fake = types.ModuleType("keyring")
-    fake.get_password = lambda *a, **k: None
-    saved = sys.modules.get("keyring")
-    sys.modules["keyring"] = fake
     old_env = dict(os.environ)
     os.environ.pop("HUND_EVAL_KEY_X", None)
     try:
         v = secrets.load_api_key("HUND_EVAL_KEY_X")
     finally:
-        if saved is not None:
-            sys.modules["keyring"] = saved
-        else:
-            sys.modules.pop("keyring", None)
         os.environ.clear()
         os.environ.update(old_env)
     return EvalResult("provider_no_key_fails_clean", not v, f"returned {v!r}")

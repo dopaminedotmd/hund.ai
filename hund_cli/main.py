@@ -31,7 +31,8 @@ app = typer.Typer(
 )
 console = Console()
 
-# Sub-apps
+
+# ── Sub-apps ────────────────────────────────────────────────────────────────
 learning_app = typer.Typer(help="Lokal learning/gap-events. Aldrig extern upload.")
 proposals_app = typer.Typer(help="Self-improvement proposals (deklarativa, human-gated).")
 knowledge_app = typer.Typer(help="Kunskapsenheter (LFU/MRU).")
@@ -72,9 +73,8 @@ def _root(
         console.print(f"hund {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        from .ui.repl import run_repl_ui
-
-        raise SystemExit(run_repl_ui())
+        console.print(app.get_help(ctx))
+        raise typer.Exit()
 
 
 @app.command()
@@ -90,27 +90,11 @@ def doctor() -> None:
     console.print(profile)
 
 
-@app.command("ui")
-def ui_start() -> None:
-    """Starta Hund med Rich terminal-UI."""
-    from hund_cli.ui.repl import run_repl_ui
-
-    raise SystemExit(run_repl_ui())
-
-
-@app.command("repl")
-def repl_legacy() -> None:
-    """Legacy Rich-only REPL (fallback). Använd `hund ui` för prompt_toolkit-UI."""
-    from hund_cli.ui.repl_legacy import run_repl_legacy
-
-    raise SystemExit(run_repl_legacy())
-
-
 @app.command()
 def setup() -> None:
-    """Konfigurera provider + spara API-nyckel i OS-nyckelring (DPAPI)."""
+    """Konfigurera provider och visa instruktioner för HUND_API_KEY."""
     from .config import HundConfig
-    from .secrets import load_api_key, save_api_key
+    from .secrets import load_api_key
 
     console.print("[bold]hund setup[/bold]")
     cfg = HundConfig.load()
@@ -127,15 +111,12 @@ def setup() -> None:
 
     key = console.input("API-nyckel (Enter = behåll): ").strip()
     if key:
-        if save_api_key(key):
-            console.print("[green]nyckel sparad i OS-nyckelring.[/green]")
-        else:
-            console.print(
-                "[yellow]kunde ej spara i nyckelring — sätt HUND_API_KEY i env.[/yellow]"
-            )
+        console.print(
+            "[yellow]Sätt API-nyckeln i din miljövariabel: HUND_API_KEY[/yellow]"
+        )
     else:
         console.print(
-            f"nuvarande nyckel: {'finns' if load_api_key() else '[red]saknas[/red]'}"
+            f"nuvarande nyckel i HUND_API_KEY: {'finns' if load_api_key() else '[red]saknas[/red]'}"
         )
     console.print("klart. kör [bold]hund[/bold].")
 
