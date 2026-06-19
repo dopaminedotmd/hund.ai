@@ -10,10 +10,10 @@ from hund_cli.ui.render import render_baserad, render_status
 
 
 def test_render_status_produces_compact_format():
-    rendered = render_status(Text("🐕"), "a3f987", 24, "shopify", locked=False)
+    rendered = render_status(Text("░░"), "a3f987", 24, "shopify", locked=False)
 
     assert rendered.plain == (
-        f"🐕 Hund {__version__} · 🧭 shopify · session #a3f987 · 24 msg"
+        f"░░  Hund {__version__} · shopify · session #a3f987 · 24 msg"
     )
 
 
