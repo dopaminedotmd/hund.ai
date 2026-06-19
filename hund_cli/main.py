@@ -90,6 +90,14 @@ def doctor() -> None:
     console.print(profile)
 
 
+@app.command("ui")
+def ui_start() -> None:
+    """Starta Hund med Rich terminal-UI."""
+    from hund_cli.ui.repl import run_repl_ui
+
+    raise SystemExit(run_repl_ui())
+
+
 @app.command()
 def setup() -> None:
     """Konfigurera provider + spara API-nyckel i OS-nyckelring (DPAPI)."""
