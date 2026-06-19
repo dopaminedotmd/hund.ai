@@ -1,30 +1,15 @@
-"""Hunds terminal-UI — prompt_toolkit-REPL, frame-first och lågbrusig.
+"""Legacy Rich-only REPL — fallback om prompt_toolkit-REPL:strilen krånglar.
 
-Arkitektur (ipython-stil, 3 zoner):
-  Zon 1  Rich-output (splash, turns, slash-resultat) — skrivs MELLAN prompts
-  Zon 2  bottom_toolbar (persistent inforad, 1 rad, ren text)
-  Zon 3  prompt_toolkit-input (äggs av PromptSession)
-
-Invariant: Rich skriver bara när prompt_toolkit inte är i en aktiv prompt().
-Agentloopen är buffrad (sink.chunk samlar, hela svaret renderas efter turn),
-så ingen aktiv prompt finns medan agenten jobbar — layouten är säker.
+Körs via `hund repl`. Sekventiell Rich-loop med Rule-separatorer (före
+prompt_toolkit-omskrivningen). Oförändrad från den fungerande versionen.
 """
 from pathlib import Path
-import sys
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import FuzzyCompleter
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.patch_stdout import patch_stdout
-from prompt_toolkit.styles import Style
 from rich.console import Console
-from rich.text import Text as RichText
 
 from .. import __version__
 from ..providers.base import Message
 from ..tools import registry
-from .autocomplete import build_completer
-from .notifications import pick_thinking_text
 from .render import (
     blocked_tool_message,
     format_session_rows,
@@ -32,45 +17,18 @@ from .render import (
     plain_error_message,
     render_assistant_turn,
     render_startup,
-    render_status_plain,
+    render_user_prompt,
 )
-from .thinking import ThinkingAnimator
 
 console = Console()
-
-_STYLE = Style.from_dict(
-    {
-        "bottom-toolbar": "#a09080",
-        "prompt-symbol": "#E8E0D5",
-        "confirm": "yellow",
-    }
-)
-_PROMPT_MSG = HTML('<style class="prompt-symbol">◇ </style>')
+CREAM = "#E8E0D5"
 
 
-def confirm_via_prompt_toolkit(csl: Console, session: PromptSession, prompt_markup: str) -> bool:
-    """Tvåradig ja/nej-bekräftelse med luft (spec §5).
-
-    Label (Rich-markup strippas till ren text) på egen rad, [j/N] på nästa.
-    Anropas inuti _agent_turn (mellan prompts) — säkert att starta ny prompt.
-    """
-    try:
-        label = RichText.from_markup(prompt_markup).plain
-    except Exception:
-        label = prompt_markup
-    csl.print()  # blankrad för luft
-    csl.print(f"  {label}")
-    try:
-        ans = session.prompt(
-            HTML('  <style class="confirm">[j/N]</style> '),
-            default="N",
-        )
-    except (EOFError, KeyboardInterrupt):
-        return False
-    return ans.strip().lower() in {"j", "ja", "y", "yes"}
+def _response(text: str) -> None:
+    console.print(render_assistant_turn(text), markup=False, highlight=False)
 
 
-def run_repl_ui() -> int:
+def run_repl_legacy() -> int:
     from ..agent import sessions as S
     from ..agent.context import maybe_compress
     from ..agent.loop import (
@@ -82,18 +40,6 @@ def run_repl_ui() -> int:
     )
     from ..config import HundConfig
 
-    rt = _init_runtime()
-    if not rt.key:
-        console.print("[red]API-nyckel saknas.[/red]")
-        return 1
-
-    # prompt_toolkit kräver en riktig TTY (Win32Output). Vid pipe/icke-TTY
-    # (CI, `echo | hund ui`) faller vi tillbaka på legacy Rich-REPL.
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        from .repl_legacy import run_repl_legacy
-
-        return run_repl_legacy()
-
     try:
         cfg = HundConfig.load()
         model = cfg.provider.model
@@ -101,29 +47,6 @@ def run_repl_ui() -> int:
     except Exception:
         model = None
         workspace = Path.cwd().name
-
-    # Mutable state som bottom_toolbar-stängningen läser — uppdateras live.
-    state = {
-        "msg_count": 0,
-        "session_id": rt.session_id,
-        "domain": rt.domain_hint or workspace,
-    }
-
-    def get_bottom_toolbar():
-        text = render_status_plain(
-            state["session_id"],
-            state["msg_count"],
-            state["domain"],
-            version=__version__,
-        )
-        return [("class:bottom-toolbar", text)]
-
-    session = PromptSession(
-        bottom_toolbar=get_bottom_toolbar,
-        completer=FuzzyCompleter(build_completer()),
-        complete_while_typing=True,
-        style=_STYLE,
-    )
 
     console.clear()
     console.print(
@@ -138,17 +61,19 @@ def run_repl_ui() -> int:
         highlight=False,
     )
 
-    animator = ThinkingAnimator()
+    rt = _init_runtime()
+    if not rt.key:
+        console.print("[red]API-nyckel saknas.[/red]")
+        return 1
+
     response_buffer: list[str] = []
 
     class Sink:
-        pending = ""  # aktuell user-prompt — thinking-väljaren läser denna
-
         def thinking(self, msg=""):
-            animator.start(pick_thinking_text(self.pending))
+            pass
 
         def clear_thinking(self):
-            animator.stop()
+            pass
 
         def chunk(self, text):
             response_buffer.append(text)
@@ -176,8 +101,7 @@ def run_repl_ui() -> int:
             pass
 
         def confirm(self, prompt):
-            animator.stop()  # ingen levande tråd under nästlad prompt
-            return confirm_via_prompt_toolkit(console, session, prompt)
+            return console.input(f"  [{CREAM}]{prompt} [j/N][/{CREAM}] ").strip().lower() in {"j", "ja", "y", "yes"}
 
         on_chunk = chunk
         on_thinking = thinking
@@ -188,31 +112,15 @@ def run_repl_ui() -> int:
 
     sink = Sink()
 
-    def _response(text: str) -> None:
-        console.print(render_assistant_turn(text), markup=False, highlight=False)
-
-    def _refresh_state() -> None:
-        state["session_id"] = rt.session_id
-        state["msg_count"] = max(0, len(rt.messages) - 1)  # minus systemprompt
-        if session.app is not None:
-            try:
-                session.app.invalidate()
-            except Exception:
-                pass
-
     while True:
         try:
-            with patch_stdout():
-                user = session.prompt(_PROMPT_MSG).strip()
+            user = console.input(f"[{CREAM}]{render_user_prompt().plain}[/{CREAM}]").strip()
         except (EOFError, KeyboardInterrupt):
             break
         if not user:
             continue
         if user in {"/exit", "/quit"}:
             break
-        if user == "/help":
-            _response("kommandon: /sessions /stats /profile /tools /exit")
-            continue
         if user == "/stats":
             _response(_stats_text())
             continue
@@ -245,7 +153,6 @@ def run_repl_ui() -> int:
                     for role, content in S.history(rt.session_id):
                         rt.messages.append(Message(role=role, content=content))
                     _response(f"byt till session #{rt.session_id[:8]}")
-                    _refresh_state()
                 else:
                     _response(f"ingen session matchade '{arg}'")
                 continue
@@ -253,12 +160,10 @@ def run_repl_ui() -> int:
                 rt.session_id = S.create()
                 del rt.messages[1:]
                 _response(f"ny session #{rt.session_id[:8]}")
-                _refresh_state()
                 continue
             _response("användning: /sessions [search <q> | resume <id> | new]")
             continue
 
-        sink.pending = user
         rt.messages.append(Message(role="user", content=user))
         _session_save(rt.session_id, "user", user)
         rt.messages[0] = Message(
@@ -279,22 +184,18 @@ def run_repl_ui() -> int:
             console.print(f"  ({comp.dropped_turns} turns komprimerade)", style="dim")
 
         response_buffer.clear()
-        try:
-            _agent_turn(
-                console,
-                rt.client,
-                rt.messages,
-                rt.schemas,
-                rt.engine,
-                rt.cfg,
-                rt.session_id,
-                sink=sink,
-            )
-        finally:
-            animator.stop()  # säkerställ att ingen tänktråd läcker vid fel
+        _agent_turn(
+            console,
+            rt.client,
+            rt.messages,
+            rt.schemas,
+            rt.engine,
+            rt.cfg,
+            rt.session_id,
+            sink=sink,
+        )
 
         full = "".join(response_buffer)
         _response(full)
-        _refresh_state()
 
     return 0

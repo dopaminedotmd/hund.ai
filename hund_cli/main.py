@@ -72,9 +72,9 @@ def _root(
         console.print(f"hund {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        from .agent.loop import run_repl
+        from .ui.repl import run_repl_ui
 
-        raise SystemExit(run_repl())
+        raise SystemExit(run_repl_ui())
 
 
 @app.command()
@@ -96,6 +96,14 @@ def ui_start() -> None:
     from hund_cli.ui.repl import run_repl_ui
 
     raise SystemExit(run_repl_ui())
+
+
+@app.command("repl")
+def repl_legacy() -> None:
+    """Legacy Rich-only REPL (fallback). Använd `hund ui` för prompt_toolkit-UI."""
+    from hund_cli.ui.repl_legacy import run_repl_legacy
+
+    raise SystemExit(run_repl_legacy())
 
 
 @app.command()
