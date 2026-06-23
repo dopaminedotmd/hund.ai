@@ -73,8 +73,66 @@ def maybe_compress(
     *,
     max_tokens: int = DEFAULT_MAX_TOKENS,
     keep_recent: int = DEFAULT_KEEP_RECENT,
+    client=None,  # ProviderClient — provar LLM-compress om given
 ) -> CompressionResult:
-    """Komprimera endast om uppskattad token-mängd överstiger tröskel."""
+    """Komprimera endast om uppskattad token-mangd overstiger troskel.
+    Provat LLM-compress forst, fallback till deterministisk."""
     if estimate_tokens(messages) <= max_tokens:
         return CompressionResult(list(messages), 0, estimate_tokens(messages), False)
+    if client is not None:
+        llm_result = compress_llm(client, messages, keep_recent=keep_recent)
+        if llm_result is not None:
+            return llm_result
     return compress(messages, keep_recent=keep_recent)
+
+
+_LLM_COMPRESS_SYSTEM_PROMPT = (
+    "Du ar en kontext-komprimerare. Summera foljande konversation kortfattat. "
+    "Behall alla viktiga fakta, beslut, och todo-punkter. "
+    "Ignorera brus, halsningsfraser, och upprepningar. "
+    "Svara pa svenska, max 300 ord. Anvand INTE bullets om det inte ar absolut nodvandigt."
+)
+
+def compress_llm(
+    client,        # ProviderClient (OpenAICompatibleClient)
+    messages: list[Message],
+    *,
+    keep_recent: int = DEFAULT_KEEP_RECENT,
+) -> CompressionResult | None:
+    """LLM-baserad summering av aldre turns. Returnerar None vid fel (ring fallback)."""
+    if len(messages) <= keep_recent + 3:  # for fa meddelanden for LLM
+        return None
+    system = messages[0]
+    old_messages = messages[1:-keep_recent]
+    if not old_messages:
+        return None
+    # Bygg en text-representation av gamla meddelanden
+    old_text_parts = []
+    for m in old_messages:
+        role = m.role
+        content = m.content[:500]  # trunkera langa meddelanden
+        if m.tool_calls:
+            content += f" [tool_calls: {len(m.tool_calls)}]"
+        old_text_parts.append(f"[{role}] {content}")
+    old_text = "\n".join(old_text_parts)
+    try:
+        result = client.complete([
+            Message(role="system", content=_LLM_COMPRESS_SYSTEM_PROMPT),
+            Message(role="user", content=f"Sammanfatta denna konversation:\n\n{old_text}"),
+        ])
+    except Exception:
+        return None  # fallback till deterministisk
+    summary = result.text.strip()
+    if not summary or len(summary) < 20:
+        return None
+    # Bygg ny meddelandelista: system + summary + recent
+    marker = Message(
+        role="system",
+        content=f"[KOMPRIMERAD via LLM — sammanfattning av {len(old_messages)} tidigare meddelanden]\n\n{summary}",
+        tool_calls=[],
+        tool_call_id=None,
+    )
+    recent = list(messages[-keep_recent:])
+    compacted = [system, marker] + recent
+    dropped = len(old_messages)
+    return CompressionResult(compacted, dropped, estimate_tokens(compacted), True)

@@ -272,7 +272,7 @@ def run_repl() -> int:
         messages.append(Message(role="user", content=user))
         _session_save(session_id, "user", user)
         # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
-        comp = maybe_compress(messages)
+        comp = maybe_compress(messages, client=client)
         if comp.compressed:
             messages[:] = comp.messages
             console.print(
