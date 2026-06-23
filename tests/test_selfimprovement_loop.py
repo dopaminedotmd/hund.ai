@@ -14,9 +14,9 @@ import json
 
 import pytest
 
-from hund_cli.selfimprovement import proposal as P
-from hund_cli.skills.model import Skill
-from hund_cli.skills.validator import validate
+from hund.selfimprovement import proposal as P
+from hund.skills.model import Skill
+from hund.skills.validator import validate
 
 
 # ------------------------------------------------------------------ #
@@ -123,7 +123,7 @@ def test_skill_validation_on_create_missing_verification():
 def test_apply_skill_roundtrip(tmp_path, monkeypatch):
     """apply skriver giltig fil, rundtur läses tillbaka och validerar."""
     monkeypatch.setattr(
-        "hund_cli.paths.brain_skills_dir", lambda: tmp_path, raising=True
+        "hund.paths.brain_skills_dir", lambda: tmp_path, raising=True
     )
     summary = _skill_summary(skill_name="round-trip-skill")
     p = _proposal(summary)
@@ -141,7 +141,7 @@ def test_apply_skill_roundtrip(tmp_path, monkeypatch):
 def test_apply_non_skill_proposal_returns_false(tmp_path, monkeypatch):
     """apply på runtime_policy-proposal → (False, ...), ingen fil."""
     monkeypatch.setattr(
-        "hund_cli.paths.brain_skills_dir", lambda: tmp_path, raising=True
+        "hund.paths.brain_skills_dir", lambda: tmp_path, raising=True
     )
     p = _proposal({**_skill_summary(), "change_type": "runtime_policy"})
     ok, msg = P.apply_skill_proposal(p, _skill_summary())
@@ -156,7 +156,7 @@ def test_apply_non_skill_proposal_returns_false(tmp_path, monkeypatch):
 def test_approve_without_apply_only_sets_status(tmp_path, monkeypatch):
     """utan --apply: status approved, ingen skill-fil, ingen applied."""
     monkeypatch.setattr(
-        "hund_cli.paths.brain_skills_dir", lambda: tmp_path, raising=True
+        "hund.paths.brain_skills_dir", lambda: tmp_path, raising=True
     )
     p = _proposal(_skill_summary())
     P.create(p)

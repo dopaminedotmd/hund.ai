@@ -6,7 +6,7 @@ prefix-resolving, set_active.
 """
 from __future__ import annotations
 
-from hund_cli.agent import sessions as S
+from hund.agent import sessions as S
 
 
 def test_create_returns_id_and_marks_active(tmp_path):

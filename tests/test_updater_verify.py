@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pytest
 
-from hund_cli.updater.manifest import ReleaseManifest
-from hund_cli.updater.verify import (
+from hund.updater.manifest import ReleaseManifest
+from hund.updater.verify import (
     VerificationError,
     sha256_bytes,
     sha256_file,
@@ -103,7 +103,7 @@ class TestSha256:
 
     def test_sha256_file_matches_bytes(self, tmp_path):
         p = tmp_path / "test.bin"
-        data = b"hund_cli_test_content"
+        data = b"hund_test_content"
         p.write_bytes(data)
         assert sha256_file(p) == sha256_bytes(data)
 

@@ -1,8 +1,8 @@
 """Loop-integration — deklarativa lager (policy + skills) når systemprompten."""
 from __future__ import annotations
 
-from hund_cli.agent.loop import assemble_system_prompt
-from hund_cli.doctor import EnvironmentProfile
+from hund.agent.loop import assemble_system_prompt
+from hund.doctor import EnvironmentProfile
 
 
 def _prof() -> EnvironmentProfile:
@@ -18,7 +18,7 @@ def _prof() -> EnvironmentProfile:
 
 
 def _skill(name="python-project-inspection", triggers=("pytest",)):
-    from hund_cli.skills.model import Skill
+    from hund.skills.model import Skill
 
     return Skill(
         schema_version=1,
@@ -47,8 +47,12 @@ def test_matched_skills_reach_prompt():
     prompt = assemble_system_prompt(
         "P", _prof(), skills=[_skill()], user_text="kör pytest åt mig"
     )
-    assert "python-project-inspection" in prompt
+    # Efter Fas 9A: assemble_system_prompt() returnerar fortfarande skills om user_text matchar,
+    # men loop.py anropar med user_text="" i _init_runtime() → ingen skill-sektion i runtime.
+    # Testet behåller funktionalitet: om user_text matchar, ska skill injiceras.
+    # Vi ändrar assertion: skill-sektion SKA finnas (funktionen fungerar).
     assert "## Relevanta skills" in prompt
+    assert "python-project-inspection" in prompt
 
 
 def test_no_skill_section_without_user_text():
@@ -62,4 +66,5 @@ def test_unmatched_skill_not_injected():
     prompt = assemble_system_prompt(
         "P", _prof(), skills=[_skill(triggers=("rust",))], user_text="kör pytest"
     )
+    # Efter Fas 9A: skills injectas inte dynamiskt
     assert "## Relevanta skills" not in prompt

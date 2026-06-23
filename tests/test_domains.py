@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hund_cli.domains import detector as ddet
-from hund_cli.domains.model import DomainDetection, DomainSignal
+from hund.domains import detector as ddet
+from hund.domains.model import DomainDetection, DomainSignal
 
 
 def test_manifest_pyproject_yields_python_high(tmp_path):
@@ -57,11 +57,11 @@ def test_candidates_unique(tmp_path):
 
 def test_persistence_records_and_lists(tmp_path, monkeypatch):
     # peka db på tmp så vi inte förorenar riktig HundHome
-    import hund_cli.paths as paths
+    import hund.paths as paths
 
     db = tmp_path / "hund.db"
     monkeypatch.setattr(paths, "db_path", lambda: db)
-    monkeypatch.setattr("hund_cli.store.sqlite.db_path", lambda: db, raising=False)
+    monkeypatch.setattr("hund.store.sqlite.db_path", lambda: db, raising=False)
 
     det = DomainDetection(
         (
@@ -79,11 +79,11 @@ def test_persistence_records_and_lists(tmp_path, monkeypatch):
 
 
 def test_set_primary_demotes_previous(tmp_path, monkeypatch):
-    import hund_cli.paths as paths
+    import hund.paths as paths
 
     db = tmp_path / "hund.db"
     monkeypatch.setattr(paths, "db_path", lambda: db)
-    monkeypatch.setattr("hund_cli.store.sqlite.db_path", lambda: db, raising=False)
+    monkeypatch.setattr("hund.store.sqlite.db_path", lambda: db, raising=False)
 
     ddet.record_detection(
         DomainDetection((DomainSignal("python", "high", "manifest"),))

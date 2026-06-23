@@ -4,9 +4,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hund_cli.policy.defaults import default_policy
-from hund_cli.policy.loader import load_file, load_policy, policy_path, validate
-from hund_cli.policy.model import Policy, Rule
+from hund.policy.defaults import default_policy
+from hund.policy.loader import load_file, load_policy, policy_path, validate
+from hund.policy.model import Policy, Rule
 
 
 def test_default_policy_is_valid():
@@ -59,12 +59,12 @@ def test_local_policy_missing_locked_rule_is_invalid(tmp_path):
 def test_local_policy_unlocking_locked_rule_is_invalid():
     pol = default_policy()
     unlocked = tuple(
-        Rule(r.id, r.scope, r.text, locked=False) if r.id == "local_first" else r
+        Rule(r.id, r.scope, r.text, locked=False) if r.id == "no_external_exfiltration" else r
         for r in pol.rules
     )
     tampered = Policy(1, unlocked, pol.forbidden_core_paths)
     errs = validate(tampered)
-    assert any("local_first" in e for e in errs)
+    assert any("no_external_exfiltration" in e for e in errs)
 
 
 def test_local_policy_changing_locked_rule_text_is_invalid():
@@ -106,7 +106,7 @@ def test_invalid_scope_is_flagged():
 
 def test_forbidden_core_paths_match_safety_tcb():
     """Invariant: policy.forbidden_core_paths == safety TCB_FILES + TCB_DIRS."""
-    from hund_cli.agent.safety import TCB_DIRS, TCB_FILES
+    from hund.agent.safety import TCB_DIRS, TCB_FILES
 
     pol = default_policy()
     policy_paths = set(pol.forbidden_core_paths)

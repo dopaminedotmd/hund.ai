@@ -1,12 +1,12 @@
 [project]
-name = "hund-cli"
+name = "hund"
 version = "0.1.0"
-description = "Hund — en installerbar, local-first, self-improving CLI-agentmotor som lever i hårdvaran."
+description = "Hund — ett installerbar, self-improving CLI-agent-skal. Ger illusionen av att vara en del av din maskin."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 authors = [{ name = "William" }]
-keywords = ["cli", "agent", "local-first", "self-improving"]
+keywords = ["cli", "agent", "self-improving", "ai-shell"]
 
 dependencies = [
     "typer>=0.12",
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-hund = "hund_cli.main:app"
+hund = "hund.main:app"
 
 [project.optional-dependencies]
 dev = [
@@ -26,14 +26,14 @@ dev = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/dopaminedotmd/hund-cli"
+Documentation = "https://github.com/dopaminedotmd/hund.ai"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["hund_cli"]
+packages = ["hund"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

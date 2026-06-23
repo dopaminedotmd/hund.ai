@@ -70,7 +70,7 @@ hund-cli/
 ├── pyproject.toml
 ├── README.md
 ├── LICENSE
-├── hund_cli/
+├── hund/
 │   ├── __init__.py
 │   ├── main.py                  # CLI entrypoint: hund
 │   ├── tui.py                   # Terminal UI
@@ -377,7 +377,7 @@ Hermes/du ska vara projektledare och second reviewer, inte ensam kodare.
 Leverans:
 
 - `pyproject.toml`
-- `hund_cli/main.py`
+- `hund/main.py`
 - `install.ps1`
 - `docs/architecture.md`
 - CI/test skeleton
@@ -581,7 +581,7 @@ Inte i `hund-system`, eftersom `hund-system` är Hunds själ/assets. `hund-cli` 
 Koppla sedan in detta system som default assets:
 
 ```text
-hund-cli/hund_cli/assets/hund-system/
+hund-cli/hund/assets/hund-system/
 ```
 
 ---

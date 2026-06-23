@@ -25,7 +25,7 @@ def default_policy() -> Policy:
                 locked=True,
             ),
             Rule(
-                id="local_first",
+                id="no_external_exfiltration",
                 scope="behavior",
                 text=(
                     "Ingen extern upload av råa prompts, svar, filinnehåll "
@@ -41,9 +41,9 @@ def default_policy() -> Policy:
             ),
         ),
         forbidden_core_paths=(
-            "hund_cli/agent/safety.py",
-            "hund_cli/learning/redactor.py",
-            "hund_cli/main.py",
-            "hund_cli/updater",
+            "hund/agent/safety.py",
+            "hund/learning/redactor.py",
+            "hund/main.py",
+            "hund/updater",
         ),
     )

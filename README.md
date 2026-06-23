@@ -1,7 +1,6 @@
-# Hund CLI
+# Hund
 
-> Hund är en installerbar, local-first, self-improving CLI-agentmotor som lever i
-> hårdvaran han startas på.
+> Hund är ett installerbar, self-improving CLI-agent-skal som ger illusionen av att vara en del av din maskin.
 
 Hund analyserar sin miljö vid uppstart, hjälper användaren via tools, bygger
 lokal mastery, mäter sin egen prestation och bidrar säkert till en global
@@ -45,7 +44,7 @@ uv run pytest
 ## Installation (Windows one-liner)
 
 ```powershell
-irm https://raw.githubusercontent.com/dopaminedotmd/hund-cli/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/dopaminedotmd/hund.ai/main/install.ps1 | iex
 ```
 
 Sen: sätt API-nyckel och starta Hund:

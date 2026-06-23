@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from hund_cli.selfimprovement import proposal as P
+from hund.selfimprovement import proposal as P
 
 
 # ------------------------------------------------------------------ #

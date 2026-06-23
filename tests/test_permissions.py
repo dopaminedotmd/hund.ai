@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from hund_cli.agent.safety import PermissionEngine, RiskLevel
+from hund.agent.safety import PermissionEngine, RiskLevel
 
 
 def test_read_is_safe(tmp_path):
@@ -46,7 +46,7 @@ def test_self_publish_always_blocked(tmp_path):
 
 def test_write_to_tcb_file_blocked(tmp_path):
     eng = PermissionEngine(workspace_root=tmp_path)
-    d = eng.classify("write_file", {"path": "hund_cli/agent/safety.py"})
+    d = eng.classify("write_file", {"path": "hund/agent/safety.py"})
     assert d.risk is RiskLevel.BLOCKED
     assert d.allowed is False
     assert "tcb" in d.reason.lower()
@@ -54,7 +54,7 @@ def test_write_to_tcb_file_blocked(tmp_path):
 
 def test_write_to_tcb_dir_blocked(tmp_path):
     eng = PermissionEngine(workspace_root=tmp_path)
-    d = eng.classify("write_file", {"path": "hund_cli/updater/apply.py"})
+    d = eng.classify("write_file", {"path": "hund/updater/apply.py"})
     assert d.risk is RiskLevel.BLOCKED
     assert d.allowed is False
     assert "tcb" in d.reason.lower()

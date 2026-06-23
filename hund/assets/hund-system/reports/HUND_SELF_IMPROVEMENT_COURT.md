@@ -346,7 +346,7 @@ hund learning purge
 Moduler:
 
 ```text
-hund_cli/learning/
+hund/learning/
 ├── observer.py             # skapar observationer
 ├── schemas.py              # Pydantic schemas
 ├── redactor.py             # tar bort paths/secrets/raw content
@@ -355,7 +355,7 @@ hund_cli/learning/
 ├── clustering.py           # dedupe/topic clustering
 └── proposal_builder.py     # skapar local proposals
 
-hund_cli/court/
+hund/court/
 ├── prepare_case.py
 ├── roles.py
 ├── run_court.py

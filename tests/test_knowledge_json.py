@@ -9,8 +9,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 
-from hund_cli.knowledge import migrate
-from hund_cli.knowledge import store as kstore
+from hund.knowledge import migrate
+from hund.knowledge import store as kstore
 
 
 def test_add_writes_domain_json(tmp_path):

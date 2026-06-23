@@ -5,8 +5,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from hund_cli import __version__
-from hund_cli.main import app
+from hund import __version__
+from hund.main import app
 
 
 class _FakeProcess:
@@ -27,7 +27,7 @@ def test_no_arguments_starts_opentui(monkeypatch):
         calls.append((command, cwd))
         return process
 
-    monkeypatch.setattr("hund_cli.main.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("hund.main.subprocess.Popen", fake_popen)
 
     result = CliRunner().invoke(app, [])
 
@@ -49,7 +49,7 @@ def test_repl_starts_opentui_explicitly(monkeypatch):
         calls.append((command, cwd))
         return process
 
-    monkeypatch.setattr("hund_cli.main.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("hund.main.subprocess.Popen", fake_popen)
 
     result = CliRunner().invoke(app, ["repl"])
 
@@ -62,7 +62,7 @@ def test_version_does_not_start_opentui(monkeypatch):
     def unexpected_popen(*args, **kwargs):
         raise AssertionError("OpenTUI must not start for --version")
 
-    monkeypatch.setattr("hund_cli.main.subprocess.Popen", unexpected_popen)
+    monkeypatch.setattr("hund.main.subprocess.Popen", unexpected_popen)
 
     result = CliRunner().invoke(app, ["--version"])
 
@@ -72,7 +72,7 @@ def test_version_does_not_start_opentui(monkeypatch):
 
 def test_opentui_exit_code_is_propagated(monkeypatch):
     monkeypatch.setattr(
-        "hund_cli.main.subprocess.Popen",
+        "hund.main.subprocess.Popen",
         lambda command, cwd: _FakeProcess(exit_code=7),
     )
 

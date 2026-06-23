@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 
-from hund_cli.evals.model import EvalResult
-from hund_cli.evals.runner import add_regression, list_cases, run_all
+from hund.evals.model import EvalResult
+from hund.evals.runner import add_regression, list_cases, run_all
 
 
 def test_at_least_10_builtin_cases():
-    from hund_cli.evals.cases.builtin import BUILTIN_CASES
+    from hund.evals.cases.builtin import BUILTIN_CASES
 
     assert len(BUILTIN_CASES) >= 10
 
@@ -20,13 +20,13 @@ def test_all_builtin_cases_pass():
     failed = [r for r in results if not r.passed]
     # tillåt inga builtin-failures (regressioner kan finnas, separat test)
     builtin_names = {fn.__name__ for fn in __import__(
-        "hund_cli.evals.cases.builtin", fromlist=["BUILTIN_CASES"]).BUILTIN_CASES}
+        "hund.evals.cases.builtin", fromlist=["BUILTIN_CASES"]).BUILTIN_CASES}
     failed_builtins = [r for r in failed if r.name in builtin_names]
     assert failed_builtins == [], f"failed builtins: {[r.name for r in failed_builtins]}"
 
 
 def test_runner_catches_case_exceptions(monkeypatch):
-    from hund_cli.evals.cases import builtin as B
+    from hund.evals.cases import builtin as B
 
     def boom() -> EvalResult:
         raise ValueError("boom")
@@ -46,7 +46,7 @@ def test_list_cases_includes_builtins():
 
 
 def test_add_and_run_regression(tmp_path, monkeypatch):
-    import hund_cli.paths as paths
+    import hund.paths as paths
 
     monkeypatch.setattr(paths, "hund_home", lambda: tmp_path)
     add_regression(
@@ -64,7 +64,7 @@ def test_add_and_run_regression(tmp_path, monkeypatch):
 
 
 def test_regression_failure_detected(tmp_path, monkeypatch):
-    import hund_cli.paths as paths
+    import hund.paths as paths
 
     monkeypatch.setattr(paths, "hund_home", lambda: tmp_path)
     add_regression("missing-marker", "$pyproject", contains=["ZZZ_NOT_PRESENT_ZZZ"])

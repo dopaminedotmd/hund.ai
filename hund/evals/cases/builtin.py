@@ -16,7 +16,7 @@ from ..model import EvalResult
 
 
 def _permission_write_outside_workspace() -> EvalResult:
-    from hund_cli.agent.safety import PermissionEngine, RiskLevel
+    from hund.agent.safety import PermissionEngine, RiskLevel
 
     ws = Path(tempfile.mkdtemp())
     eng = PermissionEngine(workspace_root=ws)
@@ -26,7 +26,7 @@ def _permission_write_outside_workspace() -> EvalResult:
 
 
 def _tcb_tools_blocked() -> EvalResult:
-    from hund_cli.agent.safety import PermissionEngine, RiskLevel
+    from hund.agent.safety import PermissionEngine, RiskLevel
 
     eng = PermissionEngine(workspace_root=Path(tempfile.mkdtemp()))
     bad = []
@@ -38,8 +38,8 @@ def _tcb_tools_blocked() -> EvalResult:
 
 
 def _prompt_tool_output_untrusted() -> EvalResult:
-    from hund_cli.agent.prompt_builder import build_system_prompt
-    from hund_cli.doctor import EnvironmentProfile
+    from hund.agent.prompt_builder import build_system_prompt
+    from hund.doctor import EnvironmentProfile
 
     prof = EnvironmentProfile(
         os="Windows", cpu_count=8, has_git=True, has_python=True,
@@ -52,7 +52,7 @@ def _prompt_tool_output_untrusted() -> EvalResult:
 
 
 def _redactor_known_api_key() -> EvalResult:
-    from hund_cli.learning.redactor import redact_text
+    from hund.learning.redactor import redact_text
 
     key = "s" + "k-" + ("a" * 32)
     r = redact_text(f"token {key}")
@@ -61,7 +61,7 @@ def _redactor_known_api_key() -> EvalResult:
 
 
 def _provider_no_key_fails_clean() -> EvalResult:
-    from hund_cli import secrets
+    from hund import secrets
 
     old_env = dict(os.environ)
     os.environ.pop("HUND_EVAL_KEY_X", None)
@@ -74,8 +74,8 @@ def _provider_no_key_fails_clean() -> EvalResult:
 
 
 def _doctor_no_git_rule() -> EvalResult:
-    from hund_cli.agent.prompt_builder import build_system_prompt
-    from hund_cli.doctor import EnvironmentProfile
+    from hund.agent.prompt_builder import build_system_prompt
+    from hund.doctor import EnvironmentProfile
 
     prof = EnvironmentProfile(
         os="Linux", cpu_count=8, has_git=False, has_python=True,
@@ -89,7 +89,7 @@ def _doctor_no_git_rule() -> EvalResult:
 
 def _knowledge_lfu_topk() -> EvalResult:
     # Knowledge är JSON-backat (fas 9.5 Del C) — isolera via home-param.
-    from hund_cli.knowledge import store as k
+    from hund.knowledge import store as k
 
     home = Path(tempfile.mkdtemp())
     dom = "evaldomain_" + uuid.uuid4().hex
@@ -104,7 +104,7 @@ def _knowledge_lfu_topk() -> EvalResult:
 
 
 def _proposal_core_change_forced() -> EvalResult:
-    from hund_cli.selfimprovement import proposal as P
+    from hund.selfimprovement import proposal as P
 
     p1 = P.build_from_gaps([], {"change_type": "core"})
     p2 = P.build_from_gaps([], {"change_type": "engine"})
@@ -113,7 +113,7 @@ def _proposal_core_change_forced() -> EvalResult:
 
 
 def _installer_sha_todo() -> EvalResult:
-    root = Path(__file__).resolve().parents[3]  # hund_cli/evals/cases -> repo
+    root = Path(__file__).resolve().parents[3]  # hund/evals/cases -> repo
     found = False
     for s in ("install.ps1", "install.sh"):
         f = root / s
@@ -124,7 +124,7 @@ def _installer_sha_todo() -> EvalResult:
 
 def _cli_help_imports_without_key() -> EvalResult:
     try:
-        import hund_cli.main as m
+        import hund.main as m
 
         ok = m.app is not None
     except Exception as e:  # noqa: BLE001

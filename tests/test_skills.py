@@ -4,16 +4,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from hund_cli.skills.loader import (
+from hund.skills.loader import (
     add_skill,
     get_skill,
     load_file,
     load_skills,
     skills_dir,
 )
-from hund_cli.skills.matcher import match, summaries
-from hund_cli.skills.model import Skill
-from hund_cli.skills.validator import validate
+from hund.skills.matcher import match, summaries
+from hund.skills.model import Skill
+from hund.skills.validator import validate
 
 
 def _valid_skill(**over) -> Skill:

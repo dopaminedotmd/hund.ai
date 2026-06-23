@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import uuid
 
-from hund_cli.base_stats import compute
-from hund_cli.knowledge import store as kstore
-from hund_cli.selfimprovement import proposal as P
+from hund.base_stats import compute
+from hund.knowledge import store as kstore
+from hund.selfimprovement import proposal as P
 
 
 # ---- I: self-improvement ----
@@ -53,8 +53,8 @@ def test_base_stats_returns_three_measures():
 
 # ---- J: knowledge injiceras i prompt ----
 def test_prompt_builder_injects_knowledge():
-    from hund_cli.agent.prompt_builder import build_system_prompt
-    from hund_cli.doctor import EnvironmentProfile
+    from hund.agent.prompt_builder import build_system_prompt
+    from hund.doctor import EnvironmentProfile
 
     prof = EnvironmentProfile(os="Windows", cpu_count=8, capabilities={"has_git": True})
     prompt = build_system_prompt("P", prof, knowledge=[("trig", "min regel")])

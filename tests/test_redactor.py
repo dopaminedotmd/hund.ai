@@ -1,7 +1,7 @@
 """Redactor TCB — deterministisk privacy-sanitizer före export/upload."""
 from __future__ import annotations
 
-from hund_cli.learning.redactor import build_export_preview, redact_text
+from hund.learning.redactor import build_export_preview, redact_text
 
 
 def test_redacts_common_secret_shapes():

@@ -271,15 +271,6 @@ def run_repl() -> int:
 
         messages.append(Message(role="user", content=user))
         _session_save(session_id, "user", user)
-        # Matcha skills mot senaste användartexten → endast relevanta injiceras.
-        messages[0] = Message(
-            role="system",
-            content=assemble_system_prompt(
-                persona, profile, knowledge=knowledge,
-                policy_rules=policy_rules, skills=skills, user_text=user,
-                memory_lines=memory_lines,
-            ),
-        )
         # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
         comp = maybe_compress(messages)
         if comp.compressed:

@@ -5,7 +5,7 @@ import json
 import threading
 from contextlib import redirect_stdout
 
-from hund_cli.agent.tui_bridge import TuiBridge
+from hund.agent.tui_bridge import TuiBridge
 
 
 def test_send_keeps_json_on_protocol_stdout_during_agent_redirect() -> None:

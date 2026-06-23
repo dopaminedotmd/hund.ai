@@ -1,7 +1,7 @@
 """Hund CLI entrypoint: `hund`.
 
 Skelett 0.1.0. Subkommandon är stubbar som växer in enligt docs/mvp.md.
-Körningen nås via entrypoint `hund = "hund_cli.main:app"` i pyproject.toml.
+Körningen nås via entrypoint `hund = "hund.main:app"` i pyproject.toml.
 """
 from __future__ import annotations
 
@@ -217,7 +217,7 @@ def propose() -> None:
 @app.command()
 def verify() -> None:
     """Verifiera Hund-systemet (persona laddad, permission-block aktivt)."""
-    console.print("[green]verify[/green]: hund_cli importerar OK.")
+    console.print("[green]verify[/green]: hund importerar OK.")
     console.print(f"version: {__version__}")
 
 

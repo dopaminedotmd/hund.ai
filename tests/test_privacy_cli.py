@@ -5,7 +5,7 @@ import json
 
 from typer.testing import CliRunner
 
-from hund_cli.main import app
+from hund.main import app
 
 
 def test_privacy_check_redacts_text_option():

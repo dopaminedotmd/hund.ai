@@ -1,8 +1,8 @@
 """Bevisar differentiatorn: miljöprofilen ÄNDRAR systemprompten (inte dekoration)."""
 from __future__ import annotations
 
-from hund_cli.agent.prompt_builder import build_system_prompt
-from hund_cli.doctor import EnvironmentProfile
+from hund.agent.prompt_builder import build_system_prompt
+from hund.doctor import EnvironmentProfile
 
 
 def _prof(**kw) -> EnvironmentProfile:

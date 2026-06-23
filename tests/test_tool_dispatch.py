@@ -5,10 +5,10 @@ import io
 
 from rich.console import Console
 
-from hund_cli.agent.safety import PermissionEngine
-from hund_cli.agent.tool_dispatch import dispatch_tool_call
-from hund_cli.tools import registry
-from hund_cli.tools.default_tools import register_defaults
+from hund.agent.safety import PermissionEngine
+from hund.agent.tool_dispatch import dispatch_tool_call
+from hund.tools import registry
+from hund.tools.default_tools import register_defaults
 
 
 def _console() -> Console:
@@ -53,7 +53,7 @@ def test_blocked_self_update_never_runs(tmp_path):
 
 
 def test_terminal_outside_pattern_flagged(tmp_path):
-    from hund_cli.tools.terminal_tool import is_destructive
+    from hund.tools.terminal_tool import is_destructive
 
     assert is_destructive("rm -rf /")
     assert not is_destructive("ls -la")

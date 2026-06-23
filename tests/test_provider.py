@@ -8,9 +8,9 @@ import os
 
 import pytest
 
-from hund_cli.config import HundConfig
-from hund_cli.providers.base import Message
-from hund_cli.providers.openai_compatible import OpenAICompatibleClient
+from hund.config import HundConfig
+from hund.providers.base import Message
+from hund.providers.openai_compatible import OpenAICompatibleClient
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("HUND_API_KEY"),

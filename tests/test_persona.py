@@ -5,9 +5,9 @@ persona inte tappas när profil injiceras.
 """
 from __future__ import annotations
 
-from hund_cli.agent.prompt_builder import build_system_prompt
-from hund_cli.doctor import EnvironmentProfile
-from hund_cli.persona import load_persona
+from hund.agent.prompt_builder import build_system_prompt
+from hund.doctor import EnvironmentProfile
+from hund.persona import load_persona
 
 
 def _profile() -> EnvironmentProfile:

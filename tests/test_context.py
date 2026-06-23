@@ -1,12 +1,12 @@
 """Context compression v1 — deterministisk, ingen provider."""
 from __future__ import annotations
 
-from hund_cli.agent.context import (
+from hund.agent.context import (
     compress,
     estimate_tokens,
     maybe_compress,
 )
-from hund_cli.providers.base import Message
+from hund.providers.base import Message
 
 
 def _msgs(n: int) -> list[Message]:

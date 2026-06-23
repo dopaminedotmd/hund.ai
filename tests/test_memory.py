@@ -6,9 +6,9 @@ inte injicerar en sektion.
 """
 from __future__ import annotations
 
-from hund_cli import memory as M
-from hund_cli.agent.prompt_builder import build_system_prompt
-from hund_cli.doctor import EnvironmentProfile
+from hund import memory as M
+from hund.agent.prompt_builder import build_system_prompt
+from hund.doctor import EnvironmentProfile
 
 
 def _prof(**kw) -> EnvironmentProfile:
