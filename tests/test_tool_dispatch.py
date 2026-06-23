@@ -57,3 +57,15 @@ def test_terminal_outside_pattern_flagged(tmp_path):
 
     assert is_destructive("rm -rf /")
     assert not is_destructive("ls -la")
+
+
+def test_web_tools_registration(tmp_path):
+    register_defaults(tmp_path)
+    search_tool = registry.get("web_search")
+    extract_tool = registry.get("web_extract")
+    
+    assert search_tool is not None
+    assert search_tool.base_risk == "safe"
+    assert extract_tool is not None
+    assert extract_tool.base_risk == "safe"
+

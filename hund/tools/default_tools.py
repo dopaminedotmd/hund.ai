@@ -68,3 +68,38 @@ def register_defaults(workspace: Path) -> None:
     ]
     for t in specs:
         registry.register(t)
+
+    from .web_search import search_web
+    from .web_extract import extract_web
+
+    registry.register(registry.Tool(
+        name="web_search",
+        description=(
+            "Sok pa webben. Anvand for: aktuell info, okanda produkter/versioner, "
+            "nyheter, verifierbara fakta. Anvand INTE for: statisk kunskap "
+            "(for loops, Pythagoras), personliga fragor. Skala antal sok: "
+            "1 for enkla fakta, 5-10 for research."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"query": {"type": "string", "description": "Sokfras (1-6 ord for basta resultat)"}},
+            "required": ["query"],
+        },
+        base_risk="safe",
+        handler=search_web,
+    ))
+    registry.register(registry.Tool(
+        name="web_extract",
+        description=(
+            "Hamta och extrahera text fran en URL. Returnerar sidans textinnehall "
+            "(HTML-taggar bortrensade). Max 50KB output. Endast http/https URLs."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "URL att hamta (https://...)"}},
+            "required": ["url"],
+        },
+        base_risk="safe",
+        handler=extract_web,
+    ))
+
