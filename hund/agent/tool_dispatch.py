@@ -17,7 +17,9 @@ from rich.console import Console
 
 from ..store.sqlite import connect_tool_events
 from ..tools import registry
-from .safety import PermissionEngine, RiskLevel
+from .safety import PermissionEngine, RiskLevel, Decision
+
+_SESSION_ALLOWLIST: set[str] = set()
 
 
 def _parse(tc: dict) -> tuple[str, dict]:
@@ -70,6 +72,10 @@ def dispatch_tool_call(
     name, args = _parse(tc)
     decision = engine.classify(name, args)
 
+    # Session-allowlist: hoppa over confirm for tidigare tillatna tools
+    if decision.risk == RiskLevel.CONFIRM and name in _SESSION_ALLOWLIST:
+        decision = Decision(RiskLevel.SAFE, allowed=True, reason="session-allowlisted")
+
     if decision.risk is RiskLevel.BLOCKED:
         _log_tool(name, decision.risk.value, "blocked", 0)
         if hooks is not None:
@@ -107,6 +113,17 @@ def dispatch_tool_call(
                 console.print("[dim]nekad av användare[/dim]")
             return "[declined by user]"
         _log_tool(name, decision.risk.value, "approved", 0)
+        # Efter godkannande: erbjud session-allowlist
+        if decision.risk == RiskLevel.CONFIRM:
+            if hooks is not None:
+                allow_all = hooks.confirm("Tillat alla " + name + " i denna session? [j/N/a(lla)]")
+            else:
+                ans = console.input(
+                    f"[dim]Tillat alla [bold]{name}[/bold] i denna session? [j/N/a(lla)] [/dim]"
+                ).strip().lower()
+                allow_all = ans in {"a", "alla"}
+            if allow_all:
+                _SESSION_ALLOWLIST.add(name)
 
     if hooks is not None:
         hooks.tool_start(name, args)
