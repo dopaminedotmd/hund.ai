@@ -15,9 +15,25 @@ Riskklasser (från HUND_SECURITY_UPDATE_ROLLBACK + review):
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+
+
+_TERMINAL_BLOCKLIST = [
+    r"\brm\s+-rf\s+/",           # rm -rf /
+    r"\bformat\b.*\b[A-Z]:",     # format C:
+    r"\bdel\s+/[sS]\s+/[qQ]",    # del /s /q (force delete)
+    r"\bInvoke-Expression\b",    # PowerShell iex
+    r"\biex\b",                  # PowerShell iex alias
+    r":\(\)\s*\{",               # fork bomb
+    r"\bshutdown\b",             # shutdown
+    r"\bmkfs\b",                 # mkfs.*
+    r"\bdd\s+if=",               # dd if=/dev/...
+    r"\bwget.*\|.*sh\b",         # curl/wget | sh
+    r"\bcurl.*\|.*sh\b",
+]
 
 
 class RiskLevel(str, Enum):
@@ -85,6 +101,12 @@ class PermissionEngine:
             for tcb_dir in TCB_DIRS:
                 if rel.startswith(tcb_dir + "/"):
                     return f"Skrivning till TCB-katalog ({rel}) är blockerad (TCB-skydd)."
+        # 4. Terminal-kommandon mot blocklistan.
+        if tool == "terminal":
+            cmd = args.get("command", "")
+            for pattern in _TERMINAL_BLOCKLIST:
+                if re.search(pattern, cmd, re.IGNORECASE):
+                    return f"Terminal-kommando blockerat (matchar '{pattern}')."
         return None
 
     def classify(self, tool: str, args: dict | None = None) -> Decision:
