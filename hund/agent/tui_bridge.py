@@ -114,19 +114,11 @@ class TuiBridge:
             rt = self.runtime
             rt.messages.append(Message(role="user", content=text))
             _session_save(rt.session_id, "user", text)
-            rt.messages[0] = Message(
-                role="system",
-                content=assemble_system_prompt(
-                    rt.persona,
-                    rt.profile,
-                    knowledge=rt.knowledge,
-                    policy_rules=rt.policy_rules,
-                    skills=rt.skills,
-                    user_text=text,
-                    memory_lines=rt.memory_lines,
-                ),
-            )
-            compressed = maybe_compress(rt.messages)
+            # Frozen system prompt fran Bygge 1 — aterbygg INTE.
+            # Skills injectas redan vid session start via _init_runtime().
+            # Om skills behover matchas om: gor det via ett separat tool-resultat
+            # istallet for att mutera messages[0].
+            compressed = maybe_compress(rt.messages, client=rt.client)
             if compressed.compressed:
                 rt.messages[:] = compressed.messages
 

@@ -34,12 +34,16 @@ console = Console()
 
 
 def _start_opentui() -> None:
-    """Start OpenTUI via Bun and wait for it to exit."""
+    """Starta OpenTUI via Bun."""
     tui_dir = Path(__file__).resolve().parent.parent / "tui"
-    bun = Path.home() / "AppData" / "Local" / "hermes" / "node" / "node_modules" / "bun" / "bin" / "bun.exe"
-    if not bun.exists():
-        bun = Path("bun")  # fallback — hoppas på PATH
-    process = subprocess.Popen([str(bun), "run", "start"], cwd=tui_dir)
+    if not (tui_dir / "node_modules").exists():
+        raise FileNotFoundError("TUI dependencies saknas. Kor 'bun install' i tui/")
+    # Anvand bun fran PATH
+    import shutil
+    bun = shutil.which("bun") or shutil.which("bun.exe")
+    if not bun:
+        raise FileNotFoundError("Bun ar inte installerat. Installera fran https://bun.sh")
+    process = subprocess.Popen([bun, "run", "src/index.tsx"], cwd=tui_dir)
     exit_code = process.wait()
     if exit_code:
         raise typer.Exit(exit_code)
@@ -86,8 +90,12 @@ def _root(
         console.print(f"hund {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        from .agent.loop import run_repl
-        raise typer.Exit(run_repl())
+        # Forsok TUI forst, fallback till REPL
+        try:
+            _start_opentui()
+        except (FileNotFoundError, Exception):
+            from .agent.loop import run_repl
+            raise typer.Exit(run_repl())
 
 
 @app.command()
