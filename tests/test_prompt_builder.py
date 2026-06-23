@@ -50,3 +50,29 @@ def test_policy_rules_injected_into_prompt():
 def test_no_policy_section_when_rules_absent():
     prompt = build_system_prompt("P", _prof())
     assert "## Policy" not in prompt
+
+
+def test_persona_truncation():
+    """Om persona överstiger 10KB, ska den trunkeras till början + slutet."""
+    huge_persona = "A" * 7000 + "B" * 5000  # 12KB totalt
+    prof = _prof()
+    prompt = build_system_prompt(huge_persona, prof)
+    
+    assert "[TRUNCATD: 12000 chars totalt" in prompt
+    assert prompt.startswith("A" * 6000)
+    # prompt slutar på tail-delen (2000 tecken) samt resten av systemprompten, så vi kollar om "B"*2000 finns i den
+    assert "B" * 2000 in prompt
+    # Kontrollera att det inte finns fler A och B än vad som är tillåtet
+    assert "A" * 6001 not in prompt
+
+
+def test_project_context_truncation():
+    """Om project_context överstiger 10KB, ska den trunkeras."""
+    huge_context = "C" * 7000 + "D" * 5000  # 12KB totalt
+    prof = _prof()
+    prompt = build_system_prompt("P", prof, project_context=huge_context)
+    
+    assert "[TRUNCATD: 12000 chars totalt" in prompt
+    assert "C" * 6000 in prompt
+    assert "D" * 2000 in prompt
+

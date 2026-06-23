@@ -8,6 +8,21 @@ from __future__ import annotations
 from ..doctor import EnvironmentProfile
 
 
+MAX_CONTEXT_CHARS = 10_000
+HEAD_CHARS = 6000
+TAIL_CHARS = 2000
+
+
+def _truncate_context(text: str) -> str:
+    if len(text) <= MAX_CONTEXT_CHARS:
+        return text
+    return (
+        text[:HEAD_CHARS]
+        + f"\n\n[TRUNCATD: {len(text)} chars totalt — visar borjan + slutet]\n\n"
+        + text[-TAIL_CHARS:]
+    )
+
+
 def capability_rules(profile: EnvironmentProfile) -> list[str]:
     rules: list[str] = []
     if not profile.has_git:
@@ -32,6 +47,8 @@ def build_system_prompt(
     skill_summaries: list[str] | None = None,
     memory_lines: list[str] | None = None,
 ) -> str:
+    persona = _truncate_context(persona)
+    project_context = _truncate_context(project_context)
     parts: list[str] = [persona]
 
     # Persistent minne (user.md) — EFTER persona, FÖRE miljöprofilen (fas 9.5 Del A)
