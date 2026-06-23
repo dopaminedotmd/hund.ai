@@ -186,6 +186,31 @@ def register_defaults(workspace: Path) -> None:
         handler=search_sessions,
     ))
 
+    from .cronjob import manage_cron
+
+    registry.register(registry.Tool(
+        name="cronjob",
+        description=(
+            "Hantera schemalagda tasks. Skapa, lista, pausa, ateruppta, ta bort. "
+            "Schedule-format: '30m' (var 30e minut), 'every 2h' (varannan timme), "
+            "eller cron-uttryck. Anvand for: dagliga rapporter, watchdog, "
+            "aterkommande kontroller. CRON KAN ALDRIG SELF-IMPROVE."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["list","create","pause","resume","remove"]},
+                "name": {"type": "string"},
+                "schedule": {"type": "string"},
+                "prompt": {"type": "string"},
+            },
+            "required": ["action"],
+        },
+        base_risk="confirm",
+        handler=manage_cron,
+    ))
+
+
 
 
 
