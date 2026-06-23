@@ -124,4 +124,38 @@ def register_defaults(workspace: Path) -> None:
         handler=run_code,
     ))
 
+    from .delegate_task import run_delegation
+
+    registry.register(registry.Tool(
+        name="delegate_task",
+        description=(
+            "Spawna upp till 3 parallella subagents for oberoende deluppgifter. "
+            "Varje subagent har begransade verktyg (endast SAFE, ingen TCB-access) "
+            "och kor i isolerad session. Returnerar sammanfattningar. "
+            "Anvand for: parallella sokningar, oberoende filanalyser, "
+            "flera research-uppgifter samtidigt."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "tasks": {
+                    "type": "array",
+                    "description": "Lista av tasks. Varje task har 'goal' (obligatorisk) och 'context' (valfri).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "goal": {"type": "string", "description": "Uppgift for subagenten"},
+                            "context": {"type": "string", "description": "Bakgrundsinformation"},
+                        },
+                        "required": ["goal"],
+                    },
+                },
+            },
+            "required": ["tasks"],
+        },
+        base_risk="confirm",
+        handler=run_delegation,
+    ))
+
+
 
