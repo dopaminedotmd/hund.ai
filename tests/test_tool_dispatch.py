@@ -63,9 +63,13 @@ def test_web_tools_registration(tmp_path):
     register_defaults(tmp_path)
     search_tool = registry.get("web_search")
     extract_tool = registry.get("web_extract")
+    execute_tool = registry.get("execute_code")
     
     assert search_tool is not None
     assert search_tool.base_risk == "safe"
     assert extract_tool is not None
     assert extract_tool.base_risk == "safe"
+    assert execute_tool is not None
+    assert execute_tool.base_risk == "confirm"
+
 

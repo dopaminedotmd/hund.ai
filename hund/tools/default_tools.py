@@ -103,3 +103,25 @@ def register_defaults(workspace: Path) -> None:
         handler=extract_web,
     ))
 
+    from .execute_code import run_code, BLOCKED_TOOLS
+
+    registry.register(registry.Tool(
+        name="execute_code",
+        description=(
+            "Kor ett Python-script som anropar Hunds tools programmatiskt. "
+            "Scriptet har tillgang till call_tool(tool, args) for att anropa "
+            "read_file, search_files, write_file, terminal, web_search, "
+            "web_extract, delete_file. Anvand for komplexa pipelines dar "
+            "flera tool-anrop behovs. Max 50 tool calls, 300s timeout. "
+            f"Blockerade tools: {', '.join(sorted(BLOCKED_TOOLS))}."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {"code": {"type": "string", "description": "Python-kod att exekvera"}},
+            "required": ["code"],
+        },
+        base_risk="confirm",
+        handler=run_code,
+    ))
+
+
