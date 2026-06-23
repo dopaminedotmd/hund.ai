@@ -81,3 +81,28 @@ def test_delegate_parallel(tmp_path):
     assert results[0].summary == "klar"
     assert results[1].success is True
     assert results[1].summary == "klar"
+
+
+def test_child_cannot_use_execute_code():
+    """Barn far inte anropa execute_code."""
+    from hund.agent.safety import PermissionEngine, RiskLevel
+    engine = PermissionEngine()
+    dec = engine.classify("execute_code", {})
+    assert dec.risk == RiskLevel.BLOCKED
+
+
+def test_child_cannot_use_delegate_task():
+    """Barn far inte spawna barnbarn (max_depth=1)."""
+    from hund.agent.safety import PermissionEngine, RiskLevel
+    engine = PermissionEngine()
+    dec = engine.classify("delegate_task", {})
+    assert dec.risk == RiskLevel.BLOCKED
+
+
+def test_child_can_use_safe_tools():
+    """Barn far anvanda SAFE tools som read_file."""
+    from hund.agent.safety import PermissionEngine, RiskLevel
+    engine = PermissionEngine()
+    dec = engine.classify("read_file", {"path": "test.txt"})
+    assert dec.risk == RiskLevel.SAFE
+
