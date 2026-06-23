@@ -27,11 +27,16 @@ Implementerade system:
 | Eval/regression library (10 smoke-cases) | ✅ klart |
 | Self-improvement proposals (human-gated) | ✅ klart |
 | Installer hardening (SHA-manifest, verify) | ✅ klart |
-| UI/TUI | ⏸ avsiktligt uppskjuten |
+| UI/TUI (OpenTUI) | ✅ klart |
 
-> **UI är avsiktligt borttagen / uppskjuten.** En fungerande funktionskärna
-> (tests, privacy, policy, skills, domains, eval) måste vara verifierad och
-> dogfoodad innan någon terminal-UI byggs. Se `docs/plans/HUND_NEXT_BUILD_PLAN.md §4.1`.
+## TUI (OpenTUI)
+
+Krav: Bun (https://bun.sh)
+
+1. Installera Bun: curl -fsSL https://bun.sh/install | bash
+2. cd tui && bun install
+3. uv run hund   (startar TUI automatiskt)
+4. uv run hund repl   (terminal-REPL som fallback)
 
 ## Snabbstart (dev)
 
