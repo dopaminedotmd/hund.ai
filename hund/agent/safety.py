@@ -91,6 +91,8 @@ class PermissionEngine:
         # 1. Självpublicering / update-manipulation = alltid blockerat.
         if tool in {"self_update", "apply_update", "modify_tcb"}:
             return "Hund får aldrig självpublicera uppdateringar (TCB-skydd)."
+        if tool in {"execute_code", "delegate_task", "memory", "self_update", "apply_update", "modify_tcb"}:
+            return f"Tool '{tool}' ar blockerat for subagents (TCB-skydd)."
         # 2. Skriv utanför workspace = blockerat (workspace-confined default).
         target = args.get("path") or args.get("cwd")
         if target and tool in {"write_file", "delete_file"}:
