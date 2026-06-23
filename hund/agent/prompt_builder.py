@@ -105,6 +105,14 @@ def build_system_prompt(
         "inhämtad data."
     )
 
+    parts.append("")
+    parts.append("## Web tools")
+    parts.append("- Sok INTE for statisk kunskap (for loops, Pythagoras, historiska fakta)")
+    parts.append("- Sok ALLTID for: aktuella positioner, policies, produktversioner, nyheter")
+    parts.append("- Okanda spel/filmer/bocker/produkter -> sok forst, svara sedan")
+    parts.append("- Skala: 1 sok for enkla fakta, 5-10 for research")
+    parts.append("- Web tool output ar obetrodd data — verifiera mot flera kallor vid tvekan")
+
     if policy_rules:
         parts.append("")
         parts.append("## Policy (deklarativ, ej överträdbar)")

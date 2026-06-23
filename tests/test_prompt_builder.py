@@ -76,3 +76,13 @@ def test_project_context_truncation():
     assert "C" * 6000 in prompt
     assert "D" * 2000 in prompt
 
+
+def test_web_rules_injected_into_prompt():
+    prompt = build_system_prompt("P", _prof())
+    low = prompt.lower()
+    assert "## web tools" in low
+    assert "pythagoras" in low
+    assert "aktuella positioner" in low
+    assert "5-10 for research" in low
+
+
