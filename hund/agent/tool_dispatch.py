@@ -111,6 +111,10 @@ def dispatch_tool_call(
     if hooks is not None:
         hooks.tool_start(name, args)
     result = registry.call(name, args)
+    # Trunkera stora tool-resultat innan de hamnar i context window.
+    MAX_TOOL_OUTPUT = 50_000  # ~12K tokens
+    if len(result) > MAX_TOOL_OUTPUT:
+        result = result[:MAX_TOOL_OUTPUT] + "\n[TRUNCATED — output oversteg 50KB]"
     success = 0 if result.startswith("[error]") else 1
     _log_tool(name, decision.risk.value, "ran", success)
     shown = result if len(result) <= 120 else result[:120] + "…"
