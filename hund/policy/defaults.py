@@ -42,6 +42,8 @@ def default_policy() -> Policy:
         ),
         forbidden_core_paths=(
             "hund/agent/safety.py",
+            "hund/agent/tool_dispatch.py",
+            "hund/agent/loop.py",
             "hund/learning/redactor.py",
             "hund/main.py",
             "hund/updater",

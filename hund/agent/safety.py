@@ -56,6 +56,8 @@ _TOOL_BASE_RISK: dict[str, RiskLevel] = {
 
 TCB_FILES = {
     "hund/agent/safety.py",
+    "hund/agent/tool_dispatch.py",
+    "hund/agent/loop.py",
     "hund/learning/redactor.py",
     "hund/main.py",
 }
