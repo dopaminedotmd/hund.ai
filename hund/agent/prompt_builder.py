@@ -23,6 +23,29 @@ def _truncate_context(text: str) -> str:
     )
 
 
+_SUSPICIOUS_PATTERNS = [
+    r"<[a-z_]+>.*</[a-z_]+>",       # XML-taggar
+    r"ignore previous instructions",
+    r"ignore all previous",
+    r"disregard (above|prior)",
+    r"you are now",
+    r"new instructions:",
+    r"\[system\]",
+    r"<\|im_start\|>",
+    r"<\|im_end\|>",
+]
+
+def _scan_for_injection(text: str) -> list[str]:
+    """Returnera lista av misstankta monster. Tom lista = rent."""
+    import re
+    hits = []
+    for pattern in _SUSPICIOUS_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            hits.append(pattern)
+    return hits
+
+
+
 def capability_rules(profile: EnvironmentProfile) -> list[str]:
     rules: list[str] = []
     if not profile.has_git:
@@ -49,6 +72,19 @@ def build_system_prompt(
 ) -> str:
     persona = _truncate_context(persona)
     project_context = _truncate_context(project_context)
+
+    if persona:
+        hits_p = _scan_for_injection(persona)
+        if hits_p:
+            import sys
+            print(f"[VARNING] Misstankta monster i persona: {hits_p}", file=sys.stderr)
+
+    if project_context:
+        hits_c = _scan_for_injection(project_context)
+        if hits_c:
+            import sys
+            print(f"[VARNING] Misstankta monster i project_context: {hits_c}", file=sys.stderr)
+
     parts: list[str] = [persona]
 
     # Persistent minne (user.md) — EFTER persona, FÖRE miljöprofilen (fas 9.5 Del A)
