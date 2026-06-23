@@ -30,10 +30,12 @@ def test_long_session_drops_middle_keeps_system_and_recent():
     res = compress(msgs, keep_recent=6)
     assert res.compressed is True
     assert res.dropped_turns > 0
-    # system bevarad + 6 recent
+    # system bevarad + marker + 6 recent
     assert res.messages[0].role == "system"
     assert res.messages[0].content.startswith("SYSTEM")
-    assert len(res.messages) == 1 + 6
+    assert res.messages[1].role == "system"
+    assert res.messages[1].content.startswith("[KOMPRIMERAD")
+    assert len(res.messages) == 1 + 1 + 6
     # senaste user-turnen bevarad (näst sista = user, sista = assistant)
     assert res.messages[-2].content.startswith("turn 19")
 
@@ -41,16 +43,16 @@ def test_long_session_drops_middle_keeps_system_and_recent():
 def test_compression_marks_tool_output_as_data():
     msgs = _msgs(20)
     res = compress(msgs, keep_recent=6)
-    assert "OBTRODD DATA" in res.messages[0].content
-    assert "ej instruktioner" in res.messages[0].content.lower()
+    assert "OBTRODD DATA" in res.messages[1].content
+    assert "ej instruktioner" in res.messages[1].content.lower()
 
 
 def test_compression_note_not_accumulated_on_recompress():
     msgs = _msgs(20)
     once = compress(msgs, keep_recent=6)
     twice = compress(once.messages, keep_recent=6)
-    # noten får ej läggas till igen
-    assert twice.messages[0].content.count("[KOMPRIMERAD") == 1
+    # noten får ej läggas till igen (den gamla tas bort och ny läggs till, så den finns bara en gång)
+    assert twice.messages[1].content.count("[KOMPRIMERAD") == 1
 
 
 def test_maybe_compress_respects_threshold():
@@ -73,9 +75,10 @@ def test_estimate_tokens_positive_and_grows():
 def test_system_plus_recent_preserved_after_compression_order():
     msgs = _msgs(10)
     res = compress(msgs, keep_recent=4)
-    # första = system, sedan de 4 senaste i ordning
+    # första = system, andra = marker, sedan de 4 senaste i ordning
     assert res.messages[0].role == "system"
-    assert [m.role for m in res.messages[1:]] == ["user", "assistant", "user", "assistant"]
+    assert res.messages[1].role == "system"
+    assert [m.role for m in res.messages[2:]] == ["user", "assistant", "user", "assistant"]
 
 
 def test_deterministic_same_input_same_output():

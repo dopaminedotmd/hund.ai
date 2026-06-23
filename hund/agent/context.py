@@ -56,16 +56,15 @@ def compress(
     recent = list(messages[-keep_recent:])
     dropped = len(messages) - 1 - keep_recent
 
-    new_content = system.content
-    if _MARKER not in new_content:
-        new_content = f"{new_content}\n\n{_NOTE}"
-    new_system = Message(
-        role=system.role,
-        content=new_content,
-        tool_calls=list(system.tool_calls),
-        tool_call_id=system.tool_call_id,
+    # Behåll systemprompten oförändrad (prompt cache)
+    # Markören läggs som ett separat system-meddelande
+    marker = Message(
+        role="system",
+        content=_NOTE,
+        tool_calls=[],
+        tool_call_id=None,
     )
-    compacted = [new_system] + recent
+    compacted = [system, marker] + recent
     return CompressionResult(compacted, dropped, estimate_tokens(compacted), True)
 
 
