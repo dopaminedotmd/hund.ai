@@ -122,3 +122,53 @@ def test_serve_rpc_blocked_tools():
     assert "blockerad" in response_sent["error"]
     # engine.classify ska inte ens ha anropats
     mock_engine.classify.assert_not_called()
+
+
+def test_rpc_roundtrip():
+    """Subprocess anropar call_tool -> parent svarar -> subprocess far resultat."""
+    from hund.tools.execute_code import RPC_CLIENT_STUB
+    import subprocess
+    import tempfile
+    import os
+    
+    code = RPC_CLIENT_STUB + "\n" + (
+        "res = call_tool('read_file', {'path': 'integration.txt'})\n"
+        "print('GOT:', res)\n"
+    )
+    
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as f:
+        f.write(code)
+        tmp_path = f.name
+        
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, tmp_path],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8"
+        )
+        
+        mock_engine = MagicMock()
+        mock_decision = MagicMock()
+        mock_decision.risk = RiskLevel.SAFE
+        mock_engine.classify.return_value = mock_decision
+        
+        with patch("hund.tools.registry.call", return_value="integration file content") as mock_call:
+            stdout_result = serve_rpc(
+                read_stream=proc.stdout,
+                write_stream=proc.stdin,
+                engine=mock_engine,
+            )
+            
+            proc.wait(timeout=10)
+            
+            assert "GOT: integration file content" in stdout_result
+            mock_call.assert_called_once_with("read_file", {"path": "integration.txt"})
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
