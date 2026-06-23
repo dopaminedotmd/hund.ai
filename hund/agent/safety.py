@@ -53,6 +53,7 @@ _TOOL_BASE_RISK: dict[str, RiskLevel] = {
     "delete_file": RiskLevel.DANGEROUS,
 }
 
+_HUND_ROOT = Path(__file__).resolve().parent.parent  # hund/ katalogen
 
 TCB_FILES = {
     "hund/agent/safety.py",
@@ -65,6 +66,9 @@ TCB_FILES = {
 TCB_DIRS = {
     "hund/updater",
 }
+
+_TCB_ABS_FILES = {(_HUND_ROOT / f).resolve() for f in TCB_FILES}
+_TCB_ABS_DIRS = [(_HUND_ROOT / d).resolve() for d in TCB_DIRS]
 
 
 @dataclass
@@ -98,11 +102,16 @@ class PermissionEngine:
                 )
             
             # 3. Skrivning till TCB-filer / TCB-kataloger = blockerat.
-            if rel in TCB_FILES:
-                return f"Skrivning till TCB-fil ({rel}) är blockerad (TCB-skydd)."
+            # Dual check: relativ sokvag (workspace = hund-repo) ELLER
+            # absolut sokvag (workspace = nagon annanstans).
+            if rel in TCB_FILES or resolved in _TCB_ABS_FILES:
+                return f"Skrivning till TCB-fil ({rel}) ar blockerad (TCB-skydd)."
             for tcb_dir in TCB_DIRS:
                 if rel.startswith(tcb_dir + "/"):
-                    return f"Skrivning till TCB-katalog ({rel}) är blockerad (TCB-skydd)."
+                    return f"Skrivning till TCB-katalog ({rel}) ar blockerad (TCB-skydd)."
+            for tcb_abs_dir in _TCB_ABS_DIRS:
+                if resolved == tcb_abs_dir or tcb_abs_dir in resolved.parents:
+                    return f"Skrivning till TCB-katalog ({rel}) ar blockerad (TCB-skydd)."
         # 4. Terminal-kommandon mot blocklistan.
         if tool == "terminal":
             cmd = args.get("command", "")
