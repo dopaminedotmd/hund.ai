@@ -86,13 +86,15 @@ def _root(
         console.print(f"hund {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        _start_opentui()
+        from .agent.loop import run_repl
+        raise typer.Exit(run_repl())
 
 
 @app.command()
 def repl() -> None:
-    """Start OpenTUI explicitly."""
-    _start_opentui()
+    """Starta interaktiv REPL (terminal)."""
+    from .agent.loop import run_repl
+    raise typer.Exit(run_repl())
 
 
 @app.command()
