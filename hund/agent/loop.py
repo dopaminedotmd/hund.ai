@@ -311,30 +311,43 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
     confirm, tool_result, blocked, declined) när det givet.
     """
     for _ in range(MAX_TOOL_ROUNDS):
-        parts: list[str] = []
         if sink is not None:
             sink.thinking()
-        first = True
-        try:
-            for chunk in client.stream(messages, tools=schemas):
-                parts.append(chunk)
+        import time
+        MAX_RETRIES = 3
+        for attempt in range(MAX_RETRIES + 1):
+            parts = []
+            first = True
+            try:
+                for chunk in client.stream(messages, tools=schemas):
+                    parts.append(chunk)
+                    if sink is not None:
+                        if first:
+                            sink.clear_thinking()
+                            first = False
+                        sink.chunk(chunk)
+                    else:
+                        console.print(chunk, end="", markup=False, highlight=False)
+                break  # lyckades
+            except RuntimeError as e:
+                msg_str = str(e)
+                if "429" in msg_str and attempt < MAX_RETRIES:
+                    delay = 2 ** attempt  # 1, 2, 4 sekunder
+                    if sink is not None:
+                        sink.error(f"[dim]rate limit — forsoker igen om {delay}s...[/dim]")
+                    else:
+                        console.print(f"[dim]rate limit — forsoker igen om {delay}s...[/dim]")
+                    time.sleep(delay)
+                    continue
+                msg = f"\n[red]{e}[/red]" if parts else f"[red]{e}[/red]"
                 if sink is not None:
                     if first:
                         sink.clear_thinking()
-                        first = False
-                    sink.chunk(chunk)
+                    sink.error(msg)
                 else:
-                    console.print(chunk, end="", markup=False, highlight=False)
-        except RuntimeError as e:
-            msg = f"\n[red]{e}[/red]" if parts else f"[red]{e}[/red]"
-            if sink is not None:
-                if first:
-                    sink.clear_thinking()
-                sink.error(msg)
-            else:
-                console.print(msg)
-            messages.pop()  # rensa misslyckad user-msg
-            return
+                    console.print(msg)
+                messages.pop()  # rensa misslyckad user-msg
+                return
 
         result = client.last_result
         assert result is not None
