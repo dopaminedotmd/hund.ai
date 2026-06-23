@@ -53,6 +53,7 @@ _TOOL_BASE_RISK: dict[str, RiskLevel] = {
     "delete_file": RiskLevel.DANGEROUS,
     "execute_code": RiskLevel.CONFIRM,
     "delegate_task": RiskLevel.CONFIRM,
+    "session_search": RiskLevel.SAFE,
 }
 
 _HUND_ROOT = Path(__file__).resolve().parent.parent  # hund/ katalogen

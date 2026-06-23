@@ -157,5 +157,35 @@ def register_defaults(workspace: Path) -> None:
         handler=run_delegation,
     ))
 
+    from .session_search import search_sessions
+
+    registry.register(registry.Tool(
+        name="session_search",
+        description=(
+            "Sok i Hunds tidigare sessionshistorik. Anvand for att hitta "
+            "vad som diskuterades tidigare, ateruppta tradar, eller hamta "
+            "kontext fran aldre konversationer. Tva lagen: "
+            "'search' (FTS5-fulltext, krav 'query'), "
+            "'list' (senaste sessionerna). "
+            "Sok INNAN du fragar anvandaren om nagot de redan berattat."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["search", "list"],
+                    "description": "'search' = fulltext-sok (krav query), 'list' = senaste sessioner",
+                },
+                "query": {"type": "string", "description": "Sokfras (content nouns, t.ex. 'byggplan' inte 'vad diskuterade vi')"},
+                "limit": {"type": "integer", "description": "Max resultat (default 5, max 20)"},
+            },
+            "required": ["mode"],
+        },
+        base_risk="safe",
+        handler=search_sessions,
+    ))
+
+
 
 
