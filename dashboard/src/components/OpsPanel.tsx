@@ -27,15 +27,10 @@ export function OpsPanel({
     if (connectionStatus !== 'online') return;
     const fetchRuns = async () => {
       try {
-        const res = await fetch('/api/events?event_type=run_started');
+        const res = await fetch('/api/runs');
         const data = await res.json();
-        if (data.events) {
-          setRuns(data.events.map((e: any) => ({
-            id: e.run_id,
-            status: 'completed', // Simplified
-            start: e.created_at,
-            duration: '0.8s'
-          })));
+        if (data.runs) {
+          setRuns(data.runs);
         }
       } catch (err) {
         console.error("Error fetching runs:", err);

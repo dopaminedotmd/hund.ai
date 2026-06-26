@@ -42,28 +42,60 @@ export function ChatPanel({ connectionStatus, activeRunId }: ChatPanelProps) {
     setMessages(prev => [...prev, userMsg]);
     setInputVal('');
 
-    // Phase 5 Read-Only Warning Mock Reply
-    setTimeout(() => {
-      const responseText = inputVal.toLowerCase().includes('skriv') || inputVal.toLowerCase().includes('skapa')
-        ? 'Jag upptäckte en skrivåtgärd. Eftersom Phase 5 körs i read-only läge blockeras detta kommando av min lokala PermissionEngine.'
-        : `Jag mottog ditt meddelande: "${inputVal}". Traces registreras live i Ops-panelen.`;
-      
-      setMessages(prev => [...prev, {
-        id: Math.random().toString(),
-        sender: 'hund',
-        text: responseText,
-        timestamp: new Date().toLocaleTimeString()
-      }]);
-
-      if (inputVal.toLowerCase().includes('skriv') || inputVal.toLowerCase().includes('skapa')) {
+    const fetchChatResponse = async () => {
+      try {
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: inputVal })
+        });
+        if (!res.ok) throw new Error("Backend not responding");
+        const data = await res.json();
+        if (data.status === 'ok') {
+          setMessages(prev => [...prev, {
+            id: Math.random().toString(),
+            sender: 'hund',
+            text: data.response,
+            timestamp: new Date().toLocaleTimeString()
+          }]);
+          
+          const hasBlocked = data.tool_logs && data.tool_logs.some((log: string) => log.toLowerCase().includes('blocked') || log.toLowerCase().includes('declined'));
+          if (hasBlocked) {
+            setMessages(prev => [...prev, {
+              id: Math.random().toString(),
+              sender: 'system',
+              text: 'Händelse: tool_call_blocked (write operation denied in read-only phase)',
+              timestamp: new Date().toLocaleTimeString()
+            }]);
+          }
+        } else {
+          throw new Error(data.reason || "Unknown error");
+        }
+      } catch (err) {
+        console.warn("Backend chat error, falling back to mock:", err);
+        // Fallback mock
+        const responseText = inputVal.toLowerCase().includes('skriv') || inputVal.toLowerCase().includes('skapa')
+          ? 'Jag upptäckte en skrivåtgärd. Eftersom Phase 5 körs i read-only läge blockeras detta kommando av min lokala PermissionEngine.'
+          : `Jag mottog ditt meddelande: "${inputVal}". Traces registreras live i Ops-panelen. (Fallback)`;
+        
         setMessages(prev => [...prev, {
           id: Math.random().toString(),
-          sender: 'system',
-          text: 'Händelse: tool_call_blocked (write operation denied in read-only phase)',
+          sender: 'hund',
+          text: responseText,
           timestamp: new Date().toLocaleTimeString()
         }]);
+
+        if (inputVal.toLowerCase().includes('skriv') || inputVal.toLowerCase().includes('skapa')) {
+          setMessages(prev => [...prev, {
+            id: Math.random().toString(),
+            sender: 'system',
+            text: 'Händelse: tool_call_blocked (write operation denied in read-only phase)',
+            timestamp: new Date().toLocaleTimeString()
+          }]);
+        }
       }
-    }, 1000);
+    };
+    fetchChatResponse();
   };
 
   return (
