@@ -85,17 +85,23 @@ class Decision:
 class PermissionEngine:
     """Kodad, hård permission-gate. Omutbar via prompt."""
 
-    def __init__(self, workspace_root: Path | None = None) -> None:
+    def __init__(self, workspace_root: Path | None = None, mode: str = "main_agent") -> None:
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
+        valid_modes = {"main_agent", "subagent", "execute_code", "cron", "connector_remote"}
+        if mode not in valid_modes:
+            raise ValueError(f"Invalid execution mode: {mode}")
+        self.mode = mode
 
     def _is_blocked(self, tool: str, args: dict) -> str | None:
         """Returnera blockorsak eller None."""
         # 1. Självpublicering / update-manipulation = alltid blockerat.
         if tool in {"self_update", "apply_update", "modify_tcb"}:
             return "Hund får aldrig självpublicera uppdateringar (TCB-skydd)."
-        if tool in {"execute_code", "delegate_task", "memory", "self_update", "apply_update", "modify_tcb"}:
-            return f"Tool '{tool}' ar blockerat for subagents (TCB-skydd)."
-        # 2. Skriv utanför workspace = blockerat (workspace-confined default).
+        # 2. Blockering baserad på exekveringsläge
+        if self.mode != "main_agent":
+            if tool in {"execute_code", "delegate_task", "memory", "self_update", "apply_update", "modify_tcb"}:
+                return f"Tool '{tool}' ar blockerat i {self.mode}-lage (TCB-skydd)."
+        # 3. Skriv utanför workspace = blockerat (workspace-confined default).
         target = args.get("path") or args.get("cwd")
         if target and tool in {"write_file", "delete_file"}:
             try:
@@ -107,7 +113,7 @@ class PermissionEngine:
                     f"är blockerat som default."
                 )
             
-            # 3. Skrivning till TCB-filer / TCB-kataloger = blockerat.
+            # 4. Skrivning till TCB-filer / TCB-kataloger = blockerat.
             # Dual check: relativ sokvag (workspace = hund-repo) ELLER
             # absolut sokvag (workspace = nagon annanstans).
             if rel in TCB_FILES or resolved in _TCB_ABS_FILES:
@@ -118,7 +124,7 @@ class PermissionEngine:
             for tcb_abs_dir in _TCB_ABS_DIRS:
                 if resolved == tcb_abs_dir or tcb_abs_dir in resolved.parents:
                     return f"Skrivning till TCB-katalog ({rel}) ar blockerad (TCB-skydd)."
-        # 4. Terminal-kommandon mot blocklistan.
+        # 5. Terminal-kommandon mot blocklistan.
         if tool == "terminal":
             cmd = args.get("command", "")
             for pattern in _TERMINAL_BLOCKLIST:

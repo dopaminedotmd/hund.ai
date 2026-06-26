@@ -86,7 +86,7 @@ def test_delegate_parallel(tmp_path):
 def test_child_cannot_use_execute_code():
     """Barn far inte anropa execute_code."""
     from hund.agent.safety import PermissionEngine, RiskLevel
-    engine = PermissionEngine()
+    engine = PermissionEngine(mode="subagent")
     dec = engine.classify("execute_code", {})
     assert dec.risk == RiskLevel.BLOCKED
 
@@ -94,7 +94,7 @@ def test_child_cannot_use_execute_code():
 def test_child_cannot_use_delegate_task():
     """Barn far inte spawna barnbarn (max_depth=1)."""
     from hund.agent.safety import PermissionEngine, RiskLevel
-    engine = PermissionEngine()
+    engine = PermissionEngine(mode="subagent")
     dec = engine.classify("delegate_task", {})
     assert dec.risk == RiskLevel.BLOCKED
 
@@ -102,7 +102,16 @@ def test_child_cannot_use_delegate_task():
 def test_child_can_use_safe_tools():
     """Barn far anvanda SAFE tools som read_file."""
     from hund.agent.safety import PermissionEngine, RiskLevel
-    engine = PermissionEngine()
+    engine = PermissionEngine(mode="subagent")
     dec = engine.classify("read_file", {"path": "test.txt"})
     assert dec.risk == RiskLevel.SAFE
+
+
+def test_main_agent_can_use_restricted_tools():
+    """Huvudagenten får anropa execute_code och delegate_task (CONFIRM-nivå)."""
+    from hund.agent.safety import PermissionEngine, RiskLevel
+    engine = PermissionEngine(mode="main_agent")
+    for tool in ("execute_code", "delegate_task"):
+        dec = engine.classify(tool, {})
+        assert dec.risk == RiskLevel.CONFIRM
 
