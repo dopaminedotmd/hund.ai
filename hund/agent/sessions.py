@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,                 -- user|assistant|system|tool
     content TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    seq INTEGER NOT NULL
+    seq INTEGER NOT NULL,
+    run_id TEXT
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
@@ -59,8 +60,20 @@ def _connect(home: Optional[Path] = None) -> sqlite3.Connection:
     db = base / "sessions" / "sessions.db"
     db.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _migrate_sessions(conn)
     return conn
+
+
+def _migrate_sessions(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(messages)")
+    }
+    if "run_id" not in existing:
+        conn.execute("ALTER TABLE messages ADD COLUMN run_id TEXT")
+        conn.commit()
 
 
 def _match_prefix(session_id: str) -> tuple[str, str]:

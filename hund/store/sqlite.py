@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS requests (
     finish_reason TEXT,
     prompt_tokens INTEGER DEFAULT 0,
     completion_tokens INTEGER DEFAULT 0,
-    latency_ms INTEGER DEFAULT 0
+    latency_ms INTEGER DEFAULT 0,
+    run_id TEXT
 );
 """
 
@@ -125,7 +126,19 @@ def connect_requests(db_path: Path | None = None) -> sqlite3.Connection:
     """logs/requests.db — token/latency per LLM-request."""
     from ..paths import requests_db_path as default_path
 
-    return _open(db_path or default_path(), REQUESTS_SCHEMA)
+    conn = _open(db_path or default_path(), REQUESTS_SCHEMA)
+    _migrate_requests(conn)
+    return conn
+
+
+def _migrate_requests(conn: sqlite3.Connection) -> None:
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(requests)")
+    }
+    if "run_id" not in existing:
+        conn.execute("ALTER TABLE requests ADD COLUMN run_id TEXT")
+        conn.commit()
 
 
 def connect_tool_events(db_path: Path | None = None) -> sqlite3.Connection:

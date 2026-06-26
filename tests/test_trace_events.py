@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 import pytest
 
@@ -102,3 +103,51 @@ def test_write_and_read_event(tmp_path):
     assert len(session_b_events) == 1
     assert session_b_events[0].event_id == event3.event_id
     assert session_b_events[0].run_id == "run-Y"
+
+
+def test_database_migrations_run_id(tmp_path):
+    """Verifierar att databasmigreringar lägger till run_id i requests och sessions tabeller."""
+    # 1. requests.db migration
+    req_db = tmp_path / "requests.db"
+    # Skapa tabell UTAN run_id kolumn först
+    conn = sqlite3.connect(req_db)
+    conn.execute("""
+        CREATE TABLE requests (
+            id TEXT PRIMARY KEY,
+            created_at TEXT NOT NULL,
+            prompt_tokens INTEGER DEFAULT 0
+        )
+    """)
+    conn.close()
+    
+    # Kör connect_requests (bör köra migratorn)
+    from hund.store.sqlite import connect_requests
+    conn = connect_requests(req_db)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(requests)")}
+    assert "run_id" in cols
+    conn.close()
+
+    # 2. sessions.db migration
+    sess_dir = tmp_path / "sessions"
+    sess_dir.mkdir()
+    sess_db = sess_dir / "sessions.db"
+    conn = sqlite3.connect(sess_db)
+    conn.execute("""
+        CREATE TABLE messages (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            seq INTEGER NOT NULL
+        )
+    """)
+    conn.close()
+    
+    # Kör sessions._connect
+    from hund.agent.sessions import _connect
+    conn = _connect(tmp_path)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    assert "run_id" in cols
+    conn.close()
+
