@@ -46,6 +46,34 @@ CREATE TABLE IF NOT EXISTS domains (
     confidence TEXT,                   -- low|medium|high
     detected_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS trace_events (
+    event_id TEXT PRIMARY KEY,
+    schema_version INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    org_id TEXT,
+    workspace_id TEXT,
+    connector_id TEXT,
+    session_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    turn_id TEXT,
+    parent_run_id TEXT,
+    actor TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    risk TEXT,
+    policy_version TEXT,
+    tool_name TEXT,
+    approval_id TEXT,
+    payload_redacted TEXT,         -- JSON string
+    payload_hash TEXT NOT NULL,
+    payload_hash_algorithm TEXT NOT NULL,
+    redactor_version TEXT NOT NULL,
+    redaction TEXT                  -- JSON string
+);
+
+CREATE INDEX IF NOT EXISTS idx_trace_events_session ON trace_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_trace_events_run ON trace_events(run_id);
+CREATE INDEX IF NOT EXISTS idx_trace_events_type ON trace_events(event_type);
 """
 
 REQUESTS_SCHEMA = """
