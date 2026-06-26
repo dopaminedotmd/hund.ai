@@ -10,6 +10,9 @@ from hund.main import app
 def test_no_arguments_starts_repl(monkeypatch):
     """Utan subkommando: startar REPL (UI förbjudet)."""
     repl_called = []
+    def mock_start_opentui():
+        raise FileNotFoundError("TUI disabled in tests")
+    monkeypatch.setattr("hund.main._start_opentui", mock_start_opentui)
     monkeypatch.setattr("hund.agent.loop.run_repl", lambda: repl_called.append(True) or 0)
     result = CliRunner().invoke(app, [])
     assert result.exit_code == 0
