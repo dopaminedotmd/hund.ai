@@ -74,6 +74,38 @@ CREATE TABLE IF NOT EXISTS trace_events (
 CREATE INDEX IF NOT EXISTS idx_trace_events_session ON trace_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_trace_events_run ON trace_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_events_type ON trace_events(event_type);
+
+CREATE TABLE IF NOT EXISTS forge_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    artifact_type TEXT NOT NULL,
+    change_type TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    risk TEXT NOT NULL,
+    source TEXT DEFAULT 'real',
+    state TEXT NOT NULL,
+    payload_redacted TEXT NOT NULL,
+    apply_policy TEXT NOT NULL,
+    forge_verdict TEXT,
+    composite_score INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_forge_artifacts_tenant ON forge_artifacts(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_forge_artifacts_state ON forge_artifacts(state);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_forge_artifacts_proposal_tenant
+    ON forge_artifacts(proposal_id, tenant_id);
+
+CREATE TABLE IF NOT EXISTS forge_evaluations (
+    idempotency_key TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL,
+    tenant_id TEXT NOT NULL,
+    request_redacted TEXT NOT NULL,
+    response_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 """
 
 REQUESTS_SCHEMA = """
