@@ -90,18 +90,14 @@ def _root(
         console.print(f"hund {__version__}")
         raise typer.Exit()
     if ctx.invoked_subcommand is None:
-        # Forsok TUI forst, fallback till REPL
-        try:
-            _start_opentui()
-        except (FileNotFoundError, Exception):
-            from .agent.loop import run_repl
-            raise typer.Exit(run_repl())
+        from .ui import run_repl
+        raise typer.Exit(run_repl())
 
 
 @app.command()
 def repl() -> None:
     """Starta interaktiv REPL (terminal)."""
-    from .agent.loop import run_repl
+    from .ui import run_repl
     raise typer.Exit(run_repl())
 
 
