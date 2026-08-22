@@ -45,10 +45,12 @@ Thumbs.db
 .agents/
 .claude/
 .hermes/
+.codex/
 docs/
 dev-dashboard/
 tui/
 scripts/
+hund/agent/archive/
 AGENTS.md
 CLAUDE.md
 HUND_COMPLETE_BIBLE.md
