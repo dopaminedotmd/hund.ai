@@ -351,11 +351,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _pgdn(event):
         _scroll_lines(-15)
 
-    @kb.add("scroll-up")
+    @kb.add("<scroll-up>")
     def _scroll_up(event):
         _scroll_lines(3)
 
-    @kb.add("scroll-down")
+    @kb.add("<scroll-down>")
     def _scroll_down(event):
         _scroll_lines(-3)
 
