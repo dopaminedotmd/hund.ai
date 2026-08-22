@@ -3,17 +3,27 @@
   "name": "knowledge-gap-detection",
   "domain": "general",
   "status": "active",
-  "triggers": ["*"],
-  "when_to_use": "INTERN — körs efter varje turn via loop-krok, inte via triggermatchning. Identifierar när Hund saknar domänkunskap och loggar gap-events.",
+  "triggers": [
+    "*"
+  ],
+  "when_to_use": "INTERNAL — evaluated following each agent turn via loop hook. Identifies when Hund lacks specialized domain knowledge and records gap events to local state.",
   "steps": [
-    "Efter varje svar: reflektera över om Hund saknade kunskap för att ge ett bättre svar.",
-    "Om ja: identifiera domänen (shopify, python, git, etc).",
-    "Logga gap-event till hund.db med domän, trigger-ord och en kort beskrivning av vad som saknades.",
-    "Föreslå inte en study eller proposal automatiskt — bara logga gapet."
+    "After generating a response, assess whether missing domain knowledge degraded the quality or precision of the outcome.",
+    "If a gap exists: classify the relevant domain (e.g. shopify, python, git, devops).",
+    "Record a gap event into hund.db containing domain, trigger terms, and an actionable diagnosis.",
+    "Do not auto-generate proposals or studies during live execution — log the gap cleanly."
   ],
   "required_tools": [],
-  "forbidden_actions": ["delete", "modify_tcb"],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "modify_tcb",
+    "self_update"
+  ],
   "safety_level": "read_only",
-  "verification": ["kontrollera att gap-event loggats till hund.db"],
+  "verification": [
+    "gap event is persisted to hund.db"
+  ],
   "examples": []
 }

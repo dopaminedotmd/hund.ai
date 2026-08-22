@@ -3,18 +3,40 @@
   "name": "systematic-debugging",
   "domain": "software-development",
   "status": "active",
-  "triggers": ["error", "bug", "traceback", "exception", "crash", "failed", "fix", "debug"],
-  "when_to_use": "När ett fel har uppstått och måste förstås innan det åtgärdas. 4-fas: förstå → reproducera → diagnostisera → fixa.",
-  "steps": [
-    "Fas 1 — Förstå: Läs felmeddelandet noggrant. Identifiera exakt var felet uppstår.",
-    "Fas 2 — Reproducera: Kör relevant test eller kommando för att återskapa felet.",
-    "Fas 3 — Diagnostisera: Spåra rotorsaken, inte symptomet. Använd sökverktyg för att hitta definitioner.",
-    "Fas 4 — Fixa: Gör minimal ändring som adresserar rotorsaken. Verifiera att felet är borta och inga regressioner.",
-    "Föreslå aldrig en fix utan att ha gått igenom alla fyra faserna."
+  "triggers": [
+    "error",
+    "bug",
+    "traceback",
+    "exception",
+    "crash",
+    "failed",
+    "fix",
+    "debug"
   ],
-  "required_tools": ["read_file", "search_files", "terminal"],
-  "forbidden_actions": ["push", "delete"],
+  "when_to_use": "When an error, test failure, or unexpected behavior occurs. Governs a strict 4-phase discipline: Understand -> Reproduce -> Diagnose -> Fix.",
+  "steps": [
+    "Phase 1 — Understand: Inspect the exact error output, stack trace, and failing conditions.",
+    "Phase 2 — Reproduce: Replicate the failure consistently via minimal test or command invocation.",
+    "Phase 3 — Diagnose: Trace the underlying root cause rather than treating superficial symptoms.",
+    "Phase 4 — Fix: Implement the minimal surgical fix, then verify that all test suites pass without regression.",
+    "Never propose speculative fixes without completing all four diagnostic phases."
+  ],
+  "required_tools": [
+    "read_file",
+    "search_files",
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "modify_tcb",
+    "push",
+    "self_update"
+  ],
   "safety_level": "read_only",
-  "verification": ["uv run pytest efter fix"],
+  "verification": [
+    "uv run pytest passes after applying the fix"
+  ],
   "examples": []
 }

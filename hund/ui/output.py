@@ -1,12 +1,12 @@
-"""StreamingSink - duck-typed UI-sink for agent.loop._agent_turn.
+"""StreamingSink - duck-typed UI sink for agent.loop._agent_turn and tool_dispatch.
 
-Implementerar sink-protokollet (se hund/agent/loop.py _agent_turn docstring):
+Implements the sink protocol:
   thinking() / clear_thinking() / chunk(text) / end_assistant() / error(markup)
-samt tool-hook-kontraktet (se hund/agent/tool_dispatch.py dispatch_tool_call):
-  confirm(prompt) / tool_start(name,args) / tool_result(name,shown)
-  blocked(name,reason) / declined(name,reason)
+and the tool-hook contract:
+  confirm(prompt) / tool_start(name, args) / tool_result(name, shown)
+  blocked(name, reason) / declined(name, reason)
 
-Streaming = direkt utskrift. Ingen time.sleep (nätverk skapar naturlig fordröjning).
+Renders compact boxed cards via theme.boxify() for tool execution events.
 """
 from __future__ import annotations
 
@@ -39,7 +39,7 @@ def _short_args(args) -> str:
 
 
 def strip_markdown(text: str) -> str:
-    """Returnera Hund-output som ren terminaltext utan markdown-markörer."""
+    """Return plain terminal text with markdown markers stripped."""
     text = _FENCE_RE.sub("", text)
     text = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
     text = _INLINE_CODE_RE.sub(lambda m: m.group(1), text)
@@ -50,10 +50,7 @@ def strip_markdown(text: str) -> str:
 
 
 class StreamingSink:
-    """Skriver agentens stream direkt till en Rich Console.
-
-    Anvands aven som tool-hooks av dispatch_tool_call (samma objekt).
-    """
+    """Streams agent tokens and renders boxed tool cards to a Rich Console."""
 
     def __init__(self, console: Console, *, stream_delay_s: float | None = None):
         self.console = console
@@ -66,11 +63,10 @@ class StreamingSink:
                 stream_delay_s = _DEFAULT_STREAM_DELAY_S
         self.stream_delay_s = max(0.0, min(stream_delay_s, 0.02))
 
-    # -- streaming protokoll ----------------------------------------------
+    # -- streaming protocol ----------------------------------------------
 
     def thinking(self, msg: str | None = None) -> None:
-        text = msg or "hund tänker..."
-        # skriv på aktuell rad utan newline; clear_thinking raderar sen
+        text = msg or "hund is thinking..."
         self.console.print(f"[dim]{theme.HUND_INDENT}{text}[/dim]", end="")
         self._thinking_active = True
 
@@ -78,14 +74,16 @@ class StreamingSink:
         if not self._thinking_active:
             return
         f = self.console.file
-        f.write("\r" + " " * 60 + "\r")
-        f.flush()
+        try:
+            f.write("\r" + " " * 60 + "\r")
+            f.flush()
+        except Exception:
+            pass
         self._thinking_active = False
 
     def chunk(self, text: str) -> None:
         self.clear_thinking()
         text = strip_markdown(text)
-        # markup=False: agent-text ar data, tolka ej Rich-markup
         for ch in text:
             self.console.print(
                 ch,
@@ -109,11 +107,18 @@ class StreamingSink:
         self.clear_thinking()
         self.console.print(markup)
 
-    # -- tool-hook kontrakt ------------------------------------------------
+    # -- tool-hook contract ------------------------------------------------
 
     def confirm(self, prompt: str) -> bool:
         self.clear_thinking()
-        self.console.print(prompt, end=" ")
+        card = theme.boxify(
+            "CONFIRMATION REQUIRED",
+            [prompt, "Allow this action? [y/N/a(ll)]"],
+            width=68,
+            border_style="yellow",
+            title_style="bold yellow",
+        )
+        self.console.print(card)
         try:
             ans = input().strip().lower()
         except EOFError:
@@ -121,23 +126,50 @@ class StreamingSink:
         return ans in _APPROVE
 
     def tool_start(self, name: str, args) -> None:
-        self.console.print(f"[dim]{theme.HUND_INDENT}* tool {name} {_short_args(args)}[/dim]")
+        self.clear_thinking()
+        card = theme.boxify(
+            f"TOOL: {name}",
+            [f"args: {_short_args(args)}", "status: executing..."],
+            width=68,
+            border_style="dim",
+            title_style="bold cyan",
+        )
+        self.console.print(card)
 
     def tool_result(self, name: str, shown: str) -> None:
-        self.console.print(f"[dim]{theme.HUND_INDENT}* {name} -> {shown}[/dim]", markup=False)
+        self.clear_thinking()
+        card = theme.boxify(
+            f"TOOL RESULT: {name}",
+            [f"output: {shown}"],
+            width=68,
+            border_style="dim",
+            title_style="bold green",
+        )
+        self.console.print(card)
 
     def blocked(self, name: str, reason: str) -> None:
-        self.console.print(f"[bold red]{theme.HUND_INDENT}[BLOCKED] {name}: {reason}[/bold red]")
+        self.clear_thinking()
+        card = theme.boxify(
+            f"BLOCKED: {name}",
+            [f"reason: {reason}"],
+            width=68,
+            border_style="red",
+            title_style="bold red",
+        )
+        self.console.print(card)
 
     def declined(self, name: str, reason: str) -> None:
-        self.console.print(f"[dim]{theme.HUND_INDENT}[DECLINED] {name}: {reason}[/dim]")
+        self.clear_thinking()
+        card = theme.boxify(
+            f"DECLINED: {name}",
+            [f"reason: {reason}"],
+            width=68,
+            border_style="dim",
+            title_style="dim yellow",
+        )
+        self.console.print(card)
 
 
 def render_markdown(console: Console, text: str) -> None:
-    """Rendera sparad text utan markdown-markörer.
-
-    Namnet finns kvar för P2-kompatibilitet, men customization-fasen kräver att
-    Hunds svar visas som ren text i terminalen. Rich får fortfarande styla via
-    explicit style, aldrig genom att tolka markdown från modellen.
-    """
+    """Render saved response as clean plain terminal text without markdown formatting."""
     console.print(strip_markdown(text), style=theme.HUND_FG, markup=False, highlight=False)

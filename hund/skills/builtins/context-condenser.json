@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "name": "context-condenser",
+  "domain": "context",
+  "status": "active",
+  "triggers": [
+    "context",
+    "tokens",
+    "compress",
+    "session limit",
+    "summarize conversation",
+    "context window"
+  ],
+  "when_to_use": "When the conversation approaches token limits and older turns need to be safely compressed without losing critical decisions, user preferences, or safety invariants.",
+  "steps": [
+    "1. Estimate current token usage across the conversation history.",
+    "2. Identify older turns eligible for compression while preserving the most recent turns.",
+    "3. Keep the system prompt, persona, environment profile, and policy rules byte-stable.",
+    "4. For tool outputs in older turns, preserve essential factual outcomes and discard verbose raw logs.",
+    "5. Label all compressed sections with explicit untrusted data markers.",
+    "6. Verify that no active security policies or memory facts were dropped."
+  ],
+  "required_tools": [
+    "read_file",
+    "session_search"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "elevate_permissions",
+    "modify_tcb",
+    "self_update"
+  ],
+  "safety_level": "read_only",
+  "verification": [
+    "System prompt remains byte-identical before and after compression",
+    "Token count is reduced below target threshold",
+    "Recent active turns remain intact"
+  ],
+  "examples": [
+    "User asks to condense a long debugging session -> compress older turns and keep recent 6 turns",
+    "Context token estimate exceeds threshold -> trigger automatic context compression"
+  ]
+}

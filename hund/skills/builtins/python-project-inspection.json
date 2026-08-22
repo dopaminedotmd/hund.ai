@@ -3,16 +3,34 @@
   "name": "python-project-inspection",
   "domain": "software-development",
   "status": "active",
-  "triggers": ["pytest", "pyproject.toml", "uv run", ".py"],
-  "when_to_use": "När användaren arbetar i ett Python-projekt och vill inspektera, testa eller förstå koden.",
-  "steps": [
-    "Läs pyproject.toml för att förstå beroenden och entrypoints.",
-    "Kör relevanta tester med uv run pytest innan du föreslår ändringar.",
-    "Använd sökverktyg för att hitta definitioner, inte gissa."
+  "triggers": [
+    "pytest",
+    "pyproject.toml",
+    "uv run",
+    ".py"
   ],
-  "required_tools": ["read_file", "search_files", "terminal"],
-  "forbidden_actions": ["delete", "push", "self_update", "apply_update", "modify_tcb"],
+  "when_to_use": "When inspecting, analyzing, testing, or exploring a Python codebase.",
+  "steps": [
+    "Read pyproject.toml to understand declared dependencies, build tools, and CLI entry points.",
+    "Execute baseline test suites via 'uv run pytest' before proposing or implementing changes.",
+    "Use search tools (search_files) to locate symbols, class definitions, and references instead of guessing."
+  ],
+  "required_tools": [
+    "read_file",
+    "search_files",
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "modify_tcb",
+    "push",
+    "self_update"
+  ],
   "safety_level": "confirm_for_write",
-  "verification": ["uv run pytest"],
+  "verification": [
+    "uv run pytest passes without regressions"
+  ],
   "examples": []
 }

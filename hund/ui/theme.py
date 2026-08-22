@@ -1,18 +1,35 @@
-"""Design tokens for hund.ui.
+"""Design tokens and visual styling for hund.ui.
 
-16-ANSI-safe i chrome och statushierarki (PowerShell, iTerm, Terminal.app,
-Windows Terminal). Hunds svarstext använder användarbeslutad Bone White
-(truecolor) där terminalen stödjer det. Inga emojis (CLAUDE.md).
-
-Tier-farger enligt beslut:
-  Master=gold->bright_yellow, Expert=silver->white, Adept=bla->cyan,
-  Apprentice=gron->green, Novice=gra->dim.
+Unified token architecture: Truecolor (hex) with 16-ANSI fallback for standard
+terminals. Standardized single-line box-drawing (┌─┐, │, └─┘), block progress bars,
+and strict zero-emoji invariants.
 """
 from __future__ import annotations
 
-EMDASH = "—"  # tier saknar varde (se stats.tiers.build_stat)
+import re
 
-# Rich-fargnamn (16-ANSI) - for Rich-utskrifter.
+# -- Core Design Tokens (Hex + 16-ANSI fallback) ---------------------------
+COLOR_TOKENS: dict[str, dict[str, str]] = {
+    "text":   {"hex": "#E3E3E4", "rich": "white",          "pt": "ansiwhite"},
+    "dim":    {"hex": "#6E7380", "rich": "bright_black",   "pt": "ansibrightblack"},
+    "cyan":   {"hex": "#4EBCD5", "rich": "cyan",           "pt": "ansicyan"},
+    "green":  {"hex": "#50FA7B", "rich": "green",          "pt": "ansigreen"},
+    "yellow": {"hex": "#F1FA8C", "rich": "bright_yellow",   "pt": "ansibrightyellow"},
+    "red":    {"hex": "#FF5555", "rich": "red",            "pt": "ansired"},
+}
+
+HUND_TEXT = "#E3E3E4"    # Primary bone white text
+HUND_DIM = "#6E7380"     # Muted structural borders & metadata
+HUND_CYAN = "#4EBCD5"    # Accent / Hund identity
+HUND_GREEN = "#50FA7B"   # User prompt & positive confirmation
+HUND_YELLOW = "#F1FA8C"  # Master prestige / warnings
+HUND_RED = "#FF5555"     # Danger / blocked actions
+
+HUND_FG = HUND_TEXT
+
+EMDASH = "—"  # Tier placeholder when unranked
+
+# Rich style names (16-ANSI safe) for Rich console rendering
 TIER_RICH: dict[str, str] = {
     "Novice": "dim",
     "Apprentice": "green",
@@ -22,7 +39,7 @@ TIER_RICH: dict[str, str] = {
     EMDASH: "dim",
 }
 
-# Prompt Toolkit-fargnamn (ansi*) - for bottom_toolbar.
+# Prompt Toolkit style names for bottom_toolbar
 TIER_PT: dict[str, str] = {
     "Novice": "ansibrightblack",
     "Apprentice": "ansigreen",
@@ -32,15 +49,12 @@ TIER_PT: dict[str, str] = {
     EMDASH: "ansibrightblack",
 }
 
-# Separering - vem sager vad (plan §1.3). Inga emojis.
+# Chat flow separation tokens (no emojis)
 USER_PREFIX = "du>"
 USER_PREFIX_RICH = "bold green"
 HUND_INDENT = "  "
 SYSTEM_BULLET = "*"
-SEPARATOR_CHAR = "─"  # box-drawing (tillaten, ej emoji)
-
-# Hund body-text farg. Customization: Bone White (#E3E3E4), inte #FFFFFF.
-HUND_FG = "#E3E3E4"
+SEPARATOR_CHAR = "─"
 
 STAT_ABBR: dict[str, str] = {
     "clarity": "CLR",
@@ -51,8 +65,8 @@ STAT_ABBR: dict[str, str] = {
 }
 STAT_ORDER: list[str] = ["clarity", "precision", "efficiency", "endurance", "mastery"]
 
-BAR_FILL = "█"   # full block
-BAR_EMPTY = "░"  # light shade
+BAR_FILL = "█"   # Full block
+BAR_EMPTY = "░"  # Light shade
 BAR_WIDTH = 8
 
 
@@ -64,8 +78,50 @@ def tier_pt(tier: str | None) -> str:
     return TIER_PT.get(tier or "", "ansibrightblack")
 
 
-# -- Teman (P3 /theme) -----------------------------------------------------
-# 16-ANSI-safe user-prefix-farg per tema. pavisa live-prompt-prefix.
+# -- Boxify Helper (Single-line geometric box-drawing) -----------------------
+
+def boxify(
+    title: str = "",
+    content: list[str] | str | None = None,
+    *,
+    width: int = 70,
+    border_style: str = "dim",
+    title_style: str = "bold cyan",
+) -> str:
+    """Wrap content in clean geometric single-line box borders (no emojis).
+
+    Example:
+    ┌── TITLE ────────────────────────────────────────────────────────┐
+    │ content line 1                                                  │
+    └─────────────────────────────────────────────────────────────────┘
+    """
+    inner_width = max(width - 2, 20)
+    lines: list[str] = []
+
+    if title:
+        clean_title = re.sub(r"\[.*?\]", "", title)
+        title_len = len(clean_title)
+        dash_count = max(inner_width - title_len - 4, 2)
+        top = f"[{border_style}]┌──[/{border_style}] [{title_style}]{title}[/{title_style}] [{border_style}]{'─' * dash_count}┐[/{border_style}]"
+    else:
+        top = f"[{border_style}]┌{'─' * inner_width}┐[/{border_style}]"
+    lines.append(top)
+
+    if content is not None:
+        if isinstance(content, str):
+            body = content.splitlines()
+        else:
+            body = list(content)
+        for line in body:
+            lines.append(f"[{border_style}]│[/{border_style}] {line}")
+
+    bottom = f"[{border_style}]└{'─' * inner_width}┘[/{border_style}]"
+    lines.append(bottom)
+    return "\n".join(lines)
+
+
+# -- Themes -----------------------------------------------------------------
+
 THEMES: dict[str, dict[str, str]] = {
     "default": {"user_prefix_rich": "bold green", "user_prefix_pt": "ansigreen"},
     "dark":    {"user_prefix_rich": "bold cyan",  "user_prefix_pt": "ansicyan"},

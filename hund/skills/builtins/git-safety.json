@@ -3,18 +3,38 @@
   "name": "git-safety",
   "domain": "software-development",
   "status": "active",
-  "triggers": ["git", "commit", "push", "branch", "merge", "rebase", "pull request"],
-  "when_to_use": "När git-operationer ska utföras. Status före diff, diff före commit, aldrig push utan uttryckligt godkännande.",
-  "steps": [
-    "Kör git status för att se aktuellt tillstånd.",
-    "Kör git diff --stat för att se vad som ändrats.",
-    "Visa sammanfattning av ändringar för användaren före commit.",
-    "Begär uttryckligt godkännande före push — aldrig pusha automatiskt.",
-    "Blockera force-push och rebase utan användarens explicita kommando."
+  "triggers": [
+    "git",
+    "commit",
+    "push",
+    "branch",
+    "merge",
+    "rebase",
+    "pull request"
   ],
-  "required_tools": ["terminal"],
-  "forbidden_actions": ["push", "force_push", "rebase"],
+  "when_to_use": "When executing git operations. Status before diff, diff before commit, never push without explicit approval.",
+  "steps": [
+    "Run 'git status' to inspect working tree state.",
+    "Run 'git diff --stat' to review staged and unstaged modifications.",
+    "Display a concise summary of changes to the user before committing.",
+    "Request explicit interactive confirmation prior to 'git push' — never push autonomously.",
+    "Block force-push and destructive rebases unless explicitly directed by the user."
+  ],
+  "required_tools": [
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "elevate_permissions",
+    "force_push",
+    "modify_tcb",
+    "push",
+    "rebase",
+    "self_update"
+  ],
   "safety_level": "confirm_for_write",
-  "verification": ["git status"],
+  "verification": [
+    "git status confirms clean working tree"
+  ],
   "examples": []
 }

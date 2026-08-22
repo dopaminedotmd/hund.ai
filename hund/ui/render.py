@@ -1,6 +1,6 @@
-"""Rendering: stats-rad (bottom_toolbar), startup, separator.
+"""Rendering helpers: stats bar (bottom_toolbar), startup banner, separator, character card.
 
-Ateranvander hund.stats - ingen ominventering (CLAUDE.md).
+Uses standard single-line box drawing via theme.boxify().
 """
 from __future__ import annotations
 
@@ -10,10 +10,9 @@ from rich.console import Console
 
 from ..paths import hund_home
 from ..stats import compute_all
-from ..stats.tiers import render_bar
+from ..stats.tiers import render_bar, render_stat
 from . import theme
 
-# Forsta-gangs-flagg for mascot (plan open question 1 -> visa en gang + /mascot)
 _MASCOT_FLAG = "mascot_seen"
 
 
@@ -22,9 +21,9 @@ def _bar(progress: int, width: int = theme.BAR_WIDTH) -> str:
 
 
 def stats_bar_segments(stats: dict[str, dict[str, Any]] | None = None):
-    """Returnera list[(pt_style, text)] for prompt_toolkit bottom_toolbar.
+    """Return list[(pt_style, text)] for prompt_toolkit bottom_toolbar.
 
-    En tier-fargad rad:  CLR Mast ████████░ │ PRC Expe ██████░░░ │ ...
+    Tier-colored single row:  CLR Mast ████████░ │ PRC Expe ██████░░░ │ ...
     """
     if stats is None:
         try:
@@ -49,17 +48,17 @@ def stats_bar_segments(stats: dict[str, dict[str, Any]] | None = None):
 
 
 def stats_bar_text(stats: dict[str, dict[str, Any]] | None = None) -> str:
-    """Vanlig farglos enradig strang (for tester/icke-PT-kontexter)."""
+    """Plain uncolored single-line text (for tests/non-PT contexts)."""
     return "".join(text for _, text in stats_bar_segments(stats))
 
 
 def user_prefix_markup() -> str:
-    """Rich markup for user-prefix 'du>'."""
+    """Rich markup for user prefix 'du>'."""
     return f"[{theme.USER_PREFIX_RICH}]{theme.USER_PREFIX}[/{theme.USER_PREFIX_RICH}]"
 
 
 def separator(console: Console) -> None:
-    """Tunn dim linje mellan logiska block."""
+    """Thin dim line separating logical blocks."""
     console.print(f"[dim]{theme.SEPARATOR_CHAR * 40}[/dim]")
 
 
@@ -73,12 +72,12 @@ def _mascot() -> str:
 
 
 def mascot() -> str:
-    """Publik access till pixel-hund-art (for /mascot)."""
+    """Public access to pixel mascot art."""
     return _mascot()
 
 
 def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
-    """2-3 rader vid uppstart. Mascot visas forsta gangen (eller /mascot)."""
+    """2-3 lines startup banner. Mascot is shown once on first launch."""
     home = hund_home()
     flag = home / _MASCOT_FLAG
     show_mascot = force_mascot or not flag.exists()
@@ -90,7 +89,7 @@ def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
         except OSError:
             pass
 
-    console.print("[bold cyan]hund[/bold cyan] är vaken. maskinen känns stabil.")
+    console.print("[bold cyan]hund[/bold cyan] is awake. machine feels stable.")
     domain = getattr(rt, "domain_hint", "?")
     sid = getattr(rt, "session_id", "??????")
     console.print(f"[dim]session #{sid[:6]} · {domain}[/dim]")
@@ -98,7 +97,7 @@ def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
 
 
 def refresh_stats(state):
-    """Cachea stats for bottom_toolbar. Returnera stats-dict (for tier-diff)."""
+    """Cache stats for bottom_toolbar. Return stats dict."""
     try:
         stats = compute_all()
     except Exception:
@@ -106,3 +105,105 @@ def refresh_stats(state):
         return None
     state.stats_text = stats_bar_segments(stats)
     return stats
+
+
+def render_character_card(
+    console: Console,
+    rt: Any,
+    stats: dict[str, dict[str, Any]] | None = None,
+    *,
+    compact: bool = False,
+) -> None:
+    """Render a unified RPG-style character sheet for Hund inside standard box borders."""
+    if stats is None:
+        try:
+            stats = compute_all()
+        except Exception:
+            stats = {}
+
+    if compact:
+        for key in theme.STAT_ORDER:
+            s = (stats or {}).get(key)
+            if s:
+                console.print(render_stat(s))
+        return
+
+    # 1. Habitat & System info
+    profile = getattr(rt, "profile", None)
+    hostname = getattr(profile, "hostname", "") or "host"
+    os_name = getattr(profile, "os_caption", "") or getattr(profile, "os", "") or "system"
+    ram_gb = getattr(profile, "total_ram_gb", None)
+    ram_str = f"{ram_gb:.0f}GB RAM" if ram_gb else "RAM unknown"
+    shell_str = getattr(profile, "shell", "") or "shell"
+
+    # Compute overall level
+    level = sum(s.get("tier_idx", 1) for s in (stats or {}).values() if isinstance(s, dict)) or 5
+
+    body_lines: list[str] = [
+        f" [bold yellow]LEVEL:[/bold yellow] {level:<5} [bold yellow]CLASS:[/bold yellow] Machine-Bound Operator",
+        f" [dim]HABITAT:[/dim] {hostname} · {os_name} · {ram_str} · {shell_str}",
+        "",
+        " [bold cyan]── BASE ATTRIBUTES ───────────────────────────────────────────────[/bold cyan]",
+    ]
+
+    stat_labels = {
+        "clarity": "Clarity (CLR)     ",
+        "precision": "Precision (PRC)   ",
+        "efficiency": "Efficiency (EFF)  ",
+        "endurance": "Endurance (END)   ",
+        "mastery": "Mastery (MAS)     ",
+    }
+    for key in theme.STAT_ORDER:
+        s = (stats or {}).get(key, {})
+        label = stat_labels.get(key, f"{key:<18}")
+        tier = s.get("tier") or theme.EMDASH
+        progress = int(s.get("progress", 0) or 0)
+        bar = _bar(progress, width=12)
+        tier_color = theme.tier_rich(tier)
+        val = s.get("value")
+        val_str = f"({val})" if val is not None else ""
+        tier_display = f"[{tier_color}]{tier:<10}[/{tier_color}]"
+        body_lines.append(f" {label}  {bar}  {tier_display} {progress:>3}% {val_str:<10}")
+
+    # 3. Domains
+    try:
+        from ..domains import confidence
+        domain_items = confidence.list_confidence()
+    except Exception:
+        domain_items = []
+
+    if domain_items:
+        body_lines.append("")
+        body_lines.append(" [bold cyan]── SPECIALIZATIONS (DOMAINS) ─────────────────────────────────────[/bold cyan]")
+        for it in domain_items[:3]:
+            d_name = it.get("domain", "?")
+            d_score = int(it.get("score", 0) or 0)
+            d_tier = it.get("confidence_tier", "?")
+            d_bar = _bar(d_score, width=12)
+            d_tier_color = theme.tier_rich(d_tier)
+            body_lines.append(f" * {d_name:<16}  {d_bar}  [{d_tier_color}]{d_tier:<10}[/{d_tier_color}] {d_score:>3}%")
+
+    # 4. Weekly Velocity
+    try:
+        from ..stats import compute_velocity
+        vel = compute_velocity()
+    except Exception:
+        vel = None
+
+    if vel:
+        body_lines.append("")
+        body_lines.append(" [bold cyan]── WEEKLY TREND (VELOCITY) ───────────────────────────────────────[/bold cyan]")
+        parts = []
+        for key in theme.STAT_ORDER:
+            v = vel.get(key)
+            if v:
+                abbr = theme.STAT_ABBR.get(key, key[:3].upper())
+                mark = "+" if v.get("improving") else "-"
+                delta = v.get("delta_display", "0")
+                parts.append(f"{abbr}: {mark}{delta}")
+        if parts:
+            line_str = " · ".join(parts[:4])
+            body_lines.append(f" [dim]{line_str}[/dim]")
+
+    card = theme.boxify("CHARACTER SHEET: HUND", body_lines, width=72, border_style="cyan", title_style="bold white")
+    console.print(card)

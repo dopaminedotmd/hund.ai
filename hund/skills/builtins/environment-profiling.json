@@ -3,17 +3,39 @@
   "name": "environment-profiling",
   "domain": "general",
   "status": "active",
-  "triggers": ["doctor", "system", "install", "setup", "hardware", "OS", "cpu", "gpu", "ram", "environment"],
-  "when_to_use": "När Hund behöver förstå eller visa sin hårdvarumiljö. Hund lever i denna maskin — profilen är Hunds hem.",
-  "steps": [
-    "Kör hund doctor för att hämta aktuell miljöprofil (OS, CPU, GPU, RAM, hostname, verktyg).",
-    "Presentera profilen som 'Hunds hem' — inte som en teknisk rapport.",
-    "Notera begränsningar (svag CPU, lite RAM, saknade verktyg) och anpassa beteende.",
-    "Vid 'install' eller 'setup': verifiera att nödvändiga verktyg finns (git, python, uv, node)."
+  "triggers": [
+    "doctor",
+    "system",
+    "install",
+    "setup",
+    "hardware",
+    "OS",
+    "cpu",
+    "gpu",
+    "ram",
+    "environment"
   ],
-  "required_tools": ["terminal"],
-  "forbidden_actions": ["delete", "push"],
+  "when_to_use": "When Hund needs to inspect, understand, or report its host hardware environment. Hund executes within this machine — the profile represents Hund's habitat.",
+  "steps": [
+    "Run 'hund doctor' to inspect the live environment profile (OS, CPU, GPU, RAM, hostname, shell, installed developer tools).",
+    "Present the profile as Hund's habitat with grounded telemetry rather than a generic boilerplate report.",
+    "Identify hardware constraints (low CPU count, limited RAM, missing developer tools) and adapt execution behavior accordingly.",
+    "During installation or setup inquiries, verify that required toolchains exist (git, python, uv, node)."
+  ],
+  "required_tools": [
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "modify_tcb",
+    "push",
+    "self_update"
+  ],
   "safety_level": "read_only",
-  "verification": ["hund doctor"],
+  "verification": [
+    "hund doctor executes and returns live system telemetry"
+  ],
   "examples": []
 }

@@ -3,18 +3,39 @@
   "name": "shell-command-safety",
   "domain": "general",
   "status": "active",
-  "triggers": ["rm", "del", "rmdir", "mv", "chmod", "chown", "format", "dd", "taskkill"],
-  "when_to_use": "När terminalkommandon med potentiellt destruktiva effekter ska köras.",
-  "steps": [
-    "Klassificera kommandot: read-only, write, destructive, blocked.",
-    "För read-only: kör direkt.",
-    "För write: visa kommandot och fråga användaren.",
-    "För destructive (rm, del, format): kräv uttryckligt 'ja' från användaren.",
-    "För blocked (rm -rf /, format C:): neka och förklara varför."
+  "triggers": [
+    "rm",
+    "del",
+    "rmdir",
+    "mv",
+    "chmod",
+    "chown",
+    "format",
+    "dd",
+    "taskkill"
   ],
-  "required_tools": ["terminal"],
-  "forbidden_actions": ["delete", "format"],
+  "when_to_use": "When executing terminal commands with potentially destructive, irreversible, or high-risk side effects.",
+  "steps": [
+    "Classify the command risk category: read-only (SAFE), state modification (WRITE), destructive/dangerous (CONFIRM), or prohibited (BLOCKED).",
+    "For read-only operations: execute directly.",
+    "For state modifications: inform the user and request confirmation.",
+    "For destructive operations (rm, del, format): require explicit interactive approval.",
+    "For blocked commands (e.g. rm -rf /, format C:, privilege escalation): reject immediately with a clear security rationale."
+  ],
+  "required_tools": [
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "format",
+    "modify_tcb",
+    "self_update"
+  ],
   "safety_level": "confirm",
-  "verification": ["kontrollera exit code efter kommando"],
+  "verification": [
+    "inspect terminal exit code post-execution"
+  ],
   "examples": []
 }

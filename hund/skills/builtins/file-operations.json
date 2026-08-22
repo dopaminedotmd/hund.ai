@@ -3,17 +3,37 @@
   "name": "file-operations",
   "domain": "general",
   "status": "active",
-  "triggers": ["write", "delete", "patch", "create", "remove", "overwrite", "modify"],
-  "when_to_use": "När filer ska skapas, ändras eller raderas. Skyddade sökvägar respekteras alltid.",
-  "steps": [
-    "Kontrollera att sökvägen inte är skyddad (system/, apps/, brain/, config).",
-    "För destruktiva operationer (delete, overwrite): fråga användaren först.",
-    "För overwrite: skapa backup innan ändring.",
-    "Verifiera att filen skrevs korrekt efter operationen."
+  "triggers": [
+    "write",
+    "delete",
+    "patch",
+    "create",
+    "remove",
+    "overwrite",
+    "modify"
   ],
-  "required_tools": ["read_file", "write_file", "terminal"],
-  "forbidden_actions": ["delete", "modify_tcb"],
+  "when_to_use": "When files need to be created, modified, overwritten, or removed. Protected paths and TCB invariants are strictly respected.",
+  "steps": [
+    "Verify that the target path is not protected or part of the TCB boundary (safety.py, tool_dispatch.py, loop.py, redactor.py, updater/, config, brain).",
+    "For destructive operations (delete, overwrite): request explicit user confirmation prior to execution.",
+    "For overwrite operations: ensure file content is inspected before applying changes.",
+    "Verify that the file was written accurately by reading it back post-operation."
+  ],
+  "required_tools": [
+    "read_file",
+    "write_file",
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "modify_tcb",
+    "self_update"
+  ],
   "safety_level": "confirm_for_write",
-  "verification": ["read_file efter write för att bekräfta innehåll"],
+  "verification": [
+    "read_file post-write confirms expected content"
+  ],
   "examples": []
 }
