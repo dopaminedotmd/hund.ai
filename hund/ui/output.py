@@ -18,6 +18,7 @@ import re
 import shutil
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.key_binding import KeyBindings
@@ -358,7 +359,10 @@ class StreamingSink:
         self.clear_thinking()
         self._close_box()
         if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
-            verdict = interactive_confirm_menu(prompt)
+            # ponytail: confirm() is sync but runs inside the REPL asyncio loop;
+            # run the menu in a fresh thread so app.run() gets its own event loop.
+            with ThreadPoolExecutor(max_workers=1) as _ex:
+                verdict = _ex.submit(interactive_confirm_menu, prompt).result()
         else:
             # Fallback for non-interactive / piped environments
             options = [
