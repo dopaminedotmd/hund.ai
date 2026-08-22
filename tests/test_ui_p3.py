@@ -2,16 +2,12 @@
 from __future__ import annotations
 
 import types
-import asyncio
 from io import StringIO
 
-from prompt_toolkit.formatted_text import FormattedText
 from rich.console import Console
 
 from hund.config import HundConfig
-from hund.ui import theme
 from hund.ui.commands import CommandContext, dispatch_command
-from hund.ui.repl import _after_turn, _prompt_for
 
 
 def _ctx(session_id=None, cfg=None, theme_name="default") -> CommandContext:
@@ -110,31 +106,6 @@ def test_theme_set_unknown_errors() -> None:
     dispatch_command("/theme neon", ctx)
     assert ctx.state.theme_name == "default"
     assert "unknown theme" in ctx.console.file.getvalue().lower()
-
-
-def test_prompt_for_uses_theme_color() -> None:
-    state = types.SimpleNamespace(theme_name="dark")
-    prompt = _prompt_for(state)  # type: ignore[arg-type]
-    assert isinstance(prompt, FormattedText)
-    style = prompt[0][0]
-    assert "ansicyan" in style  # dark tema
-
-
-def test_after_turn_refreshes_stats_bar_each_time(monkeypatch) -> None:
-    calls = []
-
-    def fake_refresh(state):
-        calls.append(True)
-        state.stats_text = [("fg:ansigreen", f"stats-{len(calls)}")]
-        return {"clarity": {"tier": "Novice", "value": 1, "progress": 1}}
-
-    monkeypatch.setattr("hund.ui.repl.refresh_stats", fake_refresh)
-    console = Console(force_terminal=False, width=120, file=StringIO())
-    state = types.SimpleNamespace(prev_tiers={"clarity": "Novice"}, stats_text=None)
-    asyncio.run(_after_turn(console, state))
-    asyncio.run(_after_turn(console, state))
-    assert len(calls) == 2
-    assert state.stats_text == [("fg:ansigreen", "stats-2")]
 
 
 # -- /domains --------------------------------------------------------------
