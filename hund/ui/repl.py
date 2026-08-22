@@ -6,6 +6,8 @@ _session_save, sessions, compression.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -36,6 +38,18 @@ from .session import offer_resume
 _PROMPT = FormattedText([("bold fg:ansigreen", "❯ ")])
 
 
+def _enter_fullscreen() -> None:
+    """Enter the alternate screen buffer (app takes over the terminal)."""
+    sys.stdout.write("\x1b[?1049h")
+    sys.stdout.flush()
+
+
+def _exit_fullscreen() -> None:
+    """Restore the original terminal screen."""
+    sys.stdout.write("\x1b[?1049l")
+    sys.stdout.flush()
+
+
 async def _amain() -> int:
     console = Console()
     prev_active = S.get_active()
@@ -61,13 +75,15 @@ async def _amain() -> int:
     sink = StreamingSink(console)
     ctx = CommandContext(console=console, rt=rt, state=state)
 
-    render_startup(console, rt)
-
     # Workspace folder trust check (prompted once per workspace)
     trusted = await prompt_workspace_trust(console, session, rt.workspace)
     if not trusted:
         console.print("[dim]workspace not trusted. exiting.[/dim]")
         return 0
+
+    _enter_fullscreen()
+    atexit.register(_exit_fullscreen)
+    render_startup(console, rt)
 
     messages = rt.messages
     frozen = messages[0].content if messages else ""
