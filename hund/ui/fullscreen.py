@@ -240,6 +240,35 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     seed = banner.rstrip("\n") + "\n\n"
     output_buffer.set_document(Document(seed, cursor_position=len(seed)), bypass_readonly=True)
 
+    def _reflow_borders() -> None:
+        """Re-width response box borders to the current terminal width."""
+        with _append_lock:
+            text = output_buffer.text
+            lines = text.split("\n")
+            new_lines: list[str] = []
+            changed = False
+            in_box = False
+            for line in lines:
+                if line.startswith("╭─ hund "):
+                    nl = _box_top()
+                    in_box = True
+                elif in_box and line.startswith("╰"):
+                    nl = _box_bottom()
+                    in_box = False
+                else:
+                    nl = line
+                if nl != line:
+                    changed = True
+                new_lines.append(nl)
+            if changed:
+                new_text = "\n".join(new_lines)
+                cur = output_buffer.cursor_position
+                output_buffer.set_document(
+                    Document(new_text, cursor_position=min(cur, len(new_text))),
+                    bypass_readonly=True,
+                )
+                _invalidate()
+
     messages = rt.messages
     frozen = messages[0].content if messages else ""
 
@@ -445,9 +474,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     confirm_active = Condition(lambda: _confirm["active"])
 
     def _scroll_lines(count: int) -> None:
-        doc = Document(output_buffer.text, output_buffer.cursor_position)
-        new_doc = doc.cursor_up(count) if count > 0 else doc.cursor_down(-count)
-        output_buffer.cursor_position = new_doc.cursor_position
+        doc = output_buffer.document
+        if count > 0:
+            output_buffer.cursor_position += doc.get_cursor_up_position(count)
+        else:
+            output_buffer.cursor_position += doc.get_cursor_down_position(-count)
 
     def _copy_selection() -> bool:
         for buf in (input_buffer, output_buffer):
@@ -550,6 +581,18 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         mouse_support=True,
     )
     holder["app"] = app
+
+    # Re-width box borders when the terminal is resized (polling is cheap).
+    def _width_watcher() -> None:
+        last = _term_width()
+        while True:
+            time.sleep(0.5)
+            w = _term_width()
+            if w != last:
+                last = w
+                _reflow_borders()
+
+    threading.Thread(target=_width_watcher, daemon=True).start()
 
     result = await app.run_async()
     return result if isinstance(result, int) else 0
