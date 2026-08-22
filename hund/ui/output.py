@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -271,7 +272,6 @@ class StreamingSink:
         self._thinking_active = False
         self._stream_filter = StreamingMarkdownFilter()
         self._box_open = False
-        self._line_start = True
         if stream_delay_s is None:
             raw_delay = os.environ.get("HUND_STREAM_DELAY_S", "")
             try:
@@ -299,7 +299,10 @@ class StreamingSink:
         self._thinking_active = False
 
     def _width(self) -> int:
-        return getattr(self.console, "width", 80) or 80
+        try:
+            return shutil.get_terminal_size().columns
+        except Exception:
+            return getattr(self.console, "width", 80) or 80
 
     def _open_box(self) -> None:
         if self._box_open:
@@ -308,7 +311,6 @@ class StreamingSink:
         fill = max(w - 9, 2)  # "╭─ " (3) + "hund" (4) + " " (1) + "╮" (1)
         self.console.print(f"[dim]╭─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}╮[/dim]")
         self._box_open = True
-        self._line_start = True
 
     def _close_box(self) -> None:
         if not self._box_open:
@@ -316,7 +318,6 @@ class StreamingSink:
         w = self._width()
         self.console.print(f"[dim]╰{'─' * max(w - 2, 2)}╯[/dim]")
         self._box_open = False
-        self._line_start = True
 
     def chunk(self, text: str) -> None:
         self.clear_thinking()
@@ -326,18 +327,7 @@ class StreamingSink:
         if not self._box_open:
             self._open_box()
         for ch in filtered:
-            if self._line_start:
-                self.console.print("│ ", end="", style=theme.HUND_DIM, markup=False, highlight=False)
-                self._line_start = False
-            self.console.print(
-                ch,
-                end="",
-                style=theme.HUND_FG,
-                markup=False,
-                highlight=False,
-            )
-            if ch == "\n":
-                self._line_start = True
+            self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
             try:
                 self.console.file.flush()
             except Exception:
@@ -352,12 +342,7 @@ class StreamingSink:
             if not self._box_open:
                 self._open_box()
             for ch in leftover:
-                if self._line_start:
-                    self.console.print("│ ", end="", style=theme.HUND_DIM, markup=False, highlight=False)
-                    self._line_start = False
                 self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
-                if ch == "\n":
-                    self._line_start = True
         self._close_box()
         self._stream_filter = StreamingMarkdownFilter()
         self.console.print()
