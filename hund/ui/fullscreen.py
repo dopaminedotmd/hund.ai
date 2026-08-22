@@ -1,13 +1,11 @@
 """Full-screen TUI for the Hund REPL.
 
 prompt_toolkit Application with a scrollable, semantically-colored output
-buffer and a single input buffer. The agent turn runs in a background thread;
-streamed tokens are appended to the output buffer and the app repaints on each
-invalidate.
+buffer, a single input buffer, and an in-app arrow-key confirmation modal.
 
-The output buffer is plain text; a SimpleLexer maps line prefixes to semantic
-token styles (see theme.SEMANTIC). Scrollback is provided by the buffer's own
-cursor, moved with Document.cursor_up/down and the mouse wheel.
+The output buffer is read-only (safe against stray typing) but focusable, so
+the mouse can select text; Ctrl+C copies a selection to the clipboard (or
+exits when there is none). The agent turn runs in a background thread.
 """
 from __future__ import annotations
 
@@ -23,8 +21,10 @@ from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.styles import Style
@@ -61,6 +61,7 @@ _STYLE = Style.from_dict(
         "status": _S["secondary"],
     }
 )
+
 
 class _OutputLexer(Lexer):
     """Line-prefix lexer mapping output lines to semantic token styles."""
@@ -103,6 +104,13 @@ class _OutputLexer(Lexer):
 
 _OUTPUT_LEXER = _OutputLexer()
 
+_CONFIRM_OPTIONS = [
+    ("approve", "Approve once", "class:success"),
+    ("edit", "Edit command", "class:accent"),
+    ("session", "Allow for session", "class:warning"),
+    ("deny", "Deny (default)", "class:danger"),
+]
+
 
 def _discard_console(width: int = 100) -> Console:
     """Rich console that discards output (agent turn only talks through the sink)."""
@@ -128,10 +136,10 @@ def _box_bottom() -> str:
 
 async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     """Run the full-screen REPL application. Returns exit code."""
-    # ---- output buffer (scrollable, colored via lexer) ----
-    output_buffer = Buffer(name="output", multiline=True)
+    # ---- output buffer (read-only + focusable so the mouse can select) ----
+    output_buffer = Buffer(name="output", multiline=True, read_only=True)
     output_window = Window(
-        content=BufferControl(buffer=output_buffer, focusable=False, lexer=_OUTPUT_LEXER),
+        content=BufferControl(buffer=output_buffer, lexer=_OUTPUT_LEXER),
         wrap_lines=True,
         always_hide_cursor=True,
     )
@@ -162,7 +170,47 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     status_window = Window(content=FormattedTextControl(status_text), height=1)
 
-    layout = Layout(HSplit([output_window, input_row, status_window]))
+    # ---- confirmation modal (arrow-key select) ----
+    _confirm = {
+        "active": False,
+        "prompt": "",
+        "selected": 0,
+        "answer": "deny",
+        "event": threading.Event(),
+    }
+
+    def _confirm_text():
+        if not _confirm["active"]:
+            return []
+        W = 64
+        out: list[tuple[str, str]] = []
+
+        def row(content: str, style: str = "class:primary") -> None:
+            out.append(("class:secondary", "│ "))
+            out.append((style, content))
+            out.append(("class:secondary", " " * max(W - 4 - len(content), 0) + " │\n"))
+
+        out.append(("class:secondary", "╭" + "─" * (W - 2) + "╮\n"))
+        row("CONFIRMATION REQUIRED", "class:warning bold")
+        row("", "class:secondary")
+        row(_confirm["prompt"], "class:primary")
+        row("", "class:secondary")
+        for i, (_code, label, color) in enumerate(_CONFIRM_OPTIONS):
+            if i == _confirm["selected"]:
+                row("  ❯ ● " + label, color + " bold")
+            else:
+                row("    ○ " + label, "class:secondary")
+        out.append(("class:secondary", "╰" + "─" * (W - 2) + "╯\n"))
+        out.append(("class:secondary", " ↑↓ select · Enter confirm · Esc deny"))
+        return out
+
+    confirm_window = Window(content=FormattedTextControl(_confirm_text), height=12)
+    confirm_container = ConditionalContainer(
+        confirm_window, filter=Condition(lambda: _confirm["active"])
+    )
+
+    layout = Layout(HSplit([output_window, confirm_container, input_row, status_window]))
+    layout.focus(input_window)
 
     # ---- shared mutable state ----
     holder: dict[str, Any] = {}
@@ -182,13 +230,15 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         if not text:
             return
         with _append_lock:
-            output_buffer.cursor_position = len(output_buffer.text)
-            output_buffer.insert_text(text, fire_event=False)
+            new_text = output_buffer.text + text
+            output_buffer.set_document(
+                Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+            )
         _invalidate()
 
     # seed banner
-    output_buffer.text = banner.rstrip("\n") + "\n\n"
-    output_buffer.cursor_position = len(output_buffer.text)
+    seed = banner.rstrip("\n") + "\n\n"
+    output_buffer.set_document(Document(seed, cursor_position=len(seed)), bypass_readonly=True)
 
     messages = rt.messages
     frozen = messages[0].content if messages else ""
@@ -196,9 +246,6 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     # ---- sink (called from the agent worker thread) ----
     class _Sink:
         def __init__(self) -> None:
-            self.confirm_pending = False
-            self.confirm_answer = "deny"
-            self.confirm_event = threading.Event()
             self._box_open = False
             self._think_marker: int | None = None
 
@@ -209,8 +256,10 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         def clear_thinking(self) -> None:
             if self._think_marker is not None:
                 with _append_lock:
-                    output_buffer.text = output_buffer.text[: self._think_marker]
-                    output_buffer.cursor_position = len(output_buffer.text)
+                    new_text = output_buffer.text[: self._think_marker]
+                    output_buffer.set_document(
+                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                    )
                 self._think_marker = None
                 _invalidate()
 
@@ -231,33 +280,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             append(strip_markdown(markup) + "\n")
 
         def confirm(self, prompt: str) -> bool:
-            W = 64
             clean = strip_markdown(prompt).strip().replace("\n", " ")
-            if len(clean) > W - 6:
-                clean = clean[: W - 9] + "..."
-
-            def row(s: str = "") -> str:
-                return "│ " + s.ljust(W - 4) + " │"
-
-            box = [
-                "╭" + "─" * (W - 2) + "╮",
-                row("CONFIRMATION REQUIRED"),
-                row(""),
-                row(clean),
-                row(""),
-                row("[y] Approve once"),
-                row("[e] Edit command"),
-                row("[a] Allow for session"),
-                row("[n] Deny (default)"),
-                "╰" + "─" * (W - 2) + "╯",
-            ]
-            append("\n" + "\n".join(box) + "\n\n")
-            self.confirm_answer = "deny"
-            self.confirm_pending = True
-            self.confirm_event.clear()
-            self.confirm_event.wait()  # answered by the main input handler
-            self.confirm_pending = False
-            return self.confirm_answer in {"approve", "session"}
+            if len(clean) > 58:
+                clean = clean[:55] + "..."
+            _confirm["prompt"] = clean
+            _confirm["selected"] = 0
+            _confirm["answer"] = "deny"
+            _confirm["active"] = True
+            _confirm["event"].clear()
+            _invalidate()
+            _confirm["event"].wait()
+            _confirm["active"] = False
+            _invalidate()
+            return _confirm["answer"] in {"approve", "session"}
 
         def tool_start(self, name: str, args) -> None:
             append(f"  tool: {name}\n")
@@ -381,11 +416,6 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             return False
         buf.reset()
 
-        if sink.confirm_pending:
-            sink.confirm_answer = parse_confirm_input(text)
-            sink.confirm_event.set()
-            return True
-
         if text in ("/exit", "/quit"):
             holder["app"].exit()
             return True
@@ -412,16 +442,88 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     input_buffer.accept_handler = on_accept
 
     # ---- keybindings ----
+    confirm_active = Condition(lambda: _confirm["active"])
+
     def _scroll_lines(count: int) -> None:
         doc = Document(output_buffer.text, output_buffer.cursor_position)
         new_doc = doc.cursor_up(count) if count > 0 else doc.cursor_down(-count)
         output_buffer.cursor_position = new_doc.cursor_position
 
+    def _copy_selection() -> bool:
+        for buf in (input_buffer, output_buffer):
+            try:
+                r = buf.document.selection_range()
+            except Exception:
+                continue
+            if not r:
+                continue
+            start, end = r
+            text = buf.text[start:end]
+            if not text:
+                continue
+            try:
+                subprocess.run(["clip"], input=text.encode("utf-8"), check=True)
+            except Exception:
+                return False
+            buf.exit_selection()
+            layout.focus(input_window)
+            append("(copied)\n")
+            return True
+        return False
+
     kb = KeyBindings()
+
+    @kb.add("up", filter=confirm_active)
+    def _up(event):
+        _confirm["selected"] = (_confirm["selected"] - 1) % len(_CONFIRM_OPTIONS)
+        event.app.invalidate()
+
+    @kb.add("down", filter=confirm_active)
+    def _down(event):
+        _confirm["selected"] = (_confirm["selected"] + 1) % len(_CONFIRM_OPTIONS)
+        event.app.invalidate()
+
+    @kb.add("enter", filter=confirm_active)
+    def _enter(event):
+        _confirm["answer"] = _CONFIRM_OPTIONS[_confirm["selected"]][0]
+        _confirm["active"] = False
+        _confirm["event"].set()
+
+    @kb.add("y", filter=confirm_active)
+    def _y(event):
+        _confirm["answer"] = "approve"
+        _confirm["active"] = False
+        _confirm["event"].set()
+
+    @kb.add("e", filter=confirm_active)
+    def _e(event):
+        _confirm["answer"] = "edit"
+        _confirm["active"] = False
+        _confirm["event"].set()
+
+    @kb.add("a", filter=confirm_active)
+    def _a(event):
+        _confirm["answer"] = "session"
+        _confirm["active"] = False
+        _confirm["event"].set()
+
+    @kb.add("n", filter=confirm_active)
+    @kb.add("escape", filter=confirm_active)
+    def _n(event):
+        _confirm["answer"] = "deny"
+        _confirm["active"] = False
+        _confirm["event"].set()
 
     @kb.add("c-c")
     def _ctrl_c(event):
-        event.app.exit()
+        if _confirm["active"]:
+            _confirm["answer"] = "deny"
+            _confirm["active"] = False
+            _confirm["event"].set()
+        elif _copy_selection():
+            pass  # copied
+        else:
+            event.app.exit()
 
     @kb.add("pageup")
     def _pgup(event):
@@ -431,8 +533,13 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _pgdn(event):
         _scroll_lines(-15)
 
-    # ponytail: mouse wheel scrolls the output window natively via Window._mouse_handler;
-    # no global scroll-up/scroll-down binding needed.
+    @kb.add("<scroll-up>")
+    def _scroll_up(event):
+        _scroll_lines(3)
+
+    @kb.add("<scroll-down>")
+    def _scroll_down(event):
+        _scroll_lines(-3)
 
     # ---- application ----
     app = Application(
