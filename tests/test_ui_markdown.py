@@ -9,6 +9,7 @@ from hund.ui.output import (
     StreamingSink,
     parse_confirm_input,
     strip_markdown,
+    strip_rich,
     transform_streaming_markdown,
 )
 from hund.ui.render import render_diff
@@ -44,6 +45,16 @@ def test_strip_markdown_helper() -> None:
     assert "**" not in text
     assert "`" not in text
     assert "• item with bold text and code" == text.strip()
+
+
+def test_strip_rich_removes_tags_keeps_plain_brackets() -> None:
+    prompt = "[yellow]CONFIRM[/yellow] Hund vill köra [bold]terminal[/bold] — tillåt? [j/N]"
+    clean = strip_rich(prompt)
+    assert "[yellow]" not in clean
+    assert "[bold]" not in clean
+    assert "CONFIRM" in clean
+    assert "terminal" in clean
+    assert "[j/N]" in clean  # legit plain bracket is preserved
 
 
 def test_streaming_markdown_filter_across_token_chunks() -> None:

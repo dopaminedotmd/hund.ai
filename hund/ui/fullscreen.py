@@ -42,7 +42,7 @@ from ..providers.base import Message
 from . import theme
 from .commands import CommandContext, dispatch_command, is_slash
 from .input import SLASH_COMMANDS, SLASH_COMMAND_METAS, PromptState, format_status_bar
-from .output import parse_confirm_input, strip_markdown
+from .output import parse_confirm_input, strip_markdown, strip_rich
 from .render import refresh_stats
 
 _S = theme.SEMANTIC
@@ -122,16 +122,6 @@ def _term_width() -> int:
         return shutil.get_terminal_size().columns
     except Exception:
         return 100
-
-
-def _box_top() -> str:
-    w = _term_width()
-    return f"╭─ hund {'─' * max(w - 9, 2)}╮"
-
-
-def _box_bottom() -> str:
-    w = _term_width()
-    return f"╰{'─' * max(w - 2, 2)}╯"
 
 
 async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
@@ -224,6 +214,23 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             except Exception:
                 pass
 
+    def _app_width() -> int:
+        app = holder.get("app")
+        if app is not None:
+            try:
+                return app.output.get_size().columns
+            except Exception:
+                pass
+        return _term_width()
+
+    def _box_top() -> str:
+        w = _app_width()
+        return f"╭─ hund {'─' * max(w - 9, 2)}╮"
+
+    def _box_bottom() -> str:
+        w = _app_width()
+        return f"╰{'─' * max(w - 2, 2)}╯"
+
     _append_lock = threading.Lock()
 
     def append(text: str) -> None:
@@ -306,10 +313,10 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 append("\n\n")
 
         def error(self, markup: str) -> None:
-            append(strip_markdown(markup) + "\n")
+            append(strip_rich(strip_markdown(markup)) + "\n")
 
         def confirm(self, prompt: str) -> bool:
-            clean = strip_markdown(prompt).strip().replace("\n", " ")
+            clean = strip_rich(strip_markdown(prompt)).strip().replace("\n", " ")
             if len(clean) > 58:
                 clean = clean[:55] + "..."
             _confirm["prompt"] = clean
@@ -474,11 +481,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     confirm_active = Condition(lambda: _confirm["active"])
 
     def _scroll_lines(count: int) -> None:
-        doc = output_buffer.document
-        if count > 0:
-            output_buffer.cursor_position += doc.get_cursor_up_position(count)
-        else:
-            output_buffer.cursor_position += doc.get_cursor_down_position(-count)
+        ri = output_window.render_info
+        if ri is None:
+            return
+        first = ri.first_visible_line(after_scroll_offset=True)
+        wh = ri.window_height
+        lc = output_buffer.document.line_count
+        if count > 0:  # up
+            target = max(0, first - count)
+        else:  # down
+            target = min(lc - 1, first + wh - 1 + (-count))
+        output_buffer.cursor_position = output_buffer.document.translate_row_col_to_index(
+            target, 0
+        )
 
     def _copy_selection() -> bool:
         for buf in (input_buffer, output_buffer):

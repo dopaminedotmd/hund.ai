@@ -176,6 +176,14 @@ def strip_markdown(text: str) -> str:
     return text
 
 
+_RICH_TAG_RE = re.compile(r"\[/?[a-z][a-z0-9 _.,#()-]*\]")
+
+
+def strip_rich(text: str) -> str:
+    """Strip Rich markup tags ([yellow], [/bold], ...) leaving plain text."""
+    return _RICH_TAG_RE.sub("", text)
+
+
 def interactive_confirm_menu(prompt: str) -> str:
     """Render interactive arrow-key selection menu for tool confirmation."""
     options = [
