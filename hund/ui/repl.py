@@ -1,13 +1,14 @@
-"""REPL-huvudloop (Prompt Toolkit + streaming).
+"""REPL main loop (Prompt Toolkit + streaming).
 
-Ateranvänder agent.loop-internals: _init_runtime, _agent_turn(sink=),
-_session_save, sessions, komprimering. Ingen agent-logik dupliceras - se
-_init_runtime docstring ("anvands av ... ui.repl").
+Reuses agent.loop internals: _init_runtime, _agent_turn(sink=),
+_session_save, sessions, compression.
 """
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
+from pathlib import Path
 
 from prompt_toolkit.formatted_text import FormattedText
 from rich.console import Console
@@ -31,23 +32,29 @@ from .output import StreamingSink
 from .render import refresh_stats, render_startup, separator
 from .session import offer_resume
 
-_PROMPT = FormattedText([("bold fg:ansigreen", "du> ")])
+_PROMPT = FormattedText([("bold fg:ansigreen", "user > ")])
 
 
 async def _amain() -> int:
     console = Console()
-    prev_active = S.get_active()  # FÖRE _init_runtime (som skapar ny + deaktiverar)
+    prev_active = S.get_active()
     rt = _init_runtime()
     if not rt.key:
         console.print(
-            "[red]API-nyckel saknas.[/red] Sätt med `hund setup` eller "
+            "[red]API key missing.[/red] Configure with `hund setup` or "
             f"`setx {rt.cfg.provider.api_key_env} \"sk-...\"`."
         )
         return 1
 
     state = PromptState()
+    # Cache provider and workspace telemetry into state
+    provider_name = getattr(getattr(rt.cfg, "provider", None), "name", "DeepSeek")
+    model_name = getattr(getattr(rt.cfg, "provider", None), "model", "deepseek-v4-pro")
+    state.extra["model"] = f"{provider_name} ({model_name})"
+    state.extra["workspace"] = Path(str(rt.workspace)).name or "workspace"
+
     init_stats = refresh_stats(state)
-    if init_stats:  # seed prev_tiers → inga spurious level-ups första turnen
+    if init_stats:
         for k, s in init_stats.items():
             state.prev_tiers[k] = s.get("tier", theme.EMDASH)
     session = create_session(state)
@@ -58,14 +65,25 @@ async def _amain() -> int:
 
     messages = rt.messages
     frozen = messages[0].content if messages else ""
-    # Resume fOrra aktiva sessionen (om finns med meddelanden)
     session_id = await offer_resume(console, session, rt, prev_active)
     state.session_id = session_id
+    state.extra["tokens"] = estimate_tokens(messages)
+
+    last_interrupt_time = 0.0
 
     while True:
         try:
             user = (await session.prompt_async(_prompt_for(state))).strip()
-        except (EOFError, KeyboardInterrupt):
+            last_interrupt_time = 0.0
+        except KeyboardInterrupt:
+            now = time.time()
+            if now - last_interrupt_time < 1.5:
+                console.print("\n[dim]exiting hund.[/dim]")
+                break
+            last_interrupt_time = now
+            console.print("\n[dim](Press Ctrl+C again to exit, or /exit)[/dim]")
+            continue
+        except EOFError:
             console.print("")
             break
 
@@ -75,18 +93,17 @@ async def _amain() -> int:
             break
         if user == "/retry":
             _retry(console, rt, messages, session_id, sink, frozen)
-            _after_turn(console, state)
+            await _after_turn(console, state, messages)
             continue
         if is_slash(user):
             dispatch_command(user, ctx)
             continue
 
-        console.print()  # blank line före svar (plan §1.3 separering)
+        console.print()  # spacing before assistant turn
         messages.append(Message(role="user", content=user))
         run_id = uuid.uuid4().hex
         _session_save(session_id, "user", user, run_id=run_id)
 
-        # Komprimering (samma logik som loop.run_repl - Fas 5)
         tokens_before = estimate_tokens(messages)
         comp = maybe_compress(messages, client=rt.client)
         if comp.compressed:
@@ -101,7 +118,7 @@ async def _amain() -> int:
                     "method": comp.method,
                 },
             )
-            console.print(f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]")
+            console.print(f"[dim]({comp.dropped_turns} turns compressed)[/dim]")
 
         dynamic_msg = _dynamic_context_message(
             skills=rt.skills,
@@ -117,31 +134,33 @@ async def _amain() -> int:
                 console, rt.client, messages, rt.schemas, rt.engine, rt.cfg,
                 session_id, sink=sink, run_id=run_id,
             )
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Turn cancelled by user (Ctrl+C).[/yellow]")
         finally:
             if dynamic_msg is not None:
                 messages[:] = [m for m in messages if m is not dynamic_msg]
             _restore_frozen_system_prompt(messages, frozen)
 
-        await _after_turn(console, state)
+        await _after_turn(console, state, messages)
 
     return 0
 
 
 def _prompt_for(state: PromptState):
-    """Bygg prompt-prefix per-turn från aktivt tema (låter /theme leva)."""
+    """Build prompt prefix per-turn from active theme."""
     pt_color = theme.get_theme(state.theme_name)["user_prefix_pt"]
-    return FormattedText([(f"bold fg:{pt_color}", "du> ")])
+    return FormattedText([(f"bold fg:{pt_color}", "user > ")])
 
 
 def _retry(console, rt, messages, session_id, sink, frozen) -> None:
-    """Återskapa senaste svar: släng allt efter senaste user-msg, kör om turn."""
+    """Regenerate last response: remove post-user messages and rerun turn."""
     last_user = -1
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].role == "user":
             last_user = i
             break
     if last_user == -1:
-        console.print("[dim](inget att återskapa)[/dim]")
+        console.print("[dim](nothing to retry)[/dim]")
         return
     del messages[last_user + 1:]
     console.print()
@@ -151,12 +170,16 @@ def _retry(console, rt, messages, session_id, sink, frozen) -> None:
             console, rt.client, messages, rt.schemas, rt.engine, rt.cfg,
             session_id, sink=sink, run_id=run_id,
         )
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Retry cancelled by user (Ctrl+C).[/yellow]")
     finally:
         _restore_frozen_system_prompt(messages, frozen)
 
 
-async def _after_turn(console, state) -> None:
-    """Efter varje agent-turn: uppdatera stats, ev level-up, separator."""
+async def _after_turn(console, state, messages: list[Message] | None = None) -> None:
+    """After each agent turn: update stats, check level-up, print separator."""
+    if messages is not None:
+        state.extra["tokens"] = estimate_tokens(messages)
     new_stats = refresh_stats(state)
     if new_stats:
         for key, s in new_stats.items():
@@ -169,7 +192,7 @@ async def _after_turn(console, state) -> None:
 
 
 def run_repl() -> int:
-    """Entrypoint. Trådat av hund.main."""
+    """Entrypoint. Called by hund.main."""
     try:
         return asyncio.run(_amain())
     except KeyboardInterrupt:

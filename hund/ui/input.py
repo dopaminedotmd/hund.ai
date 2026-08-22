@@ -1,7 +1,7 @@
 """Prompt Toolkit-input: history, autocomplete, Ctrl+R, bottom_toolbar stats.
 
-Enter = skicka. Alt+Enter (Esc,Enter) = ny rad (Discord/Telegram).
-bottom_toolbar visar stats-rad (en lösning, inte \r).
+Enter = send. Alt+Enter (Esc,Enter) = new line.
+bottom_toolbar displays single-line status bar with model, tokens, workspace, and stats.
 """
 from __future__ import annotations
 
@@ -12,12 +12,11 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding import KeyBindings
 
 from ..paths import hund_home
 from . import theme
+from .keys import build_repl_keybindings
 
-# Slash-kommandon (P0: bara /exit live; resten autocomplete + P1-handlers)
 SLASH_COMMANDS = [
     "/exit", "/stats", "/skills", "/profile", "/tools",
     "/history", "/clear", "/progress", "/domains", "/memory",
@@ -28,7 +27,7 @@ SLASH_COMMANDS = [
 
 @dataclass
 class PromptState:
-    """Cachead stats-rad for bottom_toolbar. Uppdateras per turn, inte per tangent."""
+    """Cached stats & telemetry for bottom_toolbar. Updated per turn."""
     stats_text: list[tuple[str, str]] | None = None
     prev_tiers: dict[str, str] = field(default_factory=dict)
     session_id: str | None = None
@@ -37,21 +36,23 @@ class PromptState:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
-def _make_keybindings() -> KeyBindings:
-    kb = KeyBindings()
-
-    @kb.add("escape", "enter")
-    def _newline(event) -> None:
-        # Alt+Enter / Esc,Enter -> ny rad i bufferten (Enter ensamt skickar)
-        event.current_buffer.insert_text("\n")
-
-    return kb
-
-
 def _toolbar(state: PromptState):
+    """Render single-line dim status bar for bottom toolbar."""
+    model = state.extra.get("model", "DeepSeek")
+    tokens = state.extra.get("tokens", 0)
+    ctx_str = f"{tokens // 1000}k ctx" if tokens >= 1000 else f"{tokens} ctx" if tokens else "ready"
+    ws = state.extra.get("workspace", "hund.ai")
+
+    segs: list[tuple[str, str]] = [
+        ("class:bottom-toolbar fg:ansicyan bold", f"[{model}] "),
+        ("class:bottom-toolbar fg:ansibrightblack", f"│ {ctx_str} │ {ws} │ "),
+    ]
+
     if state.stats_text:
-        return state.stats_text
-    return [("class:bottom-toolbar", "hund")]
+        segs.extend(state.stats_text)
+    else:
+        segs.append(("class:bottom-toolbar fg:ansibrightblack", "hund"))
+    return segs
 
 
 def create_session(state: PromptState) -> PromptSession:
@@ -69,14 +70,14 @@ def create_session(state: PromptState) -> PromptSession:
         auto_suggest=AutoSuggestFromHistory(),
         completer=completer,
         bottom_toolbar=lambda: _toolbar(state),
-        multiline=False,            # Enter = skicka
+        multiline=False,            # Enter = send
         vi_mode=False,
         complete_while_typing=True,
         enable_history_search=True,  # Ctrl+R
-        key_bindings=_make_keybindings(),
+        key_bindings=build_repl_keybindings(),
     )
 
 
 def prompt_message() -> str:
-    """Prompt-prefix 'du> ' (formateras av PT)."""
+    """Prompt prefix 'user > ' (formatted by PT)."""
     return f"{theme.USER_PREFIX} "

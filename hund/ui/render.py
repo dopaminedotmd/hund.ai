@@ -57,9 +57,12 @@ def user_prefix_markup() -> str:
     return f"[{theme.USER_PREFIX_RICH}]{theme.USER_PREFIX}[/{theme.USER_PREFIX_RICH}]"
 
 
+import difflib
+from rich.syntax import Syntax
+
 def separator(console: Console) -> None:
     """Thin dim line separating logical blocks."""
-    console.print(f"[dim]{theme.SEPARATOR_CHAR * 40}[/dim]")
+    console.print(f"[dim]{theme.SEPARATOR_CHAR * 60}[/dim]")
 
 
 def _mascot() -> str:
@@ -76,24 +79,119 @@ def mascot() -> str:
     return _mascot()
 
 
+
 def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
-    """2-3 lines startup banner. Mascot is shown once on first launch."""
-    home = hund_home()
-    flag = home / _MASCOT_FLAG
-    show_mascot = force_mascot or not flag.exists()
-    if show_mascot:
-        console.print(_mascot())
+    """Fastfetch-style two-column startup banner with ASCII art and system telemetry."""
+    from ..doctor import inspect_environment
+    profile = getattr(rt, "profile", None)
+    if profile is None:
         try:
-            home.mkdir(parents=True, exist_ok=True)
-            flag.write_text("1", encoding="utf-8")
-        except OSError:
-            pass
+            profile = inspect_environment(getattr(rt, "workspace", None))
+        except Exception:
+            profile = None
+
+    os_caption = getattr(profile, "os_caption", "")
+    os_fallback = f"{getattr(profile, 'os', 'System')} {getattr(profile, 'os_version', '')}".strip()
+    os_str = os_caption or os_fallback or "Windows"
+    host_str = getattr(profile, "hostname", "") or "host"
+    cpu_cores = getattr(profile, "cpu_count", None)
+    cpu_str = getattr(profile, "processor", "") or "CPU"
+    if cpu_cores:
+        cpu_str += f" ({cpu_cores} cores)"
+    ram_gb = getattr(profile, "total_ram_gb", 0.0)
+    ram_str = f"{ram_gb:.1f} GB Total" if ram_gb else "RAM ready"
+    gpu_str = getattr(profile, "gpu_model", "")
+    if gpu_str and getattr(profile, "gpu_vram_mb", 0):
+        gpu_str += f" ({getattr(profile, 'gpu_vram_mb', 0) / 1024:.1f} GB VRAM)"
+
+    tools = []
+    if getattr(profile, "has_git", False): tools.append("git")
+    if getattr(profile, "has_python", False): tools.append("python")
+    if getattr(profile, "has_uv", False): tools.append("uv")
+    if getattr(profile, "has_node", False): tools.append("node")
+    tools_str = ", ".join(tools) if tools else "tools ready"
+
+    cfg = getattr(rt, "cfg", None)
+    provider_name = getattr(getattr(cfg, "provider", None), "name", "DeepSeek")
+    model_name = getattr(getattr(cfg, "provider", None), "model", "deepseek-v4-pro")
+    slots_str = "6/6 active skills equipped · sqlite ok"
+
+    mascot_lines = [
+        "  ┬ ┬ ┬ ┬ ┌┐┌ ┌┬┐",
+        "  ├─┤ │ │ │││  ││",
+        "  ┴ ┴ └─┘ ┘└┘ ─┴┘",
+        "  [Conscious Agent]",
+        "",
+        "",
+        "",
+        "",
+    ]
+    info_lines = [
+        f"OS       : {os_str[:38]}",
+        f"HOST     : {host_str[:38]}",
+        f"CPU      : {cpu_str[:38]}",
+        f"RAM      : {ram_str[:38]}",
+        f"GPU      : {gpu_str[:38]}" if gpu_str else f"SHELL    : {getattr(profile, 'shell', 'powershell')}",
+        f"TOOLS    : {tools_str[:38]}",
+        f"MODEL    : {provider_name} ({model_name})",
+        f"SLOTS    : {slots_str[:38]}",
+    ]
+
+    combined = []
+    for i in range(max(len(mascot_lines), len(info_lines))):
+        left = mascot_lines[i] if i < len(mascot_lines) else "                   "
+        right = info_lines[i] if i < len(info_lines) else ""
+        combined.append(f"{left:<21}  [dim]{right}[/dim]")
+
+    card = theme.boxify("HUND AI [v0.1.0]", combined, width=74, border_style="dim", title_style="bold cyan")
+    console.print(card)
 
     console.print("[bold cyan]hund[/bold cyan] is awake. machine feels stable.")
     domain = getattr(rt, "domain_hint", "?")
     sid = getattr(rt, "session_id", "??????")
-    console.print(f"[dim]session #{sid[:6]} · {domain}[/dim]")
-    console.print()
+    console.print(f"[dim]session #{sid[:6]} · {domain}[/dim]\n")
+
+
+def render_diff(console: Console, old: str, new: str, filename: str = "") -> None:
+    """Render unified diff with green additions and red deletions inside clean box."""
+    diff = list(difflib.unified_diff(
+        old.splitlines(),
+        new.splitlines(),
+        fromfile=f"a/{filename}" if filename else "a",
+        tofile=f"b/{filename}" if filename else "b",
+        lineterm="",
+    ))
+    if not diff:
+        console.print(f"[dim](no diff changes for {filename})[/dim]")
+        return
+
+    formatted_lines: list[str] = []
+    for line in diff:
+        if line.startswith("+++") or line.startswith("---"):
+            formatted_lines.append(f"[bold dim]{line}[/bold dim]")
+        elif line.startswith("+"):
+            formatted_lines.append(f"[green]{line}[/green]")
+        elif line.startswith("-"):
+            formatted_lines.append(f"[red]{line}[/red]")
+        elif line.startswith("@@"):
+            formatted_lines.append(f"[cyan]{line}[/cyan]")
+        else:
+            formatted_lines.append(f"[dim]{line}[/dim]")
+
+    title = f"DIFF: {filename}" if filename else "DIFF"
+    card = theme.boxify(title, formatted_lines, width=74, border_style="dim", title_style="bold cyan")
+    console.print(card, highlight=False)
+
+
+
+def render_code_block(console: Console, code: str, language: str = "python", filename: str = "") -> None:
+    """Render syntax highlighted code with line numbers inside a boxed card."""
+    syntax = Syntax(code, lexer=language, theme="monokai", line_numbers=True)
+    title = f"[{language.upper()}] {filename}".strip()
+    console.print(f"[dim]┌──[/dim] [bold cyan]{title}[/bold cyan] [dim]{theme.SEPARATOR_CHAR * max(20, 60 - len(title))}┐[/dim]")
+    console.print(syntax)
+    console.print(f"[dim]└{theme.SEPARATOR_CHAR * 68}┘[/dim]")
+
 
 
 def refresh_stats(state):

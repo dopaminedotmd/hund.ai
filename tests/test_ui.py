@@ -70,7 +70,7 @@ def test_stats_bar_segments_carry_tier_styles() -> None:
 # -- render: separering ----------------------------------------------------
 
 def test_user_prefix_is_bold_green_du() -> None:
-    assert theme.USER_PREFIX == "du>"
+    assert theme.USER_PREFIX == "user >"
     assert theme.USER_PREFIX_RICH == "bold green"
 
 
@@ -82,8 +82,9 @@ def test_separator_uses_rule_char() -> None:
 
 
 def test_user_prefix_markup_helper() -> None:
-    assert "du>" in user_prefix_markup()
+    assert "user >" in user_prefix_markup()
     assert "green" in user_prefix_markup()
+
 
 
 # -- output: sink ----------------------------------------------------------

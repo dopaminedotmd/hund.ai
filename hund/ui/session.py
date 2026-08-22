@@ -34,7 +34,7 @@ async def offer_resume(
     prev_id = prev_active["id"]
     count = prev_active["message_count"]
     prompt = FormattedText([
-        ("bold", f"Återuppta session #{prev_id[:8]} ({count} msg)? [J/n] "),
+        ("bold", f"Resume session #{prev_id[:8]} ({count} msgs)? [Y/n] "),
     ])
     try:
         ans = (await prompt_session.prompt_async(prompt)).strip().lower()
@@ -49,7 +49,7 @@ async def offer_resume(
     del rt.messages[1:]
     for role, content in S.history(prev_id):
         rt.messages.append(Message(role=role, content=content))
-    console.print(f"[dim]återupptog {count} meddelanden.[/dim]")
+    console.print(f"[dim]resumed {count} messages.[/dim]")
     return prev_id
 
 

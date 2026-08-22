@@ -1,62 +1,90 @@
 # hund
 
-> A local-first, hardware-aware terminal agent that learns, remembers, and levels up with you.
+```text
+┬ ┬ ┬ ┬ ┌┐┌ ┌┬┐
+├─┤ │ │ │││  ││
+┴ ┴ └─┘ ┘└┘ ─┴┘
+```
 
-hund is software executing inside your machine. It connects to any model provider via BYOK (Bring Your Own Key) and works directly in your terminal as an operative companion.
+> The local-first, hardware-aware terminal agent engine living in your machine. Connect your key, master your tools, level up your workflow.
 
-Unlike generic chatbots, hund is built to feel like an extension of your own system: sensing your hardware, managing memory locally, tracking measurable growth, synthesizing new skills from your workflow, and executing tools within strict security boundaries.
+hund is software executing inside your physical hardware. It connects to any model provider via BYOK (Bring Your Own Key) and works directly inside your terminal as an operative companion.
+
+Unlike generic web chatbots, hund is built to feel like a native part of your system: reading your machine telemetry, managing memory locally, synthesizing custom capability packs from your workflow, and executing tools within an inviolable security kernel.
+
+---
+
+## Terminal Experience
+
+```text
+┌── HUND REPL ────────────────────────────────────────────────────────┐
+│ hund is awake. host: RazerBlade (Intel i7, 16GB RAM, RTX 3080).    │
+│ slots: 6/6 active skills equipped · local sqlite memory linked      │
+│                                                                     │
+│ > add FTS5 full-text search to our local database schema            │
+│                                                                     │
+│ ┌── TOOL: read_file (hund/store/sqlite.py) ───────────────────────┐ │
+│ │ reading schema definitions... [48 lines inspected]              │ │
+│ └─────────────────────────────────────────────────────────────────┘ │
+│                                                                     │
+│ hund created the FTS5 virtual table and verified table indexes.     │
+│ all 12 regression tests pass cleanly.                               │
+│                                                                     │
+│ Precision  [████████░░] +3.5%                                       │
+│ Mastery    [███████░░░] +1 domain unit (sqlite)                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
 ## What Makes hund Different
 
 ### 1. Hardware & System Telemetry
-hund reads the machine upon startup (`hund doctor`). It inspects CPU cores, RAM, GPU VRAM, shell environment, and installed developer toolchains (git, python, uv, node). Regardless of what task or question you bring, hund adapts its advice and execution strategies to your machine's exact hardware specifications and available toolchains.
+hund inspects the physical machine upon startup (`hund doctor`). It reads CPU topology, available RAM, GPU VRAM, active shell, and installed developer toolchains (git, python, uv, node). Regardless of what question or task you present, hund grounds its execution strategies in your machine's exact hardware capabilities and available local tools.
 
 ### 2. Autonomous Skill Synthesis & Refinement
-hund actively observes the domains and workflows you spend time in. When a specific domain or task type is used frequently enough, hund identifies the pattern and creates a brand-new, dedicated skill for it. As you keep working, hund continuously sharpens and updates these skills to become an increasingly effective specialist for your exact needs.
+hund continuously observes the domains and tasks you spend time in. When a specific workflow is used frequently enough, hund recognizes the pattern and synthesizes a dedicated capability pack for it. As you keep working, hund sharpens the skill's instructions based on real outcomes.
 
-At higher experience levels, hund goes further: conducting targeted web research to scan external patterns, libraries, and best practices, integrating valuable techniques directly into its own skills to accelerate its growth and precision.
+At higher experience levels, hund goes further: conducting targeted web research to inspect external patterns, libraries, and best practices, integrating valuable techniques directly into its own skills to accelerate its growth and precision.
 
 ### 3. Base Stats & Measurable Growth
 Every session contributes to hund's capabilities. Performance and experience are tracked across five core attributes with live ASCII progress bars calculated directly from telemetry stored in your local SQLite database:
 
-```
+```text
 Clarity [████████░░]
 ```
 - **Clarity**: Measures communication efficiency and Turns Per Task (TPT).  
-  *How it improves:* Getting tasks solved on the first attempt with minimal back-and-forth ambiguity or prompt clarification.
+  *How it improves:* Solving tasks on the first attempt with minimal back-and-forth ambiguity or prompt clarification.
 
-```
+```text
 Precision [██████░░░░]
 ```
 - **Precision**: Measures tool execution accuracy and verification success rate.  
   *How it improves:* Writing syntactically valid edits, executing commands with zero runtime errors, and passing unit tests on the first try.
 
-```
+```text
 Efficiency [█████████░]
 ```
 - **Efficiency**: Measures token economy and context window optimization.  
   *How it improves:* Formulating high-signal responses, avoiding redundant iterations, and keeping token consumption lean.
 
-```
+```text
 Endurance [████░░░░░░]
 ```
 - **Endurance**: Measures sustained multi-turn workflow depth before context degradation.  
   *How it improves:* Navigating long, complex engineering sessions, heavy refactorings, and multi-file debugging tasks without losing coherence.
 
-```
+```text
 Mastery [███████░░░]
 ```
 - **Mastery**: Measures total breadth and depth of verified domain expertise and synthesized skills.  
   *How it improves:* Successfully synthesizing, verifying, and promoting new skills and domain knowledge through actual task completion.
 
-
 #### Learned Domain Skill Example
 
 When you work heavily in a specialized framework or tech stack, hund synthesizes a domain skill with its own XP progression:
 
-```
+```text
 FastAPI & Async SQLite   [███████░░░]
 ```
 
@@ -66,19 +94,38 @@ FastAPI & Async SQLite   [███████░░░]
 
 Every time hund improves its skillset, acquires new domain knowledge, or self-updates its procedural instructions, this progression is visualized directly in the terminal through the filling progress bars. You can watch hund grow into a sharper specialist with every task completed.
 
-
-### 4. Skill Vault
+### 4. Skill Vault (6 Active Slots)
 hund equips up to 6 active capability packs at a time, keeping system prompts focused and token-efficient. Skills can be swapped in and out of the vault on the fly:
 
 - **Security & Safety**: shell command guards, git push verification, external data isolation.
 - **Engineering Workflows**: Python project inspection, systematic debugging, context condensation.
-- **Vault Management**: `/skills vault`, `/skills equip <name>`, `/skills park <name>`, `/skills swap <old> <new>`.
+- **Vault Commands**: `/skills vault`, `/skills equip <name>`, `/skills park <name>`, `/skills swap <old> <new>`.
 
 ### 5. Self-Improvement with Human Gate
 hund tracks knowledge gaps during difficult tasks. When repeated friction occurs, it drafts structured skill proposals to expand its abilities. Every update requires explicit user review: hund proposes, you decide.
 
 ### 6. Trusted Computing Base (TCB)
 Security is enforced by code, not polite prompt instructions. A hardened PermissionEngine classifies all operations into `SAFE`, `WRITE`, `CONFIRM`, `DANGEROUS`, and `BLOCKED`. High-risk commands always pause for interactive confirmation.
+
+---
+
+## Builtin Skills
+
+hund ships with 11 declarative capability packs ready out of the box:
+
+| Skill | Domain | Safety Tier | Purpose |
+|---|---|---|---|
+| `shell-command-safety` | Security | `confirm` | Blocks destructive shell commands and privilege escalation |
+| `file-operations` | System | `confirm_for_write` | Protects system paths and verifies file modifications |
+| `git-safety` | Development | `confirm_for_write` | Inspects status and diffs, prevents unconfirmed pushes |
+| `external-content-safety` | Security | `confirm` | Isolates untrusted web content and prompt injections |
+| `systematic-debugging` | Engineering | `read_only` | Enforces 4-phase root-cause diagnosis before fixing |
+| `context-condenser` | Context | `read_only` | Compresses conversations to conserve token windows |
+| `environment-profiling` | System | `read_only` | Inspects host hardware telemetry and toolchains |
+| `python-project-inspection` | Python | `confirm_for_write` | Scans `pyproject.toml` and establishes test baselines |
+| `python-project-workflow` | Python | `confirm_for_write` | Manages linting, formatting, typing, and build flows |
+| `knowledge-gap-detection` | Learning | `read_only` | Detects missing domain knowledge and logs gap events |
+| `persona-preservation` | Core | `read_only` | Enforces third-person perspective and zero-emoji discipline |
 
 ---
 

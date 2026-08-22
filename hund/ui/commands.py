@@ -48,6 +48,11 @@ def cmd_help(ctx: CommandContext, args: list[str]) -> None:
     for cmd, desc in HELP_ROWS:
         t.add_row(cmd, desc)
     ctx.console.print(t)
+    ctx.console.print()
+    from .keys import format_keymap_summary
+    for line in format_keymap_summary():
+        ctx.console.print(line)
+
 
 
 def cmd_stats(ctx: CommandContext, args: list[str]) -> None:

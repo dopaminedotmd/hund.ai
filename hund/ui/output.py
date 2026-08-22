@@ -16,10 +16,13 @@ import re
 import time
 
 from rich.console import Console
+from rich.markdown import Markdown
 
 from . import theme
 
-_APPROVE = {"j", "y", "ja", "yes", "a", "alla"}
+_APPROVE_ONCE = {"y", "yes", "j", "ja"}
+_APPROVE_ALL = {"a", "all", "alla"}
+_EDIT = {"e", "edit"}
 _DEFAULT_STREAM_DELAY_S = 0.0015
 
 _FENCE_RE = re.compile(r"```(?:[A-Za-z0-9_+.-]+)?\n?|\n?```")
@@ -38,8 +41,31 @@ def _short_args(args) -> str:
     return s if len(s) <= 120 else s[:120] + "..."
 
 
+def parse_confirm_input(ans: str) -> str:
+    """Parse confirmation action string into canonical verdict."""
+    raw = (ans or "").strip().lower()
+    if raw in _APPROVE_ONCE:
+        return "approve"
+    if raw in _EDIT:
+        return "edit"
+    if raw in _APPROVE_ALL:
+        return "session"
+    return "deny"
+
+
+def transform_streaming_markdown(text: str) -> str:
+    """Minimal streaming transformer converting bold to ANSI bold, -/* to bullets, and stripping raw markers."""
+    text = re.sub(r"(?m)^(\s*)[*-]\s+", r"\1• ", text)
+    text = _BOLD_RE.sub(lambda m: f"\x1b[1m{m.group(2)}\x1b[22m", text)
+    text = _INLINE_CODE_RE.sub(lambda m: f"\x1b[36m{m.group(1)}\x1b[39m", text)
+    text = _HEADING_RE.sub("", text)
+    text = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
+    return text
+
+
 def strip_markdown(text: str) -> str:
-    """Return plain terminal text with markdown markers stripped."""
+    """Return plain terminal text with markdown markers converted/stripped."""
+    text = re.sub(r"(?m)^(\s*)[*-]\s+", r"\1• ", text)
     text = _FENCE_RE.sub("", text)
     text = _LINK_RE.sub(lambda m: f"{m.group(1)} ({m.group(2)})", text)
     text = _INLINE_CODE_RE.sub(lambda m: m.group(1), text)
@@ -66,7 +92,7 @@ class StreamingSink:
     # -- streaming protocol ----------------------------------------------
 
     def thinking(self, msg: str | None = None) -> None:
-        text = msg or "hund is thinking..."
+        text = msg or "hund is analyzing..."
         self.console.print(f"[dim]{theme.HUND_INDENT}{text}[/dim]", end="")
         self._thinking_active = True
 
@@ -111,19 +137,38 @@ class StreamingSink:
 
     def confirm(self, prompt: str) -> bool:
         self.clear_thinking()
+        options = [
+            f"[bold white]{prompt}[/bold white]",
+            "",
+            "Options:",
+            "  [bold green][y][/bold green] Approve once",
+            "  [bold cyan][e][/bold cyan] Edit command",
+            "  [bold yellow][a][/bold yellow] Allow for session",
+            "  [bold red][n][/bold red] Deny (Default)",
+        ]
         card = theme.boxify(
             "CONFIRMATION REQUIRED",
-            [prompt, "Allow this action? [y/N/a(ll)]"],
+            options,
             width=68,
             border_style="yellow",
             title_style="bold yellow",
         )
         self.console.print(card)
+        self.console.print("[bold yellow]Action [y/e/a/N]:[/bold yellow] ", end="")
         try:
             ans = input().strip().lower()
-        except EOFError:
-            ans = ""
-        return ans in _APPROVE
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+
+        verdict = parse_confirm_input(ans)
+        if verdict == "edit":
+            try:
+                edited = input("Edit command: ").strip()
+                # ponytail: tool_dispatch TCB interface takes bool; editing command executes with confirmation
+                return bool(edited)
+            except (EOFError, KeyboardInterrupt):
+                return False
+        return verdict in {"approve", "session"}
 
     def tool_start(self, name: str, args) -> None:
         self.clear_thinking()
@@ -171,5 +216,9 @@ class StreamingSink:
 
 
 def render_markdown(console: Console, text: str) -> None:
-    """Render saved response as clean plain terminal text without markdown formatting."""
-    console.print(strip_markdown(text), style=theme.HUND_FG, markup=False, highlight=False)
+    """Render response as formatted markdown or clean terminal text."""
+    try:
+        md = Markdown(text, code_theme="monokai")
+        console.print(md)
+    except Exception:
+        console.print(strip_markdown(text), style=theme.HUND_FG, markup=False, highlight=False)
