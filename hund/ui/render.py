@@ -82,11 +82,11 @@ def mascot() -> str:
 
 def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
     """Fastfetch-style two-column startup banner with ASCII art and system telemetry."""
-    from ..doctor import inspect_environment
+    from ..doctor import profile_environment
     profile = getattr(rt, "profile", None)
     if profile is None:
         try:
-            profile = inspect_environment(getattr(rt, "workspace", None))
+            profile = profile_environment(getattr(rt, "workspace", None))
         except Exception:
             profile = None
 
