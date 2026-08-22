@@ -48,6 +48,7 @@ Thumbs.db
 .codex/
 docs/
 dev-dashboard/
+dashboard/
 tui/
 scripts/
 hund/agent/archive/
