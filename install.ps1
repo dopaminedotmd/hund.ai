@@ -3,7 +3,7 @@
   Hund CLI installer for Windows (PowerShell 5.1+).
 
 .DESCRIPTION
-  Bootstraps uv, clones hund-cli, installs a global `hund` command.
+  Bootstraps uv, clones hund.ai, installs a global `hund` command.
 
   SECURITY: Detta skript hämtar och exekverar kod från internet.
   För produktionsanvändning, pinna till en release-SHA och verifiera
@@ -26,15 +26,15 @@
 
 .EXAMPLE
   # Dev (latest main):
-  irm https://raw.githubusercontent.com/dopaminedotmd/hund-cli/main/install.ps1 | iex
+  irm https://raw.githubusercontent.com/dopaminedotmd/hund.ai/main/install.ps1 | iex
 
   # Stable (pinnad):
   $env:HUND_RELEASE_SHA = "37947cb"; irm .../install.ps1 | iex
 #>
 $ErrorActionPreference = 'Stop'
 
-$Repo    = 'https://github.com/dopaminedotmd/hund-cli'
-$Target  = Join-Path $env:LOCALAPPDATA 'hund-cli'
+$Repo    = 'https://github.com/dopaminedotmd/hund.ai'
+$Target  = Join-Path $env:LOCALAPPDATA 'hund.ai'
 # Läs optional release-SHA från miljövariabel (sätts av CI eller användare)
 $ReleaseSha = $env:HUND_RELEASE_SHA
 
@@ -82,7 +82,7 @@ Ensure-Uv
 Get-HundCli
 
 Write-Host "installerar globalt kommando ``hund`` ..."
-uv tool install --force --from $Target hund-cli
+uv tool install --force --from $Target hund
 
 if (Get-Command hund -ErrorAction SilentlyContinue) {
     Write-Host "Klar. Testa:"
@@ -92,4 +92,3 @@ if (Get-Command hund -ErrorAction SilentlyContinue) {
 } else {
     Write-Warning "``hund`` ej i PATH än. Starta ny terminal (PATH uppdateras)."
 }
-

@@ -61,8 +61,9 @@ import difflib
 from rich.syntax import Syntax
 
 def separator(console: Console) -> None:
-    """Thin dim line separating logical blocks."""
-    console.print(f"[dim]{theme.SEPARATOR_CHAR * 60}[/dim]")
+    """Thin dim line spanning the full terminal width."""
+    width = getattr(console, "width", 80) or 80
+    console.print(f"[dim]{theme.SEPARATOR_CHAR * width}[/dim]")
 
 
 def _mascot() -> str:

@@ -324,7 +324,47 @@ def cmd_session(ctx: CommandContext, args: list[str]) -> None:
         ctx.console.print(f"  tokens     {tokens} (global)")
 
 
+def cmd_restore(ctx: CommandContext, args: list[str]) -> None:
+    """Restore messages from previous session into active context."""
+    target_id = args[0] if args else S.get_active()
+    if not target_id:
+        try:
+            recent = S.list_sessions(limit=5)
+            for s in recent:
+                if s["id"] != ctx.state.session_id and s["message_count"] > 0:
+                    target_id = s["id"]
+                    break
+        except Exception:
+            pass
+
+    if not target_id:
+        ctx.console.print("[dim](no previous session to restore)[/dim]")
+        return
+
+    try:
+        prev_msgs = S.list_messages(target_id)
+        if not prev_msgs:
+            ctx.console.print("[dim](session is empty)[/dim]")
+            return
+
+        from ..providers.base import Message
+        from ..agent.context import estimate_tokens
+        system_msgs = [m for m in ctx.rt.messages if m.role == "system"]
+        restored = [
+            Message(role=role, content=content)
+            for role, content in prev_msgs
+            if role in ("user", "assistant")
+        ]
+        ctx.rt.messages[:] = system_msgs + restored
+        ctx.state.session_id = target_id
+        ctx.state.extra["tokens"] = estimate_tokens(ctx.rt.messages)
+        ctx.console.print(f"[green][OK][/green] restored #{target_id[:8]} ({len(restored)} messages).")
+    except Exception as e:
+        ctx.console.print(f"[red]could not restore session: {e}[/red]")
+
+
 # -- /config ----------------------------------------------------------------
+
 
 _CONFIG_KEYS = {"model", "base_url", "api_key_env", "workspace_root",
                 "telemetry_local", "telemetry_upload"}
@@ -591,6 +631,7 @@ COMMANDS = {
     "memory": cmd_memory,
     "notifications": cmd_notifications,
     "clear": cmd_clear,
+    "restore": cmd_restore,
 }
 
 HELP_ROWS = [
@@ -608,6 +649,7 @@ HELP_ROWS = [
     ("/history [search <q> | <id>]", "session messages / search"),
     ("/export [file]", "export session to .md"),
     ("/session", "session stats (time, messages, tokens)"),
+    ("/restore [id]", "restore previous or specified session"),
     ("/config [set <k> <v>]", "view/update settings"),
     ("/theme [name]", "switch theme (colors)"),
     ("/domains", "domains + confidence"),
@@ -619,6 +661,7 @@ HELP_ROWS = [
     ("/exit", "exit session"),
     ("/retry", "regenerate last assistant response"),
 ]
+
 
 
 def dispatch_command(user_input: str, ctx: CommandContext) -> bool:

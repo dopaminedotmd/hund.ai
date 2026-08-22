@@ -1,10 +1,13 @@
-"""Prompt Toolkit-input: history, autocomplete, Ctrl+R, bottom_toolbar stats.
+"""Prompt Toolkit input session, slash command autocomplete, and status bar.
 
-Enter = send. Alt+Enter (Esc,Enter) = new line.
-bottom_toolbar displays single-line status bar with model, tokens, workspace, and stats.
+Input:
+- WordCompleter with short descriptions for instant completion on '/'
+- Bottom toolbar: model │ tokens/limit │ session duration │ ⏱ latency
+- Single-line and multi-line keybindings
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -12,17 +15,36 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style
 
 from ..paths import hund_home
 from . import theme
 from .keys import build_repl_keybindings
 
-SLASH_COMMANDS = [
-    "/exit", "/stats", "/skills", "/profile", "/tools",
-    "/history", "/clear", "/progress", "/domains", "/memory",
-    "/help", "/export", "/config", "/theme", "/session", "/retry",
-    "/notifications", "/mascot",
-]
+SLASH_COMMAND_METAS: dict[str, str] = {
+    "/exit": "Exit the REPL session",
+    "/stats": "View character card and RPG stats",
+    "/skills": "Manage and inspect equipped skills and vault",
+    "/profile": "View host hardware and environment profile",
+    "/tools": "List registered tools and risk levels",
+    "/history": "View session turn history",
+    "/clear": "Clear active conversation context",
+    "/progress": "View session activity and progression",
+    "/domains": "View domain confidence and specializations",
+    "/memory": "Show and manage persistent user memory",
+    "/help": "Show command palette and keybindings",
+    "/export": "Export session transcript to file",
+    "/config": "View active configuration settings",
+    "/theme": "Switch terminal visual palette",
+    "/session": "Inspect or search session archive",
+    "/retry": "Regenerate last assistant response",
+    "/restore": "Restore previous session messages into active context",
+    "/notifications": "Toggle desktop notifications",
+    "/mascot": "Display Hund ASCII mascot",
+}
+
+
+SLASH_COMMANDS = list(SLASH_COMMAND_METAS.keys())
 
 
 @dataclass
@@ -33,32 +55,81 @@ class PromptState:
     session_id: str | None = None
     theme_name: str = "default"
     notifications_enabled: bool = True
+    start_time: float = field(default_factory=time.time)
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+def format_tokens_ratio(tokens: int, limit: int = 1_000_000) -> str:
+    """Format token consumption ratio, e.g. 274K/1M or 14K/128K."""
+    if tokens >= 1_000_000:
+        t_str = f"{tokens / 1_000_000:.1f}M"
+    elif tokens >= 1_000:
+        t_str = f"{tokens // 1000}K"
+    else:
+        t_str = f"{tokens}"
+
+    if limit >= 1_000_000:
+        l_str = f"{limit // 1_000_000}M"
+    elif limit >= 1_000:
+        l_str = f"{limit // 1000}K"
+    else:
+        l_str = f"{limit}"
+    return f"{t_str}/{l_str}"
+
+
+def format_duration(seconds: float) -> str:
+    """Format elapsed seconds into e.g. 4h 27m or 12m or 45s."""
+    secs = int(max(0, seconds))
+    hours = secs // 3600
+    minutes = (secs % 3600) // 60
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    if minutes > 0:
+        return f"{minutes}m"
+    return f"{secs}s"
+
+
+def format_status_bar(
+    model: str,
+    tokens: int = 0,
+    limit: int = 1_000_000,
+    duration_s: float = 0.0,
+    latency_s: float = 0.0,
+) -> str:
+    """Build canonical single-line status bar text."""
+    # Clean model name e.g. "DeepSeek (deepseek-v4-pro)" -> "deepseek-v4-pro"
+    cleaned_model = model
+    if "(" in model and ")" in model:
+        cleaned_model = model.split("(")[-1].split(")")[0].strip()
+    if not cleaned_model:
+        cleaned_model = "deepseek-v4-pro"
+
+    token_str = format_tokens_ratio(tokens, limit)
+    duration_str = format_duration(duration_s)
+    latency_str = f"⏱ {latency_s:.1f}s"
+
+    return f"{cleaned_model} │ {token_str} │ {duration_str} │ {latency_str}"
 
 
 def _toolbar(state: PromptState):
     """Render single-line dim status bar for bottom toolbar."""
-    model = state.extra.get("model", "DeepSeek")
+    model = state.extra.get("model", "deepseek-v4-pro")
     tokens = state.extra.get("tokens", 0)
-    ctx_str = f"{tokens // 1000}k ctx" if tokens >= 1000 else f"{tokens} ctx" if tokens else "ready"
-    ws = state.extra.get("workspace", "hund.ai")
+    limit = state.extra.get("token_limit", 1_000_000)
+    duration_s = time.time() - state.start_time
+    latency_s = state.extra.get("last_latency_s", 0.0)
 
-    segs: list[tuple[str, str]] = [
-        ("class:bottom-toolbar fg:ansicyan bold", f"[{model}] "),
-        ("class:bottom-toolbar fg:ansibrightblack", f"│ {ctx_str} │ {ws} │ "),
-    ]
-
-    if state.stats_text:
-        segs.extend(state.stats_text)
-    else:
-        segs.append(("class:bottom-toolbar fg:ansibrightblack", "hund"))
-    return segs
+    text = format_status_bar(model, tokens, limit, duration_s, latency_s)
+    return [("class:bottom-toolbar fg:ansibrightblack", text)]
 
 
 def create_session(state: PromptState) -> PromptSession:
-    completer = WordCompleter(SLASH_COMMANDS, ignore_case=True, meta_dict={
-        c: "" for c in SLASH_COMMANDS
-    })
+    completer = WordCompleter(
+        SLASH_COMMANDS,
+        ignore_case=True,
+        meta_dict=SLASH_COMMAND_METAS,
+        sentence=False,
+    )
     history_path = hund_home() / "repl_history"
     try:
         history_path.parent.mkdir(parents=True, exist_ok=True)
@@ -70,14 +141,15 @@ def create_session(state: PromptState) -> PromptSession:
         auto_suggest=AutoSuggestFromHistory(),
         completer=completer,
         bottom_toolbar=lambda: _toolbar(state),
-        multiline=False,            # Enter = send
+        multiline=False,
         vi_mode=False,
         complete_while_typing=True,
-        enable_history_search=True,  # Ctrl+R
+        enable_history_search=True,
         key_bindings=build_repl_keybindings(),
+        style=Style.from_dict({"bottom-toolbar": "fg:#6E7380"}),
     )
 
 
 def prompt_message() -> str:
-    """Prompt prefix 'user > ' (formatted by PT)."""
+    """Prompt prefix '❯ '."""
     return f"{theme.USER_PREFIX} "

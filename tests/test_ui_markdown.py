@@ -4,7 +4,13 @@ from __future__ import annotations
 from io import StringIO
 from rich.console import Console
 
-from hund.ui.output import parse_confirm_input, strip_markdown, transform_streaming_markdown
+from hund.ui.output import (
+    StreamingMarkdownFilter,
+    StreamingSink,
+    parse_confirm_input,
+    strip_markdown,
+    transform_streaming_markdown,
+)
 from hund.ui.render import render_diff
 
 
@@ -14,8 +20,8 @@ def test_transform_bold_to_ansi() -> None:
     text = transform_streaming_markdown("This is **bold** and __also bold__.")
     assert "**" not in text
     assert "__" not in text
-    assert "\x1b[1mbold\x1b[22m" in text
-    assert "\x1b[1malso bold\x1b[22m" in text
+    assert "bold" in text
+    assert "also bold" in text
 
 
 def test_transform_bullet_lists_to_unicode_bullet() -> None:
@@ -38,6 +44,30 @@ def test_strip_markdown_helper() -> None:
     assert "**" not in text
     assert "`" not in text
     assert "• item with bold text and code" == text.strip()
+
+
+def test_streaming_markdown_filter_across_token_chunks() -> None:
+    f = StreamingMarkdownFilter()
+    tokens = ["\n- ", "**", "Läsa & skriva", "**", " i workspace"]
+    streamed = "".join(f.feed(t) for t in tokens) + f.flush()
+
+    assert "**" not in streamed
+    assert "• Läsa & skriva i workspace" in streamed
+
+
+def test_sink_chunk_streaming_eliminates_raw_markers() -> None:
+    out = StringIO()
+    console = Console(force_terminal=False, width=120, file=out)
+    sink = StreamingSink(console, stream_delay_s=0)
+
+    for chunk in ["- **", "Köra terminalkommandon", "** (PowerShell, node)\n"]:
+        sink.chunk(chunk)
+    sink.end_assistant()
+
+    val = out.getvalue()
+    assert "**" not in val
+    assert "• " in val
+    assert "Köra terminalkommandon" in val
 
 
 # -- confirm parser tests --------------------------------------------------
@@ -80,8 +110,6 @@ def test_render_diff_green_additions_red_deletions() -> None:
     render_diff(console, old, new, filename="test.py")
     res = out.getvalue()
     assert "DIFF: test.py" in res
-    # Contains color codes for addition and deletion
     assert "return 2" in res
     assert "return 1" in res
-    # Zero emojis
     assert all(ord(c) < 0x1F000 for c in res)

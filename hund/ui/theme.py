@@ -50,12 +50,13 @@ TIER_PT: dict[str, str] = {
 }
 
 # Chat flow separation tokens (no emojis)
-USER_PREFIX = "user >"
+USER_PREFIX = "❯"
 USER_PREFIX_RICH = "bold green"
 HUND_INDENT = "  "
 HUND_RAIL = "│ "
 SYSTEM_BULLET = "•"
 SEPARATOR_CHAR = "─"
+
 
 HUND_ASCII_COMPACT = (
     "        ░░    ░░░░\n"
@@ -68,6 +69,7 @@ HUND_ASCII_COMPACT = (
     "░░░░░░░░░░░░░░░░\n"
     "  ░░░░░░  ░░  ░░"
 )
+
 
 
 STAT_ABBR: dict[str, str] = {

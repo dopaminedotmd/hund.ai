@@ -30,9 +30,10 @@ from .commands import CommandContext, dispatch_command, is_slash
 from .input import PromptState, create_session
 from .output import StreamingSink
 from .render import refresh_stats, render_startup, separator
+from .safety_check import prompt_workspace_trust
 from .session import offer_resume
 
-_PROMPT = FormattedText([("bold fg:ansigreen", "user > ")])
+_PROMPT = FormattedText([("bold fg:ansigreen", "❯ ")])
 
 
 async def _amain() -> int:
@@ -48,9 +49,8 @@ async def _amain() -> int:
 
     state = PromptState()
     # Cache provider and workspace telemetry into state
-    provider_name = getattr(getattr(rt.cfg, "provider", None), "name", "DeepSeek")
     model_name = getattr(getattr(rt.cfg, "provider", None), "model", "deepseek-v4-pro")
-    state.extra["model"] = f"{provider_name} ({model_name})"
+    state.extra["model"] = model_name
     state.extra["workspace"] = Path(str(rt.workspace)).name or "workspace"
 
     init_stats = refresh_stats(state)
@@ -63,16 +63,24 @@ async def _amain() -> int:
 
     render_startup(console, rt)
 
+    # Workspace folder trust check (prompted once per workspace)
+    trusted = await prompt_workspace_trust(console, session, rt.workspace)
+    if not trusted:
+        console.print("[dim]workspace not trusted. exiting.[/dim]")
+        return 0
+
     messages = rt.messages
     frozen = messages[0].content if messages else ""
-    session_id = await offer_resume(console, session, rt, prev_active)
+    session_id = getattr(rt, "session_id", None) or uuid.uuid4().hex
     state.session_id = session_id
     state.extra["tokens"] = estimate_tokens(messages)
+
 
     last_interrupt_time = 0.0
 
     while True:
         try:
+            separator(console)
             user = (await session.prompt_async(_prompt_for(state))).strip()
             last_interrupt_time = 0.0
         except KeyboardInterrupt:
@@ -129,6 +137,7 @@ async def _amain() -> int:
         if dynamic_msg is not None:
             messages.append(dynamic_msg)
 
+        turn_start_t = time.time()
         try:
             _agent_turn(
                 console, rt.client, messages, rt.schemas, rt.engine, rt.cfg,
@@ -137,6 +146,7 @@ async def _amain() -> int:
         except KeyboardInterrupt:
             console.print("\n[yellow]Turn cancelled by user (Ctrl+C).[/yellow]")
         finally:
+            state.extra["last_latency_s"] = time.time() - turn_start_t
             if dynamic_msg is not None:
                 messages[:] = [m for m in messages if m is not dynamic_msg]
             _restore_frozen_system_prompt(messages, frozen)
@@ -149,7 +159,7 @@ async def _amain() -> int:
 def _prompt_for(state: PromptState):
     """Build prompt prefix per-turn from active theme."""
     pt_color = theme.get_theme(state.theme_name)["user_prefix_pt"]
-    return FormattedText([(f"bold fg:{pt_color}", "user > ")])
+    return FormattedText([(f"bold fg:{pt_color}", f"{theme.USER_PREFIX} ")])
 
 
 def _retry(console, rt, messages, session_id, sink, frozen) -> None:
@@ -188,7 +198,6 @@ async def _after_turn(console, state, messages: list[Message] | None = None) -> 
             if old_tier and old_tier != new_tier and new_tier != theme.EMDASH:
                 await level_up(console, key, old_tier, new_tier, s.get("value"))
             state.prev_tiers[key] = new_tier
-    separator(console)
 
 
 def run_repl() -> int:
