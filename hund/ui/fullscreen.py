@@ -1,16 +1,18 @@
 """Full-screen TUI for the Hund REPL.
 
-prompt_toolkit Application with a scrollable output buffer and a single input
-buffer. The agent turn runs in a background thread; streamed tokens are
-appended to the output buffer and the app repaints on each invalidate.
+prompt_toolkit Application with a scrollable, semantically-colored output
+buffer and a single input buffer. The agent turn runs in a background thread;
+streamed tokens are appended to the output buffer and the app repaints on each
+invalidate.
 
-Scrollback is provided by the output buffer's own cursor + the Window that
-renders it. The input buffer is the only focusable buffer, so typing always
-goes to the prompt.
+The output buffer is plain text; a SimpleLexer maps line prefixes to semantic
+token styles (see theme.SEMANTIC). Scrollback is provided by the buffer's own
+cursor, moved with Document.cursor_up/down and the mouse wheel.
 """
 from __future__ import annotations
 
 import io
+import shutil
 import threading
 import time
 import uuid
@@ -19,9 +21,11 @@ from typing import Any
 from prompt_toolkit import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.document import Document
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window
+from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
@@ -40,14 +44,53 @@ from .input import SLASH_COMMANDS, SLASH_COMMAND_METAS, PromptState, format_stat
 from .output import parse_confirm_input, strip_markdown
 from .render import refresh_stats
 
+_S = theme.SEMANTIC
+
 _STYLE = Style.from_dict(
     {
-        "status": theme.HUND_DIM,
-        "input": "bold " + theme.HUND_GREEN,
-        "output": theme.HUND_FG,
-        "prompt": "bold " + theme.HUND_GREEN,
+        "primary": _S["primary"],
+        "secondary": _S["secondary"],
+        "accent": _S["accent"],
+        "success": _S["success"],
+        "danger": _S["danger"],
+        "warning": _S["warning"],
+        "tool": _S["tool"],
+        "user": _S["user"],
+        "prompt": "bold " + _S["user"],
+        "status": _S["secondary"],
     }
 )
+
+class _OutputLexer(Lexer):
+    """Line-prefix lexer mapping output lines to semantic token styles."""
+
+    def lex_document(self, document):
+        lines = document.lines
+
+        def get_line(lineno: int):
+            try:
+                line = lines[lineno]
+            except IndexError:
+                return []
+            stripped = line.lstrip()
+            if stripped.startswith("❯"):
+                style = "class:user"
+            elif line.startswith("╭─") or line.startswith("╰─"):
+                style = "class:secondary"
+            elif "CONFIRMATION REQUIRED" in line:
+                style = "class:warning"
+            elif "BLOCKED" in line or "DECLINED" in line:
+                style = "class:danger"
+            elif "tool:" in line:
+                style = "class:tool"
+            else:
+                style = "class:primary"
+            return [(style, line)]
+
+        return get_line
+
+
+_OUTPUT_LEXER = _OutputLexer()
 
 
 def _discard_console(width: int = 100) -> Console:
@@ -55,18 +98,34 @@ def _discard_console(width: int = 100) -> Console:
     return Console(file=io.StringIO(), color_system=None, force_terminal=False, width=width)
 
 
+def _term_width() -> int:
+    try:
+        return shutil.get_terminal_size().columns
+    except Exception:
+        return 100
+
+
+def _box_top() -> str:
+    w = _term_width()
+    return f"╭─ hund {'─' * max(w - 9, 2)}╮"
+
+
+def _box_bottom() -> str:
+    w = _term_width()
+    return f"╰{'─' * max(w - 2, 2)}╯"
+
+
 async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     """Run the full-screen REPL application. Returns exit code."""
-    # ---- output buffer (scrollable log) ----
+    # ---- output buffer (scrollable, colored via lexer) ----
     output_buffer = Buffer(name="output", multiline=True)
     output_window = Window(
-        content=BufferControl(buffer=output_buffer, focusable=False),
+        content=BufferControl(buffer=output_buffer, focusable=False, lexer=_OUTPUT_LEXER),
         wrap_lines=True,
         always_hide_cursor=True,
-        style="class:output",
     )
 
-    # ---- input buffer ----
+    # ---- input buffer + prompt ----
     completer = WordCompleter(
         SLASH_COMMANDS, ignore_case=True, meta_dict=SLASH_COMMAND_METAS, sentence=False,
     )
@@ -74,6 +133,12 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         name="input", multiline=False, completer=completer, complete_while_typing=True,
     )
     input_window = Window(content=BufferControl(buffer=input_buffer), height=1)
+    prompt_window = Window(
+        content=FormattedTextControl(lambda: [("class:prompt", "❯ ")]),
+        width=3,
+        dont_extend_width=True,
+    )
+    input_row = VSplit([prompt_window, input_window])
 
     # ---- status bar ----
     def status_text() -> list[tuple[str, str]]:
@@ -86,7 +151,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     status_window = Window(content=FormattedTextControl(status_text), height=1)
 
-    layout = Layout(HSplit([output_window, input_window, status_window]))
+    layout = Layout(HSplit([output_window, input_row, status_window]))
 
     # ---- shared mutable state ----
     holder: dict[str, Any] = {}
@@ -103,7 +168,6 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def append(text: str) -> None:
         if not text:
             return
-        # cursor to end, then insert (BufferControl renders around the cursor)
         output_buffer.cursor_position = len(output_buffer.text)
         output_buffer.insert_text(text, fire_event=False)
         _invalidate()
@@ -121,6 +185,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             self.confirm_pending = False
             self.confirm_answer = "deny"
             self.confirm_event = threading.Event()
+            self._box_open = False
 
         def thinking(self, msg: str | None = None) -> None:
             pass  # ponytail: response streams directly, no thinking line
@@ -129,10 +194,17 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             pass
 
         def chunk(self, text: str) -> None:
+            if not self._box_open:
+                self._box_open = True
+                append(_box_top() + "\n")
             append(text)
 
         def end_assistant(self) -> None:
-            append("\n\n")
+            if self._box_open:
+                append("\n" + _box_bottom() + "\n\n")
+                self._box_open = False
+            else:
+                append("\n\n")
 
         def error(self, markup: str) -> None:
             append(strip_markdown(markup) + "\n")
@@ -260,6 +332,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     input_buffer.accept_handler = on_accept
 
     # ---- keybindings ----
+    def _scroll_lines(count: int) -> None:
+        doc = Document(output_buffer.text, output_buffer.cursor_position)
+        new_doc = doc.cursor_up(count) if count > 0 else doc.cursor_down(-count)
+        output_buffer.cursor_position = new_doc.cursor_position
+
     kb = KeyBindings()
 
     @kb.add("c-c")
@@ -268,23 +345,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     @kb.add("pageup")
     def _pgup(event):
-        output_buffer.cursor_position = max(0, output_buffer.cursor_position - 20)
+        _scroll_lines(15)
 
     @kb.add("pagedown")
     def _pgdn(event):
-        output_buffer.cursor_position = min(
-            len(output_buffer.text), output_buffer.cursor_position + 20
-        )
+        _scroll_lines(-15)
 
-    @kb.add("c-up")
-    def _c_up(event):
-        output_buffer.cursor_position = max(0, output_buffer.cursor_position - 1)
+    @kb.add("scroll-up")
+    def _scroll_up(event):
+        _scroll_lines(3)
 
-    @kb.add("c-down")
-    def _c_down(event):
-        output_buffer.cursor_position = min(
-            len(output_buffer.text), output_buffer.cursor_position + 1
-        )
+    @kb.add("scroll-down")
+    def _scroll_down(event):
+        _scroll_lines(-3)
 
     # ---- application ----
     app = Application(
@@ -292,6 +365,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         key_bindings=kb,
         full_screen=True,
         style=_STYLE,
+        mouse_support=True,
     )
     holder["app"] = app
 

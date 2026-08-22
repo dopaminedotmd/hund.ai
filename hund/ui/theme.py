@@ -27,6 +27,19 @@ HUND_RED = "#FF5555"     # Danger / blocked actions
 
 HUND_FG = HUND_TEXT
 
+# Semantic tokens (spec: semantic name -> color). Used by the TUI lexer/style.
+# Never hardcode raw colors in agent logic — reference these names.
+SEMANTIC: dict[str, str] = {
+    "primary": HUND_TEXT,      # AI voice — highest contrast
+    "secondary": HUND_DIM,     # system/status, borders, dividers
+    "accent": HUND_CYAN,       # paths, arrows, references
+    "success": HUND_GREEN,     # confirmations, diff-add
+    "danger": HUND_RED,        # errors, diff-remove, blocked
+    "warning": HUND_YELLOW,    # permissions, warnings
+    "tool": "#C792EA",         # tool calls (purple)
+    "user": HUND_GREEN,        # user input
+}
+
 EMDASH = "—"  # Tier placeholder when unranked
 
 # Rich style names (16-ANSI safe) for Rich console rendering
