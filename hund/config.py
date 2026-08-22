@@ -17,7 +17,7 @@ class ProviderConfig(BaseModel):
     """OpenAI-compatible provider i v1 (en shape, BYOK). Default: Z.AI (GLM)."""
 
     base_url: str = "https://api.deepseek.com"
-    model: str = "deepseek-chat"  # deepseek-reasoner = R1, dyrare
+    model: str = "deepseek-v4-pro"  # deepseek-v4-flash = billigare
     # api_key hanteras separat — ALDRIG serialiserad till disk.
     api_key_env: str = "HUND_API_KEY"
 

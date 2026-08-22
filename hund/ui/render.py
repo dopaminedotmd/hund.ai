@@ -116,16 +116,7 @@ def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
     model_name = getattr(getattr(cfg, "provider", None), "model", "deepseek-v4-pro")
     slots_str = "6/6 active skills equipped · sqlite ok"
 
-    mascot_lines = [
-        "  ┬ ┬ ┬ ┬ ┌┐┌ ┌┬┐",
-        "  ├─┤ │ │ │││  ││",
-        "  ┴ ┴ └─┘ ┘└┘ ─┴┘",
-        "  [Conscious Agent]",
-        "",
-        "",
-        "",
-        "",
-    ]
+    mascot_lines = theme.HUND_ASCII_COMPACT.splitlines()
     info_lines = [
         f"OS       : {os_str[:38]}",
         f"HOST     : {host_str[:38]}",
