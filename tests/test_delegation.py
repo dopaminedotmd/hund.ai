@@ -115,3 +115,58 @@ def test_main_agent_can_use_restricted_tools():
         dec = engine.classify(tool, {})
         assert dec.risk == RiskLevel.CONFIRM
 
+
+
+def test_child_emits_trace_with_parent_run_id(tmp_path, monkeypatch):
+    import hund.paths as paths
+    from hund.trace.events import list_events_by_session
+
+    monkeypatch.setattr(paths, "hund_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(paths, "db_path", lambda: tmp_path / "home" / "hund.db")
+    register_defaults(tmp_path)
+    client = _FakeClient("klar")
+
+    res = _run_child(
+        task_id=7,
+        goal="analysera",
+        context="ctx",
+        client=client,
+        allowed_tools={"read_file"},
+        parent_run_id="parent-run",
+        session_id="delegation-session",
+        workspace_id=str(tmp_path),
+    )
+
+    assert res.success is True
+    events = list_events_by_session("delegation-session")
+    assert [event.event_type for event in events] == ["run_started", "run_completed"]
+    assert {event.parent_run_id for event in events} == {"parent-run"}
+    assert {event.actor for event in events} == {"subagent"}
+
+
+def test_delegate_tasks_passes_parent_run_id_to_children(tmp_path, monkeypatch):
+    import hund.paths as paths
+    from hund.trace.events import list_events_by_session
+
+    monkeypatch.setattr(paths, "hund_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(paths, "db_path", lambda: tmp_path / "home" / "hund.db")
+    register_defaults(tmp_path)
+    client = _FakeClient("klar")
+
+    results = delegate_tasks(
+        [{"goal": "A"}, {"goal": "B"}],
+        client,
+        allowed_tools={"read_file"},
+        parent_run_id="parent-xyz",
+        session_id="delegation-parent-session",
+        workspace_id=str(tmp_path),
+        max_workers=1,
+    )
+
+    assert len(results) == 2
+    events = list_events_by_session("delegation-parent-session")
+    assert len(events) == 4
+    assert {event.parent_run_id for event in events} == {"parent-xyz"}
+    assert [event.event_type for event in events].count("run_started") == 2
+    assert [event.event_type for event in events].count("run_completed") == 2
+

@@ -44,11 +44,11 @@ def test_knowledge_lfu_orders_by_frequency(tmp_path):
     assert rules[0] == "rule1"  # LFU: mest frekvent först
 
 
-def test_base_stats_returns_three_measures():
+def test_base_stats_returns_five_measures():
     s = compute()
-    assert set(s.keys()) == {"token_efficiency", "speed", "tool_judgment"}
+    assert set(s.keys()) == {"clarity", "precision", "efficiency", "endurance", "mastery"}
     for v in s.values():
-        assert "level" in v
+        assert "tier" in v
 
 
 # ---- J: knowledge injiceras i prompt ----

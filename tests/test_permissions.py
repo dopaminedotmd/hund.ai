@@ -65,3 +65,19 @@ def test_unknown_tool_is_confirm(tmp_path):
     d = eng.classify("mystery_tool", {})
     assert d.risk in {RiskLevel.CONFIRM, RiskLevel.BLOCKED}
     assert d.risk is not RiskLevel.SAFE  # aldrig auto för okänt
+
+
+def test_main_agent_can_request_execute_code(tmp_path):
+    eng = PermissionEngine(workspace_root=tmp_path, mode="main_agent")
+    d = eng.classify("execute_code", {"code": "print(1)"})
+    assert d.risk is RiskLevel.CONFIRM
+    assert d.allowed is False
+
+
+def test_restricted_modes_block_recursive_agent_tools(tmp_path):
+    for mode in ("subagent", "execute_code", "cron", "connector_remote"):
+        eng = PermissionEngine(workspace_root=tmp_path, mode=mode)
+        d = eng.classify("execute_code", {"code": "print(1)"})
+        assert d.risk is RiskLevel.BLOCKED, mode
+        assert d.allowed is False
+        assert mode in d.reason

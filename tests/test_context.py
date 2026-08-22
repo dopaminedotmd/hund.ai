@@ -86,3 +86,19 @@ def test_deterministic_same_input_same_output():
     a = compress(msgs, keep_recent=6)
     b = compress(msgs, keep_recent=6)
     assert [m.content for m in a.messages] == [m.content for m in b.messages]
+
+
+def test_context_compression_payload_shape():
+    msgs = _msgs(20)
+    tokens_before = estimate_tokens(msgs)
+    res = maybe_compress(msgs, max_tokens=0)
+    payload = {
+        "turns_dropped": res.dropped_turns,
+        "tokens_before": tokens_before,
+        "tokens_after": res.tokens,
+        "method": "llm" if "via LLM" in res.messages[1].content else "deterministic",
+    }
+    assert res.compressed is True
+    assert payload["turns_dropped"] > 0
+    assert payload["tokens_before"] >= payload["tokens_after"]
+    assert payload["method"] == "deterministic"

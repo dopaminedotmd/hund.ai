@@ -43,16 +43,12 @@ def test_policy_rules_reach_prompt():
     assert "## Policy" in prompt
 
 
-def test_matched_skills_reach_prompt():
+def test_matched_skills_do_not_reach_system_prompt():
     prompt = assemble_system_prompt(
         "P", _prof(), skills=[_skill()], user_text="kör pytest åt mig"
     )
-    # Efter Fas 9A: assemble_system_prompt() returnerar fortfarande skills om user_text matchar,
-    # men loop.py anropar med user_text="" i _init_runtime() → ingen skill-sektion i runtime.
-    # Testet behåller funktionalitet: om user_text matchar, ska skill injiceras.
-    # Vi ändrar assertion: skill-sektion SKA finnas (funktionen fungerar).
-    assert "## Relevanta skills" in prompt
-    assert "python-project-inspection" in prompt
+    assert "## Relevanta skills" not in prompt
+    assert "python-project-inspection" not in prompt
 
 
 def test_no_skill_section_without_user_text():

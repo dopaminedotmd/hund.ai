@@ -34,9 +34,9 @@ def test_runner_catches_case_exceptions(monkeypatch):
     monkeypatch.setattr(B, "BUILTIN_CASES", [boom])
     # run_all importerar BUILTIN_CASES vid anrop -> fångar boom
     results = run_all()
-    assert len(results) == 1
-    assert results[0].passed is False
-    assert "boom" in results[0].detail
+    boom_result = next(result for result in results if result.name == "boom")
+    assert boom_result.passed is False
+    assert "boom" in boom_result.detail
 
 
 def test_list_cases_includes_builtins():
@@ -70,3 +70,11 @@ def test_regression_failure_detected(tmp_path, monkeypatch):
     add_regression("missing-marker", "$pyproject", contains=["ZZZ_NOT_PRESENT_ZZZ"])
     results = {r.name: r for r in run_all()}
     assert results["missing-marker"].passed is False
+
+
+def test_eval_runner_includes_htas_scenarios():
+    names = list_cases()
+    assert "scenario:tcb_write_blocked" in names
+    results = {result.name: result for result in run_all()}
+    assert results["scenario:tcb_write_blocked"].passed is True
+

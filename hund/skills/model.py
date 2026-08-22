@@ -10,12 +10,15 @@ from dataclasses import dataclass, field
 
 # safety_level: hur mycket mänsklig bekräftelse ett steg i skillen kräver.
 SAFETY_LEVELS = frozenset({"read_only", "confirm", "confirm_for_write"})
-STATUSES = frozenset({"active", "draft", "disabled"})
+STATUSES = frozenset({"active", "draft", "disabled", "deprecated", "vaulted"})
+
+MAX_ACTIVE_SKILLS = 6
 
 # Verktyg/handlingar som en skill ALDRIG får kräva eller tillåta — dessa är TCB.
 BANNED_ACTIONS = frozenset(
     {"self_update", "apply_update", "modify_tcb", "elevate_permissions"}
 )
+
 
 
 @dataclass(frozen=True)

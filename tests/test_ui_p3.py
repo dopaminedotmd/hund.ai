@@ -31,7 +31,7 @@ def _ctx(session_id=None, cfg=None, theme_name="default") -> CommandContext:
 def test_session_no_session_message() -> None:
     ctx = _ctx(session_id=None)
     dispatch_command("/session", ctx)
-    assert "ingen aktiv session" in ctx.console.file.getvalue()
+    assert "no active session" in ctx.console.file.getvalue()
 
 
 def test_session_shows_fields(monkeypatch) -> None:
@@ -77,7 +77,7 @@ def test_config_set_unknown_key(monkeypatch) -> None:
     monkeypatch.setattr("hund.ui.commands.HundConfig.save", lambda self, *a, **k: None)
     ctx = _ctx(cfg=cfg)
     dispatch_command("/config set bogus x", ctx)
-    assert "okand" in ctx.console.file.getvalue() or "okänd" in ctx.console.file.getvalue()
+    assert "unknown key" in ctx.console.file.getvalue().lower()
 
 
 def test_config_set_bool_parses(monkeypatch) -> None:
@@ -109,7 +109,7 @@ def test_theme_set_unknown_errors() -> None:
     ctx = _ctx()
     dispatch_command("/theme neon", ctx)
     assert ctx.state.theme_name == "default"
-    assert "okant" in ctx.console.file.getvalue() or "okänd" in ctx.console.file.getvalue()
+    assert "unknown theme" in ctx.console.file.getvalue().lower()
 
 
 def test_prompt_for_uses_theme_color() -> None:
@@ -157,7 +157,7 @@ def test_domains_empty(monkeypatch) -> None:
     ctx = _ctx()
     monkeypatch.setattr("hund.ui.commands.detector.list_domains", lambda: [])
     dispatch_command("/domains", ctx)
-    assert "inga domaner" in ctx.console.file.getvalue()
+    assert "no domains" in ctx.console.file.getvalue().lower()
 
 
 # -- /progress -------------------------------------------------------------
@@ -180,7 +180,7 @@ def test_progress_empty(monkeypatch) -> None:
     ctx = _ctx()
     monkeypatch.setattr("hund.ui.commands.confidence.list_confidence", lambda: [])
     dispatch_command("/progress", ctx)
-    assert "ingen" in ctx.console.file.getvalue().lower()
+    assert "no domain progress" in ctx.console.file.getvalue().lower()
 
 
 # -- help includes new cmds ------------------------------------------------

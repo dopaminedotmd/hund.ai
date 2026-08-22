@@ -151,3 +151,47 @@ def test_database_migrations_run_id(tmp_path):
     assert "run_id" in cols
     conn.close()
 
+
+
+def test_create_event_rejects_unknown_event_type():
+    with pytest.raises(ValueError, match="event_type"):
+        create_event(
+            workspace_id="ws",
+            session_id="session",
+            run_id="run",
+            actor="hund",
+            event_type="made_up_event",
+            policy_version="1.0.0",
+            payload_unredacted={},
+        )
+
+
+def test_list_events_by_type(tmp_path):
+    from hund.trace.events import list_events_by_type
+
+    db_file = tmp_path / "test_hund.db"
+    first = create_event(
+        workspace_id="ws",
+        session_id="session",
+        run_id="run-1",
+        actor="hund",
+        event_type="tool_call_completed",
+        policy_version="1.0.0",
+        payload_unredacted={"ok": True},
+    )
+    second = create_event(
+        workspace_id="ws",
+        session_id="session",
+        run_id="run-2",
+        actor="hund",
+        event_type="tool_call_failed",
+        policy_version="1.0.0",
+        payload_unredacted={"ok": False},
+    )
+    write_event(first, db_path=db_file)
+    write_event(second, db_path=db_file)
+
+    completed = list_events_by_type("tool_call_completed", db_path=db_file)
+    assert [event.event_id for event in completed] == [first.event_id]
+    assert completed[0].payload_hash_algorithm == "sha256"
+    assert completed[0].redactor_version == "1.0.0"

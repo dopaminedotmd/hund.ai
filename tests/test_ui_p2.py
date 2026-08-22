@@ -96,14 +96,14 @@ def test_offer_resume_accept_reloads_history(monkeypatch) -> None:
 def test_history_no_session_message() -> None:
     ctx = _ctx(session_id=None)
     dispatch_command("/history", ctx)
-    assert "ingen aktiv session" in ctx.console.file.getvalue()
+    assert "no active session" in ctx.console.file.getvalue()
 
 
 def test_history_empty_session(monkeypatch) -> None:
     ctx = _ctx(session_id="abc12345")
     monkeypatch.setattr("hund.ui.commands.S.list_messages", lambda sid: [])
     dispatch_command("/history", ctx)
-    assert "tom session" in ctx.console.file.getvalue()
+    assert "empty session" in ctx.console.file.getvalue()
 
 
 def test_history_shows_messages(monkeypatch) -> None:
@@ -122,7 +122,7 @@ def test_history_search_no_hits(monkeypatch) -> None:
     ctx = _ctx(session_id="abc12345")
     monkeypatch.setattr("hund.ui.commands.S.search", lambda q, **k: [])
     dispatch_command("/history search nbsp", ctx)
-    assert "inga" in ctx.console.file.getvalue().lower()
+    assert "no matches" in ctx.console.file.getvalue().lower()
 
 
 def test_export_command_prints_path(monkeypatch, tmp_path) -> None:
@@ -133,7 +133,7 @@ def test_export_command_prints_path(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     dispatch_command("/export", ctx)
     out = ctx.console.file.getvalue()
-    assert "exporterade" in out.lower()
+    assert "exported" in out.lower()
     assert ".md" in out
 
 

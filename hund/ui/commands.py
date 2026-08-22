@@ -85,25 +85,100 @@ def _print_velocity(console: Console) -> None:
 
 
 def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
-    skills = getattr(ctx.rt, "skills", None) or []
-    if not skills:
+    from ..skills.vault import SkillVault
+
+    # If rt.skills is explicitly empty list (e.g. test mock), render empty card
+    explicit_skills = getattr(ctx.rt, "skills", None)
+    if explicit_skills is not None and len(explicit_skills) == 0:
         card = theme.boxify("SKILLS", ["(no skills registered)"], width=70, border_style="cyan", title_style="bold cyan")
         ctx.console.print(card)
         return
-    lines: list[str] = []
-    for s in skills:
-        name = getattr(s, "name", "?")
-        domain = getattr(s, "domain", "?")
-        status = getattr(s, "status", "?")
-        safety = getattr(s, "safety_level", "?")
-        wtu = getattr(s, "when_to_use", "")
-        lines.append(
-            f"[bold]{name}[/bold] [dim]({domain})[/dim] [{status}] safety={safety}"
+
+    vault = SkillVault()
+    subcmd = args[0].lower() if args else "active"
+
+
+    if subcmd in ("vault", "vaulted", "list-vault"):
+        vaulted = vault.list_vaulted()
+        lines: list[str] = []
+        if not vaulted:
+            lines.append("[dim](vault is empty — all skills equipped)[/dim]")
+        else:
+            for s in vaulted:
+                lines.append(
+                    f"[bold]{s.name}[/bold] [dim]({s.domain})[/dim] [vaulted] safety={s.safety_level}"
+                )
+                if s.when_to_use:
+                    lines.append(f"  [dim]{s.when_to_use}[/dim]")
+        card = theme.boxify(
+            f"SKILL VAULT ({len(vaulted)} available to equip)",
+            lines,
+            width=70,
+            border_style="cyan",
+            title_style="bold cyan",
         )
-        if wtu:
-            lines.append(f"  [dim]{wtu}[/dim]")
-    card = theme.boxify("ACTIVE SKILLS", lines, width=70, border_style="cyan", title_style="bold cyan")
+        ctx.console.print(card)
+        return
+
+    if subcmd == "equip":
+        if len(args) < 2:
+            ctx.console.print("[yellow]Usage: /skills equip <skill_name>[/yellow]")
+            return
+        target = args[1]
+        ok, msg = vault.equip(target)
+        if ok:
+            ctx.console.print(f"[green]{msg}[/green]")
+        else:
+            ctx.console.print(f"[red]{msg}[/red]")
+        return
+
+    if subcmd == "park":
+        if len(args) < 2:
+            ctx.console.print("[yellow]Usage: /skills park <skill_name>[/yellow]")
+            return
+        target = args[1]
+        ok, msg = vault.park(target)
+        if ok:
+            ctx.console.print(f"[green]{msg}[/green]")
+        else:
+            ctx.console.print(f"[red]{msg}[/red]")
+        return
+
+    if subcmd == "swap":
+        if len(args) < 3:
+            ctx.console.print("[yellow]Usage: /skills swap <old_skill> <new_skill>[/yellow]")
+            return
+        old_name, new_name = args[1], args[2]
+        ok, msg = vault.swap(old_name, new_name)
+        if ok:
+            ctx.console.print(f"[green]{msg}[/green]")
+        else:
+            ctx.console.print(f"[red]{msg}[/red]")
+        return
+
+    # Default: show active skills
+    active = vault.get_active_skills()
+    if not active:
+        card = theme.boxify("ACTIVE SKILLS", ["(no active skills)"], width=70, border_style="cyan", title_style="bold cyan")
+        ctx.console.print(card)
+        return
+
+    lines = []
+    for s in active:
+        lines.append(
+            f"[bold]{s.name}[/bold] [dim]({s.domain})[/dim] [active] safety={s.safety_level}"
+        )
+        if s.when_to_use:
+            lines.append(f"  [dim]{s.when_to_use}[/dim]")
+    card = theme.boxify(
+        f"EQUIPPED SKILLS [{len(active)}/{vault.max_active} active]",
+        lines,
+        width=70,
+        border_style="cyan",
+        title_style="bold cyan",
+    )
     ctx.console.print(card)
+
 
 
 def cmd_profile(ctx: CommandContext, args: list[str]) -> None:

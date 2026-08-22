@@ -52,7 +52,7 @@ def test_memory_add_appends_bullet(monkeypatch) -> None:
     dispatch_command("/memory add foredrar morgnar", ctx)
     assert "- eksisterande" in captured["text"]
     assert "- foredrar morgnar" in captured["text"]
-    assert "minne uppdaterat" in ctx.console.file.getvalue()
+    assert "memory updated" in ctx.console.file.getvalue()
 
 
 def test_memory_add_no_text(monkeypatch) -> None:

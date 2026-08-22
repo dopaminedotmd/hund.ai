@@ -71,7 +71,7 @@ def test_skills_empty_message() -> None:
     ctx = _ctx()
     dispatch_command("/skills", ctx)
     out = ctx.console.file.getvalue()
-    assert "inga skills" in out
+    assert "no skills" in out
 
 
 # -- /profile no profile ---------------------------------------------------
@@ -80,7 +80,7 @@ def test_profile_missing_message() -> None:
     ctx = _ctx()
     dispatch_command("/profile", ctx)
     out = ctx.console.file.getvalue()
-    assert "profil" in out.lower()
+    assert "profile" in out.lower()
 
 
 # -- animations ------------------------------------------------------------
@@ -92,9 +92,9 @@ def test_level_up_prints_three_lines_with_stat() -> None:
     assert "Precision" in out
     assert "Expert" in out
     assert "Master" in out
-    # ASCII only (ingen emoji)
+    # ASCII only (no emojis)
     assert all(ord(c) < 0x1F000 for c in out)
-    # 3 innehallsrader ( + ledande blank rad = >=3 newline)
+    # 3 content lines
     assert out.count("\n") >= 3
 
 
@@ -120,3 +120,71 @@ def test_notify_unknown_event_falls_back_to_key() -> None:
     notify(console, "custom_event")
     out = console.file.getvalue()
     assert "custom_event" in out
+
+
+# -- New slash commands tests ----------------------------------------------
+
+def test_stats_character_sheet() -> None:
+    ctx = _ctx()
+    dispatch_command("/stats", ctx)
+    out = ctx.console.file.getvalue()
+    assert "CHARACTER SHEET" in out
+    assert "BASE ATTRIBUTES" in out or "CLR" in out
+
+
+def test_stats_compact() -> None:
+    ctx = _ctx()
+    dispatch_command("/stats compact", ctx)
+    out = ctx.console.file.getvalue()
+    assert "clarity" in out or "precision" in out
+
+
+def test_model_command() -> None:
+    ctx = _ctx()
+    dispatch_command("/model", ctx)
+    out = ctx.console.file.getvalue()
+    assert "model:" in out
+
+    dispatch_command("/model gpt-4o", ctx)
+    out2 = ctx.console.file.getvalue()
+    assert "active model: gpt-4o" in out2
+
+
+def test_usage_command() -> None:
+    ctx = _ctx()
+    dispatch_command("/usage", ctx)
+    out = ctx.console.file.getvalue()
+    assert "Usage" in out
+    assert "tokens" in out
+
+
+def test_doctor_command() -> None:
+    ctx = _ctx()
+    dispatch_command("/doctor", ctx)
+    out = ctx.console.file.getvalue()
+    assert "Doctor" in out
+    assert "analyzing" in out
+
+
+def test_compress_command() -> None:
+    ctx = _ctx()
+    # No context
+    dispatch_command("/compress", ctx)
+    out = ctx.console.file.getvalue()
+    assert "too little context" in out or "context" in out
+
+
+def test_diff_command() -> None:
+    ctx = _ctx()
+    dispatch_command("/diff", ctx)
+    out = ctx.console.file.getvalue()
+    assert "git" in out or "Diff" in out
+
+
+def test_undo_command() -> None:
+    ctx = _ctx()
+    dispatch_command("/undo", ctx)
+    out = ctx.console.file.getvalue()
+    assert "Undo" in out
+    assert "backups" in out or "git restore" in out
+
