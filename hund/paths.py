@@ -47,6 +47,7 @@ def ensure_home() -> Path:
     (home / "brain" / "knowledge").mkdir(parents=True, exist_ok=True)
     (home / "memory").mkdir(parents=True, exist_ok=True)
     (home / "sessions").mkdir(parents=True, exist_ok=True)
+    (home / "models").mkdir(parents=True, exist_ok=True)
     return home
 
 
@@ -104,6 +105,27 @@ def memory_user_path() -> Path:
 
 def memory_env_path() -> Path:
     return memory_dir() / "environment.md"
+
+
+def connector_key_path() -> Path:
+    """Path to connector HMAC secret key file."""
+    return hund_home() / "connector" / "key.json"
+
+
+def local_models_dir() -> Path:
+    """Local GGUF model storage directory."""
+    return hund_home() / "models"
+
+
+def local_model_path() -> Path:
+    """Default path to find GGUF models."""
+    return local_models_dir()
+
+def local_download_path() -> Path:
+    """Path for downloaded GGUF models."""
+    p = local_models_dir()
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def sessions_dir() -> Path:

@@ -44,6 +44,8 @@ def default_policy() -> Policy:
             "hund/agent/safety.py",
             "hund/agent/tool_dispatch.py",
             "hund/agent/loop.py",
+            "hund/agent/delegation.py",
+            "hund/agent/rpc.py",
             "hund/learning/redactor.py",
             "hund/main.py",
             "hund/updater",

@@ -1,11 +1,13 @@
 """Subagent delegation — isolerade child-agenter med egen PermissionEngine."""
 from __future__ import annotations
 import concurrent.futures
+import uuid
 from dataclasses import dataclass, field
 from .safety import PermissionEngine, RiskLevel
 from ..providers.base import Message
 from ..providers.openai_compatible import OpenAICompatibleClient
 from ..tools import registry as tool_registry
+from ..trace.events import create_event, write_event
 
 BLOCKED_CHILD_TOOLS = {
     "execute_code", "delegate_task", "memory",
@@ -33,8 +35,32 @@ def _run_child(
     context: str,
     client: OpenAICompatibleClient,
     allowed_tools: set[str],
+    parent_run_id: str | None = None,
+    session_id: str = "delegation-session",
+    workspace_id: str | None = None,
 ) -> DelegationResult:
     """Kor EN subagent — isolerad session."""
+    child_run_id = uuid.uuid4().hex
+    workspace_id = workspace_id or "delegation"
+
+    def _emit(event_type: str, payload: dict, *, success_risk: str = "none") -> None:
+        try:
+            event = create_event(
+                workspace_id=workspace_id,
+                session_id=session_id,
+                run_id=child_run_id,
+                parent_run_id=parent_run_id,
+                actor="subagent",
+                event_type=event_type,
+                policy_version="1.0.0",
+                payload_unredacted=payload,
+                risk=success_risk,
+            )
+            write_event(event)
+        except Exception:
+            pass
+
+    _emit("run_started", {"task_id": task_id, "goal": goal})
     try:
         # Bygg meddelanden
         system_msg = Message(role="system", content=CHILD_SYSTEM_PROMPT)
@@ -44,7 +70,7 @@ def _run_child(
         )
         messages = [system_msg, user_msg]
         # PermissionEngine i RESTRICTED mode — bara SAFE tools
-        engine = PermissionEngine()
+        engine = PermissionEngine(mode="subagent")
         # Filtrera tools
         all_schemas = tool_registry.as_provider_schemas()
         child_schemas = [
@@ -52,6 +78,7 @@ def _run_child(
             if s["function"]["name"] in allowed_tools
         ]
         if not child_schemas:
+            _emit("run_completed", {"task_id": task_id, "success": False, "error": "inga tillatna tools"})
             return DelegationResult(task_id, "", False, "inga tillatna tools")
         # Agent loop — noninteractive
         max_rounds = CHILD_MAX_TOOL_ROUNDS
@@ -82,9 +109,12 @@ def _run_child(
         # Extrahera sista assistant-meddelandet som summary
         for m in reversed(messages):
             if m.role == "assistant" and m.content:
+                _emit("run_completed", {"task_id": task_id, "success": True})
                 return DelegationResult(task_id, m.content[:2000], True)
+        _emit("run_completed", {"task_id": task_id, "success": True, "empty": True})
         return DelegationResult(task_id, "(inget svar)", True)
     except Exception as e:
+        _emit("run_completed", {"task_id": task_id, "success": False, "error": str(e)})
         return DelegationResult(task_id, "", False, str(e))
 
 
@@ -94,6 +124,9 @@ def delegate_tasks(
     *,
     allowed_tools: set[str] | None = None,
     max_workers: int = MAX_CHILDREN,
+    parent_run_id: str | None = None,
+    session_id: str = "delegation-session",
+    workspace_id: str | None = None,
 ) -> list[DelegationResult]:
     """Spawna upp till max_workers subagents parallellt."""
     if allowed_tools is None:
@@ -114,8 +147,12 @@ def delegate_tasks(
                 context=task.get("context", ""),
                 client=client,
                 allowed_tools=allowed_tools,
+                parent_run_id=parent_run_id,
+                session_id=session_id,
+                workspace_id=workspace_id,
             )
             futures[fut] = i
         for fut in concurrent.futures.as_completed(futures):
             results.append(fut.result())
     return results
+

@@ -131,7 +131,7 @@ def _resolve(session_id: str, conn: sqlite3.Connection) -> Optional[str]:
 
 
 def add_message(
-    session_id: str, role: str, content: str, home: Optional[Path] = None
+    session_id: str, role: str, content: str, home: Optional[Path] = None, run_id: Optional[str] = None
 ) -> str:
     """Spara ett meddelande (+ FTS-rad). Sätter title från första user-meddelandet."""
     now = _now()
@@ -141,9 +141,9 @@ def add_message(
         "SELECT COALESCE(MAX(seq),0)+1 FROM messages WHERE session_id=?", (session_id,)
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO messages(id, session_id, role, content, created_at, seq) "
-        "VALUES(?,?,?,?,?,?)",
-        (mid, session_id, role, content, now, seq),
+        "INSERT INTO messages(id, session_id, role, content, created_at, seq, run_id) "
+        "VALUES(?,?,?,?,?,?,?)",
+        (mid, session_id, role, content, now, seq, run_id),
     )
     conn.execute(
         "INSERT INTO messages_fts(content, session_id, msg_id) VALUES(?,?,?)",

@@ -35,14 +35,41 @@ _SUSPICIOUS_PATTERNS = [
     r"<\|im_end\|>",
 ]
 
-def _scan_for_injection(text: str) -> list[str]:
-    """Returnera lista av misstankta monster. Tom lista = rent."""
+def _scan_for_injection_details(text: str, *, source: str = "unknown") -> list[dict]:
+    """Return structured prompt-injection scanner hits.
+
+    The scanner labels suspicious content. Callers decide whether to block,
+    exclude, or only warn. Excerpts are deliberately short and redacted before
+    inclusion so future trace payloads can stay safe.
+    """
+    import hashlib
     import re
-    hits = []
+
+    from ..learning.redactor import redact_text
+
+    hits: list[dict] = []
     for pattern in _SUSPICIOUS_PATTERNS:
-        if re.search(pattern, text, re.IGNORECASE):
-            hits.append(pattern)
+        match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+        if not match:
+            continue
+        start = max(0, match.start() - 80)
+        end = min(len(text), match.end() + 80)
+        excerpt = redact_text(text[start:end]).text
+        hits.append(
+            {
+                "source": source,
+                "pattern": pattern,
+                "action_taken": "untrusted_label",
+                "confidence": "medium",
+                "redacted_excerpt_hash": hashlib.sha256(excerpt.encode("utf-8")).hexdigest(),
+            }
+        )
     return hits
+
+
+def _scan_for_injection(text: str) -> list[str]:
+    """Return suspicious pattern strings. Empty list means clean."""
+    return [hit["pattern"] for hit in _scan_for_injection_details(text)]
 
 
 
@@ -132,6 +159,7 @@ def build_system_prompt(
         parts.append("")
         parts.append("## Beteenderegler baserade på din miljö")
         parts.extend(f"- {r}" for r in rules)
+
 
     parts.append("")
     parts.append("## Data/instruktion-separation")

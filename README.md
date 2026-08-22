@@ -1,6 +1,6 @@
 # hund
 
-> An agent engine in your terminal. Bring your own key, any OpenAI-compatible API.
+> An agent engine in your terminal. Bring your own key, connect to any provider.
 
 hund is a terminal agent that connects to the API you choose and works alongside you in the machine.
 
@@ -25,7 +25,7 @@ Real feedback from real work, shown in the terminal.
 git clone https://github.com/dopaminedotmd/hund.ai
 cd hund.ai
 uv sync --extra dev
-setx HUND_API_KEY "sk-..."      # your key, any OpenAI-compatible API
+setx HUND_API_KEY "sk-..."      # your key, any provider
 .venv\Scripts\hund.exe
 ```
 

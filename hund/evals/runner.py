@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from .model import EvalResult
+from .scenario_runner import list_scenarios, run_all_scenarios
 
 
 def _regression_dir() -> Path:
@@ -37,12 +38,14 @@ def run_all() -> list[EvalResult]:
         except Exception as e:  # noqa: BLE001
             r = EvalResult(name=fn.__name__.lstrip("_"), passed=False, detail=f"EXC: {e}")
         results.append(r)
+    results.extend(_run_scenarios())
     results.extend(_run_regressions())
     return results
 
 
 def list_cases() -> list[str]:
     names = [fn.__name__.lstrip("_") for fn in builtin_cases()]
+    names += ["scenario:" + scenario.scenario_id for scenario in list_scenarios()]
     names += [p.stem for p in _regression_files()]
     return names
 
@@ -76,6 +79,17 @@ def _subject_text(subject: str) -> str:
     return subject
 
 
+def _run_scenarios() -> list[EvalResult]:
+    out: list[EvalResult] = []
+    for scorecard in run_all_scenarios():
+        detail = "ok"
+        if scorecard.failures:
+            detail = "; ".join(scorecard.failures)
+        else:
+            detail = f"invariant={scorecard.invariant}; trace_run_id={scorecard.trace_run_id}"
+        out.append(EvalResult("scenario:" + scorecard.scenario_id, scorecard.passed, detail))
+    return out
+
 def _run_text_assert(data: dict) -> EvalResult:
     name = data.get("name") or "regression"
     text = _subject_text(data.get("subject", "")).lower()
@@ -99,3 +113,4 @@ def _run_regressions() -> list[EvalResult]:
         except Exception as e:  # noqa: BLE001
             out.append(EvalResult(name=f.stem, passed=False, detail=f"bad case: {e}"))
     return out
+

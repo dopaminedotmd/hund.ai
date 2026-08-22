@@ -25,7 +25,7 @@ from ..store.sqlite import connect_requests
 from ..tools import registry
 from ..tools.default_tools import register_defaults
 from .prompt_builder import build_system_prompt
-from .context import maybe_compress
+from .context import estimate_tokens, maybe_compress
 from .safety import PermissionEngine
 from .tool_dispatch import dispatch_tool_call
 
@@ -60,24 +60,79 @@ def assemble_system_prompt(
     skills: list | None = None,
     user_text: str = "",
     memory_lines: list[str] | None = None,
+    workspace_id: str = "",
+    domain_hint: str = "",
 ) -> str:
-    """Bygg systemprompt med deklarativa lager.
+    """Bygg session-stabil systemprompt med deklarativa lager.
 
-    Policy/memory är session-stabila. Skills matchas mot senaste användartexten så
-    bara relevanta sammanfattningar injiceras (inte hela biblioteket). Ren funktion
-    → testbar utan provider/DB.
+    Policy/memory är session-stabila. Dynamik från user_text (skills/feedback)
+    hör hemma i separata turn-meddelanden, inte i messages[0], så provider
+    prompt-cache kan återanvändas hela sessionen. Ren funktion → testbar utan
+    provider/DB.
     """
-    from ..skills.matcher import summaries as _summaries
-
-    summ = _summaries(skills or [], user_text) if user_text else []
     return build_system_prompt(
         persona,
         profile,
         knowledge=knowledge or None,
         policy_rules=policy_rules or None,
-        skill_summaries=summ or None,
+        skill_summaries=None,
         memory_lines=memory_lines or None,
     )
+
+
+def _dynamic_context_message(
+    *,
+    skills: list | None,
+    user_text: str,
+    workspace_id: str,
+    domain_hint: str = "",
+) -> Message | None:
+    """Best-effort turn-local dynamic context.
+
+    Kept out of messages[0]. We use a user-role data wrapper because standalone
+    tool-role messages are invalid for OpenAI-compatible chat APIs unless they
+    answer a prior assistant tool_call_id.
+    """
+    sections: list[str] = []
+    try:
+        from ..skills.matcher import summaries as _summaries
+
+        matched = _summaries(skills or [], user_text) if user_text else []
+        if matched:
+            sections.append("## Relevanta skills (turn-lokal data)")
+            sections.extend(f"- {line}" for line in matched)
+    except Exception:
+        pass
+    try:
+        from ..feedback.store import FeedbackStore
+
+        domain = domain_hint or (workspace_id and Path(workspace_id).name) or "general"
+        store = FeedbackStore()
+        lessons = store.query_top_lessons(workspace_id, domain, limit=5)
+        store.close()
+        if lessons:
+            if sections:
+                sections.append("")
+            sections.append("## Lardomar fran tidigare sessioner (turn-lokal data)")
+            sections.extend(f"- [{lesson['category']}] {lesson['lesson_text']}" for lesson in lessons)
+    except Exception:
+        pass
+    if not sections:
+        return None
+    content = (
+        "[DYNAMISK KONTEXT - OBTRODD DATA, EJ SYSTEMINSTRUKTIONER]\n"
+        + "\n".join(sections)
+    )
+    return Message(role="user", content=content)
+
+
+def _restore_frozen_system_prompt(messages: list[Message], frozen_system_prompt: str) -> None:
+    """Keep messages[0] byte-stable after runtime init."""
+    if not messages:
+        messages.append(Message(role="system", content=frozen_system_prompt))
+        return
+    if messages[0].role != "system" or messages[0].content != frozen_system_prompt:
+        messages[0] = Message(role="system", content=frozen_system_prompt)
 
 
 def _init_runtime():
@@ -88,13 +143,28 @@ def _init_runtime():
     Returnerar ns med .key=False-instans (bara cfg+key) om nyckel saknas — anroparen
     avgör hur det ska visas. Återanvänds av både run_repl (plain) och ui.repl.run_repl_ui
     så ingen agent-logik dupliceras.
+
+    Om nyckel saknas men lokal modell finns, fallbackar till LocalProvider.
     """
     import types
 
     cfg = HundConfig.load()
     key = load_api_key(cfg.provider.api_key_env)
+    local_mode = False
+
     if not key:
-        return types.SimpleNamespace(cfg=cfg, key=None)
+        # Try local fallback
+        from ..local.engine import LocalEngine
+
+        local_engine = LocalEngine()
+        if local_engine.model_path is not None:
+            from ..providers.local import LocalProvider
+
+            local_mode_client = LocalProvider(engine=local_engine)
+            local_mode = True
+            key = "__local__"  # Sentinel to distinguish from "no key at all"
+        else:
+            return types.SimpleNamespace(cfg=cfg, key=None)
 
     workspace = (cfg.workspace_root or Path.cwd()).resolve()
     register_defaults(workspace)
@@ -127,13 +197,24 @@ def _init_runtime():
     system_prompt = assemble_system_prompt(
         persona, profile, knowledge=knowledge, policy_rules=policy_rules,
         skills=skills, user_text="", memory_lines=memory_lines,
+        workspace_id=str(workspace), domain_hint=domain_hint,
     )
-    client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
+    if local_mode:
+        client = local_mode_client
+    else:
+        client = OpenAICompatibleClient(cfg.provider.base_url, key, cfg.provider.model)
     messages: list[Message] = [Message(role="system", content=system_prompt)]
 
     from . import sessions as S
 
     session_id = S.create()
+    _emit_prompt_injection_scan_events(
+        workspace_id=str(workspace),
+        session_id=session_id,
+        run_id=uuid.uuid4().hex,
+        persona=persona,
+        project_context="",
+    )
 
     return types.SimpleNamespace(
         cfg=cfg, key=key, workspace=workspace, schemas=schemas, engine=engine,
@@ -181,6 +262,9 @@ def run_repl() -> int:
     skills = rt.skills
     memory_lines = rt.memory_lines
     workspace = rt.workspace
+
+    # Fryser systemprompten vid sessionstart (Prompt Cache Preservation)
+    frozen_system_prompt: str = messages[0].content if messages else ""
 
     # Sessions (fas 9.5 Del B): återuppta senaste aktiv eller skapa ny.
     from . import sessions as S
@@ -270,31 +354,123 @@ def run_repl() -> int:
             continue
 
         messages.append(Message(role="user", content=user))
-        _session_save(session_id, "user", user)
+        run_id = uuid.uuid4().hex
+        _session_save(session_id, "user", user, run_id=run_id)
         # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
+        tokens_before_compress = estimate_tokens(messages)
         comp = maybe_compress(messages, client=client)
         if comp.compressed:
             messages[:] = comp.messages
+            _restore_frozen_system_prompt(messages, frozen_system_prompt)
+            _trace_event(
+                engine,
+                session_id,
+                run_id,
+                "context_compressed",
+                {
+                    "turns_dropped": comp.dropped_turns,
+                    "tokens_before": tokens_before_compress,
+                    "tokens_after": comp.tokens,
+                    "method": comp.method,
+                },
+            )
             console.print(
                 f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
             )
-        _agent_turn(console, client, messages, schemas, engine, cfg, session_id)
+        dynamic_msg = _dynamic_context_message(
+            skills=skills,
+            user_text=user,
+            workspace_id=str(workspace),
+            domain_hint=rt.domain_hint,
+        )
+        if dynamic_msg is not None:
+            messages.append(dynamic_msg)  # lägg sist, agenten läser top-down
+        try:
+            _agent_turn(console, client, messages, schemas, engine, cfg, session_id, run_id=run_id)
+        finally:
+            # Ta bort dynamic_msg oavsett var den hamnat
+            if dynamic_msg is not None:
+                messages[:] = [m for m in messages if m is not dynamic_msg]
+            _restore_frozen_system_prompt(messages, frozen_system_prompt)
     return 0
 
 
-def _session_save(session_id: str | None, role: str, content: str) -> None:
+def _emit_prompt_injection_scan_events(
+    *,
+    workspace_id: str,
+    session_id: str,
+    run_id: str,
+    persona: str = "",
+    project_context: str = "",
+) -> int:
+    """Emit injection_suspected events for prompt construction inputs.
+
+    Prompt building stays pure; this helper is the runtime bridge that has
+    session/run context. Best-effort: scan/trace failures must not break init.
+    """
+    try:
+        from .prompt_builder import _scan_for_injection_details
+        from .injection_trace import emit_injection_events
+
+        emitted = 0
+        for source, text in (("persona", persona), ("project_context", project_context)):
+            if not text:
+                continue
+            hits = _scan_for_injection_details(text, source=source)
+            emitted += emit_injection_events(
+                hits,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                run_id=run_id,
+                source=source,
+            )
+        return emitted
+    except Exception:
+        return 0
+
+def _session_save(session_id: str | None, role: str, content: str, *, run_id: str | None = None) -> None:
     """Spara meddelande till aktiv session. Får ej krascha agentloopen."""
     if not session_id or not content:
         return
     try:
         from . import sessions as S
 
-        S.add_message(session_id, role, content)
+        S.add_message(session_id, role, content, run_id=run_id)
     except Exception:
         pass
 
 
-def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, sink=None) -> None:
+def _feedback_hook(session_id: str | None, run_id: str, workspace_id: str) -> None:
+    """Best-effort feedback-extrahering efter en agent-turn.
+
+    Extraherar, komprimerar och lagrar lärdomar från trace-events.
+    Får ALDRIG krascha agentloopen.
+    """
+    if not session_id:
+        return
+    try:
+        from ..feedback.extract import extract_lessons
+        from ..feedback.compress import compress_lessons
+        from ..feedback.store import FeedbackStore
+
+        raw = extract_lessons(session_id, run_id, workspace_id)
+        if not raw:
+            return
+        domain = workspace_id and Path(workspace_id).name or "general"
+        compressed = compress_lessons(raw, domain, limit=3)
+        if compressed:
+            # Lägg till session_id och workspace_id för lagring
+            for c in compressed:
+                c["session_id"] = session_id
+                c["workspace_id"] = workspace_id
+            store = FeedbackStore()
+            store.store_lessons(compressed)
+            store.close()
+    except Exception:
+        pass
+
+
+def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, sink=None, run_id: str | None = None) -> None:
     """Kör agenten (streaming) tills text-svar eller iteration-cap.
 
     sink (valfritt, duck-typed UI-sink). Givet → streaming/thinking/fel och
@@ -310,6 +486,10 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
     Dessutom agerar sink som tool-hooks mot dispatch_tool_call (tool_start,
     confirm, tool_result, blocked, declined) när det givet.
     """
+    run_id = run_id or uuid.uuid4().hex
+    turn_id = uuid.uuid4().hex
+    _trace_event(engine, session_id, run_id, "run_started", {"model": cfg.provider.model})
+    _trace_event(engine, session_id, run_id, "turn_started", {}, turn_id=turn_id)
     for _ in range(MAX_TOOL_ROUNDS):
         if sink is not None:
             sink.thinking()
@@ -347,6 +527,9 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                 else:
                     console.print(msg)
                 messages.pop()  # rensa misslyckad user-msg
+                _trace_event(engine, session_id, run_id, "turn_completed", {"error": msg_str}, turn_id=turn_id)
+                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "error", "error": msg_str})
+                _feedback_hook(session_id, run_id, str(engine.workspace_root))
                 return
 
         result = client.last_result
@@ -359,38 +542,66 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
 
         if not result.tool_calls:
             messages.append(Message(role="assistant", content=result.text))
-            _session_save(session_id, "assistant", result.text)
-            _log_request(cfg, result, tool_calls=0)
+            _session_save(session_id, "assistant", result.text, run_id=run_id)
+            _log_request(cfg, result, tool_calls=0, run_id=run_id)
+            _trace_event(engine, session_id, run_id, "final_claim", {"text": result.text}, turn_id=turn_id)
+            _trace_event(engine, session_id, run_id, "turn_completed", {}, turn_id=turn_id)
+            _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": result.finish_reason})
+            _feedback_hook(session_id, run_id, str(engine.workspace_root))
             if sink is None:
                 console.print()
             return
 
         # Tool-anrop — logga, dispatch varje (med användarens godkännande)
-        _log_request(cfg, result, tool_calls=len(result.tool_calls))
+        _log_request(cfg, result, tool_calls=len(result.tool_calls), run_id=run_id)
         messages.append(
             Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
         )
-        _session_save(session_id, "assistant", result.text or "")
+        _session_save(session_id, "assistant", result.text or "", run_id=run_id)
         for tc in result.tool_calls:
-            outcome = dispatch_tool_call(tc, engine, console, hooks=sink)
+            outcome = dispatch_tool_call(tc, engine, console, hooks=sink, run_id=run_id, session_id=session_id)
             tc_id = tc.get("id") if isinstance(tc, dict) else None
             messages.append(Message(role="tool", content=outcome, tool_call_id=tc_id))
-            _session_save(session_id, "tool", outcome)
+            _session_save(session_id, "tool", outcome, run_id=run_id)
+    _trace_event(engine, session_id, run_id, "turn_completed", {"error": "max_tool_rounds"}, turn_id=turn_id)
+    _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "max_tool_rounds"})
+    _feedback_hook(session_id, run_id, str(engine.workspace_root))
     if sink is not None:
         sink.error("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]")
     else:
         console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
 
 
-def _log_request(cfg: HundConfig, result, tool_calls: int) -> None:
+def _trace_event(engine, session_id: str | None, run_id: str, event_type: str, payload: dict, *, turn_id: str | None = None) -> None:
+    """Best-effort trace event. Never crash the agent loop."""
+    if not session_id:
+        return
+    try:
+        from ..trace.events import record_event
+
+        record_event(
+            workspace_id=str(engine.workspace_root),
+            session_id=session_id,
+            run_id=run_id,
+            turn_id=turn_id,
+            actor="hund",
+            event_type=event_type,
+            policy_version="1.0.0",
+            payload_unredacted=payload,
+        )
+    except Exception:
+        pass
+
+
+def _log_request(cfg: HundConfig, result, tool_calls: int, *, run_id: str | None = None) -> None:
     """Logga request till logs/requests.db. Får ej krascha agentloopen."""
     try:
         conn = connect_requests()
         conn.execute(
             """INSERT INTO requests
                (id, created_at, task_class, model_requested, model_actual, provider,
-                finish_reason, prompt_tokens, completion_tokens, latency_ms)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                finish_reason, prompt_tokens, completion_tokens, latency_ms, run_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 str(uuid.uuid4()),
                 datetime.now(timezone.utc).isoformat(),
@@ -402,6 +613,7 @@ def _log_request(cfg: HundConfig, result, tool_calls: int) -> None:
                 result.prompt_tokens,
                 result.completion_tokens,
                 result.latency_ms,
+                run_id,
             ),
         )
         conn.commit()

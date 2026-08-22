@@ -75,6 +75,16 @@ CREATE INDEX IF NOT EXISTS idx_trace_events_session ON trace_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_trace_events_run ON trace_events(run_id);
 CREATE INDEX IF NOT EXISTS idx_trace_events_type ON trace_events(event_type);
 
+CREATE TABLE IF NOT EXISTS export_log (
+    export_id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    export_format TEXT NOT NULL,
+    pair_count INTEGER DEFAULT 0,
+    output_path TEXT,
+    filters_json TEXT,
+    redactor_version TEXT
+);
+
 CREATE TABLE IF NOT EXISTS forge_artifacts (
     artifact_id TEXT PRIMARY KEY,
     proposal_id TEXT NOT NULL,
@@ -151,6 +161,7 @@ def connect(db_path: Path | None = None) -> sqlite3.Connection:
     path = db_path or default_db_path()
     conn = _open(path, SCHEMA)
     _migrate(conn)
+    _migrate_trace_events(conn)
     return conn
 
 
@@ -162,6 +173,33 @@ def connect_requests(db_path: Path | None = None) -> sqlite3.Connection:
     _migrate_requests(conn)
     return conn
 
+
+def _migrate_trace_events(conn: sqlite3.Connection) -> None:
+    """Idempotent migrations for trace_events.
+
+    Phase 1 is new, but local developer DBs may already contain an older draft
+    table. Keep it self-healing so trace rollout does not require DB deletion.
+    """
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(trace_events)")
+    }
+    if not existing:
+        return
+    required = {
+        "org_id": "TEXT",
+        "connector_id": "TEXT",
+        "turn_id": "TEXT",
+        "parent_run_id": "TEXT",
+        "approval_id": "TEXT",
+        "payload_hash_algorithm": "TEXT DEFAULT 'sha256'",
+        "redactor_version": "TEXT DEFAULT '1.0.0'",
+        "redaction": "TEXT DEFAULT '{\"applied\":false,\"fields\":[],\"risk_level\":\"safe\"}'",
+    }
+    for column, ddl in required.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE trace_events ADD COLUMN {column} {ddl}")
+    conn.commit()
 
 def _migrate_requests(conn: sqlite3.Connection) -> None:
     existing = {

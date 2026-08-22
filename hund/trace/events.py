@@ -1,42 +1,98 @@
-"""Trace Event Model and Persistence — Hund.ai spårningsinfrastruktur (TCB)."""
+"""Trace event model and persistence.
+
+Trace events are the canonical audit substrate for runs, tools, approvals,
+verification, safety decisions, dashboard views, and future dataset export.
+"""
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
-import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
 from pydantic import BaseModel, Field
 
-from ..store.sqlite import connect
 from ..learning.redactor import redact_text
+from ..store.sqlite import connect
+
+SCHEMA_VERSION = 1
+PAYLOAD_HASH_ALGORITHM = "sha256"
+REDACTOR_VERSION = "1.0.0"
+
+EVENT_TYPES = {
+    "run_started",
+    "run_completed",
+    "turn_started",
+    "turn_completed",
+    "plan_snapshot",
+    "tool_call_requested",
+    "tool_call_classified",
+    "tool_call_approved",
+    "tool_call_declined",
+    "tool_call_blocked",
+    "tool_call_started",
+    "tool_call_completed",
+    "tool_call_failed",
+    "verification_intent",
+    "verification_started",
+    "verification_completed",
+    "final_claim",
+    "redaction_applied",
+    "injection_suspected",
+    "injection_blocked",
+    "context_compressed",
+    "proposal_created",
+    "proposal_approved",
+    "proposal_rejected",
+    "eval_started",
+    "eval_completed",
+    "approval_requested",
+    "approval_resolved",
+    "worktree_session_started",
+    "worktree_session_completed",
+    "worktree_proposed",
+    "worktree_merged",
+    "export_completed",
+    "local_fallback",
+    "cloud_registered",
+    "cloud_heartbeat",
+    "cloud_deployed",
+}
+
+ACTORS = {"user", "hund", "agent", "subagent", "connector", "system", "evaluator", "worktree_agent"}
+RISKS = {"safe", "write", "confirm", "dangerous", "blocked", "none"}
 
 
 class TraceEvent(BaseModel):
-    schema_version: int = 1
+    schema_version: int = SCHEMA_VERSION
     event_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    org_id: Optional[str] = None
+    org_id: str | None = None
     workspace_id: str
-    connector_id: Optional[str] = None
+    connector_id: str | None = None
     session_id: str
     run_id: str
-    turn_id: Optional[str] = None
-    parent_run_id: Optional[str] = None
+    turn_id: str | None = None
+    parent_run_id: str | None = None
     actor: str
     event_type: str
-    risk: Optional[str] = "none"
+    risk: str = "none"
     policy_version: str
-    tool_name: Optional[str] = None
-    approval_id: Optional[str] = None
-    payload_redacted: Dict[str, Any] = Field(default_factory=dict)
+    tool_name: str | None = None
+    approval_id: str | None = None
+    payload_redacted: dict[str, Any] = Field(default_factory=dict)
     payload_hash: str
-    payload_hash_algorithm: str = "sha256"
-    redactor_version: str = "1.0.0"
-    redaction: Dict[str, Any] = Field(
+    payload_hash_algorithm: str = PAYLOAD_HASH_ALGORITHM
+    redactor_version: str = REDACTOR_VERSION
+    redaction: dict[str, Any] = Field(
         default_factory=lambda: {"applied": False, "fields": [], "risk_level": "safe"}
     )
+
+
+def _canonical_json(data: dict[str, Any]) -> str:
+    return json.dumps(data or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def create_event(
@@ -46,32 +102,31 @@ def create_event(
     actor: str,
     event_type: str,
     policy_version: str,
-    payload_unredacted: Dict[str, Any],
-    org_id: Optional[str] = None,
-    connector_id: Optional[str] = None,
-    turn_id: Optional[str] = None,
-    parent_run_id: Optional[str] = None,
-    risk: Optional[str] = "none",
-    tool_name: Optional[str] = None,
-    approval_id: Optional[str] = None,
+    payload_unredacted: dict[str, Any] | None = None,
+    org_id: str | None = None,
+    connector_id: str | None = None,
+    turn_id: str | None = None,
+    parent_run_id: str | None = None,
+    risk: str = "none",
+    tool_name: str | None = None,
+    approval_id: str | None = None,
 ) -> TraceEvent:
-    """Skapar ett TraceEvent och tvättar dess payload med Redactor."""
-    # 1. Beräkna hash för den oredakterade payloaden
-    payload_json = json.dumps(payload_unredacted, sort_keys=True, ensure_ascii=False)
+    """Create a trace event and redact its payload before persistence."""
+    if actor not in ACTORS:
+        raise ValueError(f"invalid trace actor: {actor}")
+    if event_type not in EVENT_TYPES:
+        raise ValueError(f"invalid trace event_type: {event_type}")
+    if risk not in RISKS:
+        raise ValueError(f"invalid trace risk: {risk}")
+
+    payload_json = _canonical_json(payload_unredacted or {})
     payload_hash = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
 
-    # 2. Redaktera payload
     redact_res = redact_text(payload_json)
     try:
         payload_redacted = json.loads(redact_res.text)
     except json.JSONDecodeError:
-        payload_redacted = {"_raw_corrupted": redact_res.text}
-
-    redaction_metadata = {
-        "applied": len(redact_res.blocked_fields) > 0,
-        "fields": redact_res.blocked_fields,
-        "risk_level": redact_res.risk_level
-    }
+        payload_redacted = {"_redacted_text": redact_res.text}
 
     return TraceEvent(
         workspace_id=workspace_id,
@@ -89,12 +144,16 @@ def create_event(
         risk=risk,
         tool_name=tool_name,
         approval_id=approval_id,
-        redaction=redaction_metadata
+        redaction={
+            "applied": bool(redact_res.blocked_fields),
+            "fields": redact_res.blocked_fields,
+            "risk_level": redact_res.risk_level,
+        },
     )
 
 
 def write_event(event: TraceEvent, db_path: Path | None = None) -> None:
-    """Skriver ett TraceEvent till tabellen trace_events i core-DB."""
+    """Persist a trace event into the core trace_events table."""
     conn = connect(db_path)
     conn.execute(
         """
@@ -122,15 +181,22 @@ def write_event(event: TraceEvent, db_path: Path | None = None) -> None:
             event.policy_version,
             event.tool_name,
             event.approval_id,
-            json.dumps(event.payload_redacted, ensure_ascii=False),
+            json.dumps(event.payload_redacted, ensure_ascii=False, sort_keys=True),
             event.payload_hash,
             event.payload_hash_algorithm,
             event.redactor_version,
-            json.dumps(event.redaction, ensure_ascii=False),
-        )
+            json.dumps(event.redaction, ensure_ascii=False, sort_keys=True),
+        ),
     )
     conn.commit()
     conn.close()
+
+
+def record_event(db_path: Path | None = None, **kwargs) -> TraceEvent:
+    """Create and persist a trace event in one call."""
+    event = create_event(**kwargs)
+    write_event(event, db_path=db_path)
+    return event
 
 
 def _row_to_event(row: tuple) -> TraceEvent:
@@ -147,7 +213,7 @@ def _row_to_event(row: tuple) -> TraceEvent:
         parent_run_id=row[9],
         actor=row[10],
         event_type=row[11],
-        risk=row[12],
+        risk=row[12] or "none",
         policy_version=row[13],
         tool_name=row[14],
         approval_id=row[15],
@@ -160,24 +226,33 @@ def _row_to_event(row: tuple) -> TraceEvent:
 
 
 def list_events_by_run(run_id: str, db_path: Path | None = None) -> list[TraceEvent]:
-    """Hämtar alla händelser för en viss körning (run_id) sorterade kronologiskt."""
+    """Return all events for a run sorted chronologically."""
     conn = connect(db_path)
-    cursor = conn.execute(
+    rows = conn.execute(
         "SELECT * FROM trace_events WHERE run_id = ? ORDER BY created_at ASC",
-        (run_id,)
-    )
-    events = [_row_to_event(row) for row in cursor.fetchall()]
+        (run_id,),
+    ).fetchall()
     conn.close()
-    return events
+    return [_row_to_event(row) for row in rows]
 
 
 def list_events_by_session(session_id: str, db_path: Path | None = None) -> list[TraceEvent]:
-    """Hämtar alla händelser för en viss session (session_id) sorterade kronologiskt."""
+    """Return all events for a session sorted chronologically."""
     conn = connect(db_path)
-    cursor = conn.execute(
+    rows = conn.execute(
         "SELECT * FROM trace_events WHERE session_id = ? ORDER BY created_at ASC",
-        (session_id,)
-    )
-    events = [_row_to_event(row) for row in cursor.fetchall()]
+        (session_id,),
+    ).fetchall()
     conn.close()
-    return events
+    return [_row_to_event(row) for row in rows]
+
+
+def list_events_by_type(event_type: str, db_path: Path | None = None) -> list[TraceEvent]:
+    """Return all events of a given type sorted chronologically."""
+    conn = connect(db_path)
+    rows = conn.execute(
+        "SELECT * FROM trace_events WHERE event_type = ? ORDER BY created_at ASC",
+        (event_type,),
+    ).fetchall()
+    conn.close()
+    return [_row_to_event(row) for row in rows]
