@@ -82,13 +82,12 @@ def _which(name: str) -> bool:
     return shutil.which(name) is not None
 
 
-def _wmic(query: str, *, get: str) -> str:
-    """Kör wmic och returnera rå output. '' vid fel."""
+def _powershell(script: str) -> str:
+    """Run a PowerShell -Command snippet; return stdout ('' on error/timeout)."""
     try:
-        cmd = ["wmic"] + query.split() + ["get", get]
         out = subprocess.run(
-            cmd,
-            capture_output=True, text=True, timeout=5,
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True, text=True, timeout=8,
         )
         if out.returncode != 0:
             return ""
@@ -97,69 +96,51 @@ def _wmic(query: str, *, get: str) -> str:
         return ""
 
 
-def _wmic_value(query: str, *, get: str) -> str:
-    """Hämta första dataraden från wmic (skippar header)."""
-    raw = _wmic(query, get=get)
-    if not raw:
-        return ""
-    lines = raw.strip().splitlines()
-    # Ta första icke-tomma raden som INTE är header-raden
-    for line in lines:
-        stripped = line.strip()
-        if stripped and stripped != get:
-            return stripped
-    return ""
-
-
 def _detect_os_caption() -> str:
-    caption = _wmic_value("os", get="Caption")
-    return caption
+    return _powershell("(Get-CimInstance Win32_OperatingSystem).Caption")
 
 
 def _detect_os_arch() -> str:
-    arch = _wmic_value("os", get="OSArchitecture")
-    return arch
+    return _powershell("(Get-CimInstance Win32_OperatingSystem).OSArchitecture")
 
 
 def _detect_gpu() -> tuple[str, int]:
-    """Returnera (modellnamn, VRAM i MB)."""
-    raw = _wmic("path win32_VideoController", get="AdapterRAM,name")
+    """Return (model name, VRAM in MB) via CIM (WMIC removed on Win11)."""
+    raw = _powershell(
+        'Get-CimInstance Win32_VideoController | ForEach-Object { "{0}|{1}" -f $_.AdapterRAM, $_.Name }'
+    )
     if not raw:
         return "", 0
-    lines = raw.strip().splitlines()
     best_vram = 0
     best_name = ""
-    for line in lines:
-        stripped = line.strip()
-        if not stripped or stripped.startswith("AdapterRAM"):
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
             continue
-        # wmic output: "AdapterRAM  Name" — VRAM först, sen namn
-        # Ex: "4293918720  NVIDIA GeForce GTX 980 Ti"
-        parts = stripped.split(None, 1)  # split på whitespace, max 1 split
-        if len(parts) == 2 and parts[0].isdigit():
-            vram = int(parts[0])
-            name = parts[1].strip()
+        if "|" in line:
+            vram_str, name = line.split("|", 1)
+            try:
+                vram = int(vram_str.strip() or 0)
+            except ValueError:
+                vram = 0
         else:
-            # Fallback — hela raden som namn, ingen VRAM
-            name = stripped
-            vram = 0
+            name, vram = line, 0
         if vram > best_vram:
             best_vram = vram
-            best_name = name
-    # Konvertera bytes → MB
-    if best_vram > 1024 * 1024:  # > 1GB i bytes = absolut i bytes
-        best_vram = best_vram // (1024 * 1024)
+            best_name = name.strip()
+    # Convert bytes -> MB (values > 1GB are absolute bytes).
+    if best_vram > 1024 * 1024:
+        best_vram //= 1024 * 1024
     return best_name, best_vram
 
 
 def _detect_ram_gb() -> float:
-    """Total RAM i GB."""
-    raw = _wmic_value("computersystem", get="TotalPhysicalMemory")
+    """Total RAM in GB."""
+    raw = _powershell("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory")
     if not raw:
         return 0.0
     try:
-        bytes_val = int(raw)
-        return bytes_val / (1024 ** 3)
+        return int(raw) / (1024 ** 3)
     except (ValueError, TypeError):
         return 0.0
 

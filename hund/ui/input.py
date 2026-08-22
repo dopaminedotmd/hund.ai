@@ -35,6 +35,7 @@ SLASH_COMMAND_METAS: dict[str, str] = {
     "/help": "Show command palette and keybindings",
     "/export": "Export session transcript to file",
     "/config": "View active configuration settings",
+    "/copy": "Copy last assistant response to clipboard",
     "/theme": "Switch terminal visual palette",
     "/session": "Inspect or search session archive",
     "/retry": "Regenerate last assistant response",

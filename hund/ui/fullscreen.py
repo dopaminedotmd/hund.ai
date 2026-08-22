@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import io
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -75,14 +76,24 @@ class _OutputLexer(Lexer):
             stripped = line.lstrip()
             if stripped.startswith("❯"):
                 style = "class:user"
-            elif line.startswith("╭─") or line.startswith("╰─"):
+            elif "hund is analyzing" in line:
                 style = "class:secondary"
             elif "CONFIRMATION REQUIRED" in line:
                 style = "class:warning"
+            elif "[y] Approve" in line:
+                style = "class:success"
+            elif "[e] Edit" in line:
+                style = "class:accent"
+            elif "[a] Allow" in line:
+                style = "class:warning"
+            elif "[n] Deny" in line:
+                style = "class:danger"
             elif "BLOCKED" in line or "DECLINED" in line:
                 style = "class:danger"
             elif "tool:" in line:
                 style = "class:tool"
+            elif line.startswith("╭") or line.startswith("╰") or line.startswith("│"):
+                style = "class:secondary"
             else:
                 style = "class:primary"
             return [(style, line)]
@@ -165,11 +176,14 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             except Exception:
                 pass
 
+    _append_lock = threading.Lock()
+
     def append(text: str) -> None:
         if not text:
             return
-        output_buffer.cursor_position = len(output_buffer.text)
-        output_buffer.insert_text(text, fire_event=False)
+        with _append_lock:
+            output_buffer.cursor_position = len(output_buffer.text)
+            output_buffer.insert_text(text, fire_event=False)
         _invalidate()
 
     # seed banner
@@ -186,12 +200,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             self.confirm_answer = "deny"
             self.confirm_event = threading.Event()
             self._box_open = False
+            self._think_marker: int | None = None
 
         def thinking(self, msg: str | None = None) -> None:
-            pass  # ponytail: response streams directly, no thinking line
+            self._think_marker = len(output_buffer.text)
+            append("  " + (msg or "hund is analyzing...") + "\n")
 
         def clear_thinking(self) -> None:
-            pass
+            if self._think_marker is not None:
+                with _append_lock:
+                    output_buffer.text = output_buffer.text[: self._think_marker]
+                    output_buffer.cursor_position = len(output_buffer.text)
+                self._think_marker = None
+                _invalidate()
 
         def chunk(self, text: str) -> None:
             if not self._box_open:
@@ -210,9 +231,27 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             append(strip_markdown(markup) + "\n")
 
         def confirm(self, prompt: str) -> bool:
-            append("\nCONFIRMATION REQUIRED\n")
-            append(strip_markdown(prompt) + "\n")
-            append("  [y] approve once  [e] edit  [a] allow session  [n] deny\n\n")
+            W = 64
+            clean = strip_markdown(prompt).strip().replace("\n", " ")
+            if len(clean) > W - 6:
+                clean = clean[: W - 9] + "..."
+
+            def row(s: str = "") -> str:
+                return "│ " + s.ljust(W - 4) + " │"
+
+            box = [
+                "╭" + "─" * (W - 2) + "╮",
+                row("CONFIRMATION REQUIRED"),
+                row(""),
+                row(clean),
+                row(""),
+                row("[y] Approve once"),
+                row("[e] Edit command"),
+                row("[a] Allow for session"),
+                row("[n] Deny (default)"),
+                "╰" + "─" * (W - 2) + "╯",
+            ]
+            append("\n" + "\n".join(box) + "\n\n")
             self.confirm_answer = "deny"
             self.confirm_pending = True
             self.confirm_event.clear()
@@ -245,12 +284,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             append(out.rstrip("\n") + "\n\n")
 
     # ---- agent turn runner (background thread) ----
-    def run_turn(user_text: str) -> None:
+    def _spawn_turn(echo_user: str | None) -> None:
         turn_running[0] = True
-        append(theme.USER_PREFIX + " " + user_text + "\n")
-        messages.append(Message(role="user", content=user_text))
         run_id = uuid.uuid4().hex
-        _session_save(session_id, "user", user_text, run_id=run_id)
+        user_text = echo_user
+        if echo_user is not None:
+            append(theme.USER_PREFIX + " " + echo_user + "\n")
+            messages.append(Message(role="user", content=echo_user))
+            _session_save(session_id, "user", echo_user, run_id=run_id)
+        else:
+            user_text = next(
+                (m.content for m in reversed(messages) if getattr(m, "role", "") == "user"),
+                "",
+            )
 
         tokens_before = estimate_tokens(messages)
         comp = maybe_compress(messages, client=rt.client)
@@ -270,7 +316,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
         dynamic_msg = _dynamic_context_message(
             skills=rt.skills,
-            user_text=user_text,
+            user_text=user_text or "",
             workspace_id=str(rt.workspace),
             domain_hint=rt.domain_hint,
         )
@@ -302,6 +348,32 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def run_turn(user_text: str) -> None:
+        _spawn_turn(user_text)
+
+    def copy_last_response() -> None:
+        last = next(
+            (m.content for m in reversed(messages) if getattr(m, "role", "") == "assistant"),
+            "",
+        )
+        if not last:
+            append("(nothing to copy)\n")
+            return
+        try:
+            subprocess.run(["clip"], input=last.encode("utf-8"), check=True)
+            append("(copied last response to clipboard)\n")
+        except Exception as e:  # noqa: BLE001
+            append(f"(copy failed: {e})\n")
+
+    def retry_last() -> None:
+        while messages and getattr(messages[-1], "role", "") != "user":
+            messages.pop()
+        if not messages:
+            append("(nothing to retry)\n")
+            return
+        append("(regenerating...)\n")
+        _spawn_turn(None)
+
     # ---- input accept handler ----
     def on_accept(buf: Buffer) -> bool:
         text = buf.text.strip()
@@ -316,6 +388,14 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
         if text in ("/exit", "/quit"):
             holder["app"].exit()
+            return True
+
+        if text == "/copy":
+            copy_last_response()
+            return True
+
+        if text == "/retry":
+            retry_last()
             return True
 
         if is_slash(text):
