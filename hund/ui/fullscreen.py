@@ -22,11 +22,13 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.containers import ConditionalContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.lexers import Lexer
+from prompt_toolkit.mouse_events import MouseEventType
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
@@ -102,6 +104,30 @@ class _OutputLexer(Lexer):
         return get_line
 
 
+class _SelectableControl(BufferControl):
+    """Output control: wheel scroll via the view-scroll callback, and
+    single-drag selection (focus on mouse-down instead of mouse-up)."""
+
+    def __init__(self, *args, scroll_cb=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.scroll_cb = scroll_cb
+
+    def mouse_handler(self, mouse_event):
+        et = mouse_event.event_type
+        if et == MouseEventType.MOUSE_DOWN:
+            # Focus on mouse-down so a single drag selects (default focuses
+            # on mouse-up, which swallows the first drag).
+            try:
+                get_app().layout.current_control = self
+            except ValueError:
+                pass  # control not walked into the layout yet; selection still works
+        elif et in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
+            if self.scroll_cb is not None:
+                self.scroll_cb(3 if et == MouseEventType.SCROLL_UP else -3)
+            return None  # handled; skip the built-in laggy cursor scroll
+        return super().mouse_handler(mouse_event)
+
+
 _OUTPUT_LEXER = _OutputLexer()
 
 _CONFIRM_OPTIONS = [
@@ -128,8 +154,9 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     """Run the full-screen REPL application. Returns exit code."""
     # ---- output buffer (read-only + focusable so the mouse can select) ----
     output_buffer = Buffer(name="output", multiline=True, read_only=True)
+    output_control = _SelectableControl(buffer=output_buffer, lexer=_OUTPUT_LEXER)
     output_window = Window(
-        content=BufferControl(buffer=output_buffer, lexer=_OUTPUT_LEXER),
+        content=output_control,
         wrap_lines=True,
         always_hide_cursor=True,
     )
@@ -494,6 +521,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         output_buffer.cursor_position = output_buffer.document.translate_row_col_to_index(
             target, 0
         )
+
+    output_control.scroll_cb = _scroll_lines
 
     def _copy_selection() -> bool:
         for buf in (input_buffer, output_buffer):
