@@ -80,12 +80,21 @@ def serve_rpc(
             decision = engine.classify(tool, args)
             if decision.risk.value == "blocked":
                 resp = {"type": "response", "id": msg.get("id", 0), "result": "", "error": decision.reason}
-            else:
+            elif decision.risk.value in ("safe", "write"):
+                # SAFE and WRITE are allowed in RPC (parent already confirmed execute_code)
                 try:
                     result = reg.call(tool, args)
                     resp = {"type": "response", "id": msg.get("id", 0), "result": result, "error": None}
                 except Exception as e:
                     resp = {"type": "response", "id": msg.get("id", 0), "result": "", "error": str(e)}
+            else:
+                # CONFIRM/DANGEROUS require interactive approval — not available in RPC
+                resp = {
+                    "type": "response",
+                    "id": msg.get("id", 0),
+                    "result": "",
+                    "error": f"tool '{tool}' requires interactive approval (risk={decision.risk.value}), not available in execute_code",
+                }
         write_stream.write(json.dumps(resp, ensure_ascii=False) + "\n")
         write_stream.flush()
     return "\n".join(script_output)

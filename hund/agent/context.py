@@ -31,6 +31,7 @@ class CompressionResult:
     dropped_turns: int
     tokens: int
     compressed: bool
+    method: str = "none"
 
 
 def estimate_tokens(messages: list[Message]) -> int:
@@ -50,7 +51,7 @@ def compress(
     Om listan är kort nog returneras offörändrad (compressed=False).
     """
     if len(messages) <= keep_recent + 1:
-        return CompressionResult(list(messages), 0, estimate_tokens(messages), False)
+        return CompressionResult(list(messages), 0, estimate_tokens(messages), False, "none")
 
     system = messages[0]
     recent = list(messages[-keep_recent:])
@@ -65,7 +66,7 @@ def compress(
         tool_call_id=None,
     )
     compacted = [system, marker] + recent
-    return CompressionResult(compacted, dropped, estimate_tokens(compacted), True)
+    return CompressionResult(compacted, dropped, estimate_tokens(compacted), True, "deterministic")
 
 
 def maybe_compress(
@@ -78,7 +79,7 @@ def maybe_compress(
     """Komprimera endast om uppskattad token-mangd overstiger troskel.
     Provat LLM-compress forst, fallback till deterministisk."""
     if estimate_tokens(messages) <= max_tokens:
-        return CompressionResult(list(messages), 0, estimate_tokens(messages), False)
+        return CompressionResult(list(messages), 0, estimate_tokens(messages), False, "none")
     if client is not None:
         llm_result = compress_llm(client, messages, keep_recent=keep_recent)
         if llm_result is not None:
@@ -135,4 +136,5 @@ def compress_llm(
     recent = list(messages[-keep_recent:])
     compacted = [system, marker] + recent
     dropped = len(old_messages)
-    return CompressionResult(compacted, dropped, estimate_tokens(compacted), True)
+    return CompressionResult(compacted, dropped, estimate_tokens(compacted), True, "llm")
+

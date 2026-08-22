@@ -26,7 +26,7 @@ def _valid_skill(**over) -> Skill:
         when_to_use="när X",
         steps=("steg 1",),
         required_tools=("read_file",),
-        forbidden_actions=("delete", "self_update"),
+        forbidden_actions=("delete", "self_update", "apply_update", "modify_tcb", "elevate_permissions"),
         safety_level="confirm_for_write",
         verification=("uv run pytest",),
     )

@@ -61,8 +61,15 @@ def run_code(args: dict) -> str:
         try:
             proc.wait(timeout=MAX_TIMEOUT)
         except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+            # Graceful shutdown: terminate first (WM_CLOSE on Windows),
+            # then force-kill only if the process doesn't exit within 3s.
+            # This avoids orphaned temp files and SQLite lock corruption.
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
             return "[error] execute_code timeout (300s)"
         stderr_text = proc.stderr.read()
         result = stdout_result or "(inget output)"

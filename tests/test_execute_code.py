@@ -38,7 +38,7 @@ def test_run_code_blocked_tools():
 
 
 def test_run_code_timeout():
-    """Om wait() kastar TimeoutExpired, ska vi döda processen och returnera timeout-fel."""
+    """Om wait() kastar TimeoutExpired, ska vi terminera processen graceful och returnera timeout-fel."""
     with patch("subprocess.Popen") as mock_popen_cls:
         mock_proc = MagicMock()
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="python", timeout=300), 0]
@@ -47,6 +47,24 @@ def test_run_code_timeout():
         with patch("hund.agent.rpc.serve_rpc", return_value=""):
             res = run_code({"code": "import time; time.sleep(1)"})
             assert "[error] execute_code timeout (300s)" in res
+            mock_proc.terminate.assert_called_once()
+
+
+def test_run_code_timeout_force_kills_if_terminate_times_out():
+    """Om processen inte terminerar efter terminate(), force-killa den."""
+    with patch("subprocess.Popen") as mock_popen_cls:
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="python", timeout=300),
+            subprocess.TimeoutExpired(cmd="python", timeout=3),
+            0,
+        ]
+        mock_popen_cls.return_value = mock_proc
+        
+        with patch("hund.agent.rpc.serve_rpc", return_value=""):
+            res = run_code({"code": "import time; time.sleep(1)"})
+            assert "[error] execute_code timeout (300s)" in res
+            mock_proc.terminate.assert_called_once()
             mock_proc.kill.assert_called_once()
 
 

@@ -33,6 +33,13 @@ _TERMINAL_BLOCKLIST = [
     r"\bdd\s+if=",               # dd if=/dev/...
     r"\bwget.*\|.*sh\b",         # curl/wget | sh
     r"\bcurl.*\|.*sh\b",
+    # PowerShell privilege escalation vectors
+    r"\bStart-Process\b.*-Verb\s+RunAs",        # UAC elevation
+    r"\bSet-ExecutionPolicy\b",                  # bypass PS security policy
+    r"\bNew-Service\b",                          # persistent service creation
+    r"\b(?:iwr|Invoke-WebRequest)\b.*\.ps1",     # download+execute script
+    r"\bAdd-MpPreference\b.*-ExclusionPath",     # Defender exclusion
+    r"\breg\s+add\b.*\\Run\b",                  # registry autostart
 ]
 
 
@@ -45,6 +52,8 @@ class RiskLevel(str, Enum):
 
 
 # Verktyg -> basrisk. Args kan höja (t.ex. sökväg utanför workspace).
+# NOTE: tools registered in default_tools.py MUST have matching entries here
+# so PermissionEngine classifies them correctly (default = CONFIRM).
 _TOOL_BASE_RISK: dict[str, RiskLevel] = {
     "read_file": RiskLevel.SAFE,
     "search_files": RiskLevel.SAFE,
@@ -54,6 +63,8 @@ _TOOL_BASE_RISK: dict[str, RiskLevel] = {
     "execute_code": RiskLevel.CONFIRM,
     "delegate_task": RiskLevel.CONFIRM,
     "session_search": RiskLevel.SAFE,
+    "web_search": RiskLevel.SAFE,
+    "web_extract": RiskLevel.SAFE,
     "cronjob": RiskLevel.CONFIRM,
 }
 
@@ -63,6 +74,8 @@ TCB_FILES = {
     "hund/agent/safety.py",
     "hund/agent/tool_dispatch.py",
     "hund/agent/loop.py",
+    "hund/agent/delegation.py",
+    "hund/agent/rpc.py",
     "hund/learning/redactor.py",
     "hund/main.py",
 }

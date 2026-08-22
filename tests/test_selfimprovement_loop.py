@@ -35,7 +35,7 @@ def _skill_summary(**over) -> dict:
         "skill_domain": "software-development",
         "skill_triggers": ["pytest", "test failed"],
         "skill_steps": ["läs fellögen", "isolera orsak", "fixa"],
-        "skill_forbidden": ["delete", "push", "modify_tcb"],
+        "skill_forbidden": ["delete", "push", "modify_tcb", "self_update", "apply_update", "elevate_permissions"],
         "skill_verification": ["uv run pytest -q grönt"],
         "skill_required_tools": ["read_file"],
         "skill_when_to_use": "när ett test fallerar",
@@ -60,7 +60,7 @@ def test_build_skill_from_proposal():
     assert isinstance(skill, Skill)
     assert skill.name == "my-loop-skill"
     assert skill.domain == "software-development"
-    assert skill.forbidden_actions == ("delete", "push", "modify_tcb")
+    assert set(skill.forbidden_actions) == {"delete", "push", "modify_tcb", "self_update", "apply_update", "elevate_permissions"}
     assert skill.steps == ("läs fellögen", "isolera orsak", "fixa")
     # mänskligt godkänd → active
     assert skill.status == "active"
@@ -201,7 +201,7 @@ def test_raw_summary_persisted_with_skill_fields():
     assert fetched.raw_summary
     raw = json.loads(fetched.raw_summary)
     assert raw["skill_name"] == "my-loop-skill"
-    assert raw["skill_forbidden"] == ["delete", "push", "modify_tcb"]
+    assert raw["skill_forbidden"] == ["delete", "push", "modify_tcb", "self_update", "apply_update", "elevate_permissions"]
     # apply-vägen kan bygga skill från den persisterade raw_summary
     skill = P.build_skill_from_proposal(fetched, raw)
     assert skill is not None and validate(skill) == []

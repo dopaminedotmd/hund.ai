@@ -45,4 +45,9 @@ def validate(skill: Skill) -> list[str]:
     if bad_tools:
         errors.append(f"required_tools innehåller förbjudet: {sorted(bad_tools)}")
 
+    # All BANNED_ACTIONS must be present in forbidden_actions (positive validation).
+    missing_bans = BANNED_ACTIONS - set(skill.forbidden_actions)
+    if missing_bans:
+        errors.append(f"forbidden_actions MUST include all BANNED_ACTIONS, missing: {sorted(missing_bans)}")
+
     return errors
