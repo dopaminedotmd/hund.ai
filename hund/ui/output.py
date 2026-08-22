@@ -270,6 +270,8 @@ class StreamingSink:
         self.console = console
         self._thinking_active = False
         self._stream_filter = StreamingMarkdownFilter()
+        self._box_open = False
+        self._line_start = True
         if stream_delay_s is None:
             raw_delay = os.environ.get("HUND_STREAM_DELAY_S", "")
             try:
@@ -296,10 +298,37 @@ class StreamingSink:
             pass
         self._thinking_active = False
 
+    def _width(self) -> int:
+        return getattr(self.console, "width", 80) or 80
+
+    def _open_box(self) -> None:
+        if self._box_open:
+            return
+        w = self._width()
+        fill = max(w - 9, 2)  # "╭─ " (3) + "hund" (4) + " " (1) + "╮" (1)
+        self.console.print(f"[dim]╭─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}╮[/dim]")
+        self._box_open = True
+        self._line_start = True
+
+    def _close_box(self) -> None:
+        if not self._box_open:
+            return
+        w = self._width()
+        self.console.print(f"[dim]╰{'─' * max(w - 2, 2)}╯[/dim]")
+        self._box_open = False
+        self._line_start = True
+
     def chunk(self, text: str) -> None:
         self.clear_thinking()
         filtered = self._stream_filter.feed(text)
+        if not filtered:
+            return
+        if not self._box_open:
+            self._open_box()
         for ch in filtered:
+            if self._line_start:
+                self.console.print("│ ", end="", style=theme.HUND_DIM, markup=False, highlight=False)
+                self._line_start = False
             self.console.print(
                 ch,
                 end="",
@@ -307,6 +336,8 @@ class StreamingSink:
                 markup=False,
                 highlight=False,
             )
+            if ch == "\n":
+                self._line_start = True
             try:
                 self.console.file.flush()
             except Exception:
@@ -318,19 +349,29 @@ class StreamingSink:
         self.clear_thinking()
         leftover = self._stream_filter.flush()
         if leftover:
+            if not self._box_open:
+                self._open_box()
             for ch in leftover:
+                if self._line_start:
+                    self.console.print("│ ", end="", style=theme.HUND_DIM, markup=False, highlight=False)
+                    self._line_start = False
                 self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
+                if ch == "\n":
+                    self._line_start = True
+        self._close_box()
         self._stream_filter = StreamingMarkdownFilter()
         self.console.print()
 
     def error(self, markup: str) -> None:
         self.clear_thinking()
+        self._close_box()
         self.console.print(markup)
 
     # -- tool-hook contract ------------------------------------------------
 
     def confirm(self, prompt: str) -> bool:
         self.clear_thinking()
+        self._close_box()
         if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
             verdict = interactive_confirm_menu(prompt)
         else:
@@ -370,6 +411,7 @@ class StreamingSink:
 
     def tool_start(self, name: str, args) -> None:
         self.clear_thinking()
+        self._close_box()
         card = theme.boxify(
             f"TOOL: {name}",
             [f"args: {_short_args(args)}", "status: executing..."],
@@ -381,6 +423,7 @@ class StreamingSink:
 
     def tool_result(self, name: str, shown: str) -> None:
         self.clear_thinking()
+        self._close_box()
         card = theme.boxify(
             f"TOOL RESULT: {name}",
             [f"output: {shown}"],
@@ -392,6 +435,7 @@ class StreamingSink:
 
     def blocked(self, name: str, reason: str) -> None:
         self.clear_thinking()
+        self._close_box()
         card = theme.boxify(
             f"BLOCKED: {name}",
             [f"reason: {reason}"],
@@ -403,6 +447,7 @@ class StreamingSink:
 
     def declined(self, name: str, reason: str) -> None:
         self.clear_thinking()
+        self._close_box()
         card = theme.boxify(
             f"DECLINED: {name}",
             [f"reason: {reason}"],
