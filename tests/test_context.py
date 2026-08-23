@@ -102,3 +102,24 @@ def test_context_compression_payload_shape():
     assert payload["turns_dropped"] > 0
     assert payload["tokens_before"] >= payload["tokens_after"]
     assert payload["method"] == "deterministic"
+
+
+def test_compression_never_starts_with_orphan_tool_message():
+    """If keep_recent slices into the middle of a tool sequence, it must not start with role='tool'."""
+    msgs = [
+        Message(role="system", content="SYSTEM"),
+        Message(role="user", content="old user"),
+        Message(role="assistant", content="old resp"),
+        Message(role="user", content="run tool"),
+        Message(role="assistant", content="", tool_calls=[{"id": "c1", "type": "function", "function": {"name": "read", "arguments": "{}"}}]),
+        Message(role="tool", content="tool output 1", tool_call_id="c1"),
+        Message(role="tool", content="tool output 2", tool_call_id="c1"),
+        Message(role="assistant", content="done tool"),
+        Message(role="user", content="final question"),
+    ]
+    # Slicing with keep_recent=3 would land on index 6 (tool output 2) if unconstrained
+    res = compress(msgs, keep_recent=3)
+    # First message after system marker must not be 'tool'
+    first_non_system = res.messages[2]
+    assert first_non_system.role != "tool"
+

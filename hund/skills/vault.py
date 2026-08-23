@@ -1,7 +1,8 @@
-"""Skill Vault — manages active capacity (max 6 slots) vs vaulted skills.
+"""Skill Vault — manages active capacity (max 6 slots) vs vaulted domain skills.
 
-Persists active and vaulted skill states to HundHome/brain/skill_state.json.
-Only active skills are returned for prompt injection and trigger matching.
+Persists active and vaulted domain skill states to HundHome/brain/skill_state.json.
+Constitutional builtins (11 core instincts) are always active in background
+and never consume domain inventory slots.
 """
 from __future__ import annotations
 
@@ -11,20 +12,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from .loader import load_skills
+from .loader import load_builtins, load_domain_skills, load_skills
 from .model import MAX_ACTIVE_SKILLS, Skill
 
-# Mandatory baseline security skills that must remain active by default
-DEFAULT_ACTIVE_SKILLS = [
-    "shell-command-safety",
-    "file-operations",
-    "git-safety",
-    "external-content-safety",
-    "systematic-debugging",
-    "environment-profiling",
-]
+# Default domain skills active on fresh install
+DEFAULT_ACTIVE_SKILLS: list[str] = []
 
-# Security skills that cannot be parked without explicit force override
+# Legacy security skills (kept as constant for safety compatibility)
 MANDATORY_SECURITY_SKILLS = frozenset({
     "shell-command-safety",
     "file-operations",
@@ -73,23 +67,16 @@ class SkillVault:
         )
 
     def _sync_state(self) -> None:
-        all_skills = load_skills(self.home)
-        all_names = [s.name for s in all_skills]
+        domain_skills = load_domain_skills(self.home)
+        domain_names = [s.name for s in domain_skills]
         raw = self._load_raw_state()
 
-        if not raw:
-            # First initialization: 6 default active skills, rest vaulted
-            active = [name for name in DEFAULT_ACTIVE_SKILLS if name in all_names][:self.max_active]
-            vaulted = [name for name in all_names if name not in active]
-            raw = {"active": active, "vaulted": vaulted}
-            self._save_raw_state(raw)
-            return
+        # Clean legacy builtins from state file if present
+        active = [name for name in raw.get("active", []) if name in domain_names]
+        vaulted = [name for name in raw.get("vaulted", []) if name in domain_names]
 
-        active = [name for name in raw.get("active", []) if name in all_names]
-        vaulted = [name for name in raw.get("vaulted", []) if name in all_names]
-
-        # Categorize any newly added skills
-        for name in all_names:
+        # Categorize any newly added domain skills
+        for name in domain_names:
             if name not in active and name not in vaulted:
                 if len(active) < self.max_active:
                     active.append(name)
@@ -105,25 +92,35 @@ class SkillVault:
         raw = {"active": active, "vaulted": vaulted}
         self._save_raw_state(raw)
 
-    def get_all_skills(self) -> list[Skill]:
-        """Return all skills with status mapped to active vs vaulted."""
-        all_skills = load_skills(self.home)
+    def get_core_skills(self) -> list[Skill]:
+        """Return the 11 constitutional core instincts."""
+        return load_builtins()
+
+    def get_domain_skills(self) -> list[Skill]:
+        """Return all user/domain skills mapped with active vs vaulted status."""
+        domain_skills = load_domain_skills(self.home)
         raw = self._load_raw_state()
         active_set = set(raw.get("active", []))
 
         result = []
-        for s in all_skills:
+        for s in domain_skills:
             if s.name in active_set:
                 result.append(replace(s, status="active"))
             else:
                 result.append(replace(s, status="vaulted"))
         return result
 
+    def get_all_skills(self) -> list[Skill]:
+        """Return domain skills with status mapped."""
+        return self.get_domain_skills()
+
     def get_active_skills(self) -> list[Skill]:
-        return [s for s in self.get_all_skills() if s.status == "active"]
+        """Return active domain skills (0/6 on fresh install)."""
+        return [s for s in self.get_domain_skills() if s.status == "active"]
 
     def list_vaulted(self) -> list[Skill]:
-        return [s for s in self.get_all_skills() if s.status == "vaulted"]
+        """Return vaulted domain skills."""
+        return [s for s in self.get_domain_skills() if s.status == "vaulted"]
 
     def equip(self, name: str) -> tuple[bool, str]:
         raw = self._load_raw_state()
@@ -132,10 +129,10 @@ class SkillVault:
         all_names = set(active) | set(vaulted)
 
         if name not in all_names:
-            return False, f"Skill '{name}' not found."
+            return False, f"Domain skill '{name}' not found in vault."
 
         if name in active:
-            return False, f"Skill '{name}' is already equipped ({len(active)}/{self.max_active} active)."
+            return False, f"Domain skill '{name}' is already equipped ({len(active)}/{self.max_active} active)."
 
         if len(active) >= self.max_active:
             return False, f"Active skill capacity reached ({len(active)}/{self.max_active}). Park or swap a skill first."
@@ -154,13 +151,10 @@ class SkillVault:
         all_names = set(active) | set(vaulted)
 
         if name not in all_names:
-            return False, f"Skill '{name}' not found."
+            return False, f"Domain skill '{name}' not found."
 
         if name in vaulted:
-            return False, f"Skill '{name}' is already in the vault."
-
-        if name in MANDATORY_SECURITY_SKILLS and not force:
-            return False, f"Security skill '{name}' cannot be parked (mandatory runtime invariant)."
+            return False, f"Domain skill '{name}' is already in the vault."
 
         active.remove(name)
         if name not in vaulted:
@@ -175,15 +169,12 @@ class SkillVault:
         vaulted = raw.get("vaulted", [])
 
         if old_name not in active:
-            return False, f"Skill '{old_name}' is not currently equipped."
+            return False, f"Domain skill '{old_name}' is not currently equipped."
 
         if new_name not in vaulted:
             if new_name in active:
-                return False, f"Skill '{new_name}' is already equipped."
-            return False, f"Skill '{new_name}' not found in vault."
-
-        if old_name in MANDATORY_SECURITY_SKILLS:
-            return False, f"Security skill '{old_name}' cannot be parked (mandatory runtime invariant)."
+                return False, f"Domain skill '{new_name}' is already equipped."
+            return False, f"Domain skill '{new_name}' not found in vault."
 
         active.remove(old_name)
         vaulted.remove(new_name)
@@ -193,3 +184,4 @@ class SkillVault:
 
         self._save_raw_state({"active": active, "vaulted": vaulted})
         return True, f"Swapped '{old_name}' for '{new_name}'."
+

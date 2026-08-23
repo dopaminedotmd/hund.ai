@@ -10,7 +10,7 @@ from hund.config import HundConfig
 from hund.ui.commands import CommandContext, dispatch_command
 
 
-def _ctx(session_id=None, cfg=None, theme_name="default") -> CommandContext:
+def _ctx(session_id=None, cfg=None, theme_name="bone") -> CommandContext:
     console = Console(force_terminal=False, width=120, file=StringIO())
     rt = types.SimpleNamespace(
         skills=[], profile=None, session_id="x",
@@ -87,25 +87,51 @@ def test_config_set_bool_parses(monkeypatch) -> None:
 # -- /theme ----------------------------------------------------------------
 
 def test_theme_list_shows_options() -> None:
-    ctx = _ctx()
+    ctx = _ctx(theme_name="bone")
     dispatch_command("/theme", ctx)
     out = ctx.console.file.getvalue()
-    assert "default" in out
-    assert "minimal" in out
+    assert "bone" in out
+    assert "nord" in out
+    assert "synthwave" in out
 
 
 def test_theme_set_known() -> None:
-    ctx = _ctx()
-    dispatch_command("/theme dark", ctx)
-    assert ctx.state.theme_name == "dark"
-    assert "dark" in ctx.console.file.getvalue()
+    ctx = _ctx(theme_name="bone")
+    dispatch_command("/theme nord", ctx)
+    assert ctx.state.theme_name == "nord"
+    assert "nord" in ctx.console.file.getvalue()
 
 
 def test_theme_set_unknown_errors() -> None:
-    ctx = _ctx()
+    ctx = _ctx(theme_name="bone")
     dispatch_command("/theme neon", ctx)
-    assert ctx.state.theme_name == "default"
+    assert ctx.state.theme_name == "bone"
     assert "unknown theme" in ctx.console.file.getvalue().lower()
+
+
+def test_theme_persistence_reloaded(tmp_path) -> None:
+    from hund.config import HundConfig
+    from hund.ui import theme
+    cfg_file = tmp_path / "config.json"
+    cfg = HundConfig(theme="bone")
+    cfg.save(cfg_file)
+
+    loaded = HundConfig.load(cfg_file)
+    assert loaded.theme == "bone"
+
+    # Save new theme
+    loaded.theme = "synthwave"
+    loaded.save(cfg_file)
+
+    reloaded = HundConfig.load(cfg_file)
+    assert reloaded.theme == "synthwave"
+    assert theme.get_pygments_theme(reloaded.theme) == "dracula"
+    assert theme.get_skin("nord")["pygments"] == "nord"
+    assert "thinking" in theme.SEMANTIC
+    assert "learning" in theme.SEMANTIC
+    assert "add" in theme.SEMANTIC
+    assert "del" in theme.SEMANTIC
+    assert "mascot" in theme.SEMANTIC
 
 
 # -- /domains --------------------------------------------------------------

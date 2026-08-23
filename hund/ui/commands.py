@@ -13,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from ..agent import sessions as S
-from ..config import HundConfig
+from ..config import HundConfig, KNOWN_MODELS
 from ..domains import confidence, detector
 from .. import memory
 from ..stats import compute_all, compute_velocity
@@ -103,6 +103,27 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
     subcmd = args[0].lower() if args else "active"
 
 
+    if subcmd in ("core", "instincts", "builtins"):
+        from ..skills.loader import _builtins_dir, _read_skill_file
+        bdir = _builtins_dir()
+        lines: list[str] = []
+        if bdir.exists():
+            for f in sorted(bdir.glob("*.json")):
+                sk = _read_skill_file(f)
+                if sk:
+                    lines.append(f"[bold]{sk.name}[/bold] [dim]({sk.domain})[/dim] [core instinct]")
+                    if sk.when_to_use:
+                        lines.append(f"  [dim]{sk.when_to_use}[/dim]")
+        card = theme.boxify(
+            f"CORE INSTINCTS ({len(lines)//2} constitutional skills)",
+            lines,
+            width=70,
+            border_style="cyan",
+            title_style="bold cyan",
+        )
+        ctx.console.print(card)
+        return
+
     if subcmd in ("vault", "vaulted", "list-vault"):
         vaulted = vault.list_vaulted()
         lines: list[str] = []
@@ -163,18 +184,24 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
 
     # Default: show active skills
     active = vault.get_active_skills()
-    if not active:
-        card = theme.boxify("ACTIVE SKILLS", ["(no active skills)"], width=70, border_style="cyan", title_style="bold cyan")
-        ctx.console.print(card)
-        return
-
     lines = []
-    for s in active:
-        lines.append(
-            f"[bold]{s.name}[/bold] [dim]({s.domain})[/dim] [active] safety={s.safety_level}"
-        )
-        if s.when_to_use:
-            lines.append(f"  [dim]{s.when_to_use}[/dim]")
+    if not active:
+        lines.append("[dim](no active domain skills equipped)[/dim]")
+    else:
+        for s in active:
+            lines.append(
+                f"[bold]{s.name}[/bold] [dim]({s.domain})[/dim] [active] safety={s.safety_level}"
+            )
+            if s.when_to_use:
+                lines.append(f"  [dim]{s.when_to_use}[/dim]")
+
+    lines.append("")
+    core_count = len(vault.get_core_skills())
+    lines.append(f"[dim]• {core_count} core constitutional instincts active in background (/skills core)[/dim]")
+    vaulted_count = len(vault.list_vaulted())
+    if vaulted_count > 0:
+        lines.append(f"[dim]• {vaulted_count} additional skills available in vault (/skills vault)[/dim]")
+
     card = theme.boxify(
         f"EQUIPPED SKILLS [{len(active)}/{vault.max_active} active]",
         lines,
@@ -184,6 +211,35 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
     )
     ctx.console.print(card)
 
+
+def cmd_lessons(ctx: CommandContext, args: list[str]) -> None:
+    """ /lessons            view accumulated lessons learned from errors & corrections """
+    try:
+        from ..feedback.store import FeedbackStore
+        store = FeedbackStore()
+        ws = getattr(ctx.rt, "workspace", None) or "."
+        domain = getattr(ctx.rt, "domain_hint", None) or "general"
+        lessons = store.query_top_lessons(str(ws), domain, limit=10)
+        store.close()
+    except Exception as e:
+        ctx.console.print(f"[red]could not read lessons: {e}[/red]")
+        return
+
+    if not lessons:
+        card = theme.boxify("LEARNED LESSONS", ["(no lessons accumulated yet for this workspace)"], width=70, border_style="cyan", title_style="bold cyan")
+        ctx.console.print(card)
+        return
+
+    lines = []
+    for l in lessons:
+        cat = l.get("category", "info")
+        conf = l.get("confidence", 0.5)
+        seen = l.get("seen_count", 1)
+        text = l.get("lesson_text", "")
+        lines.append(f"[bold cyan][{cat}][/bold cyan] (seen: {seen}x, conf: {conf:.2f})")
+        lines.append(f"  {text}")
+    card = theme.boxify(f"LEARNED LESSONS ({len(lessons)} active)", lines, width=70, border_style="cyan", title_style="bold cyan")
+    ctx.console.print(card)
 
 
 def cmd_profile(ctx: CommandContext, args: list[str]) -> None:
@@ -408,9 +464,25 @@ def cmd_config(ctx: CommandContext, args: list[str]) -> None:
 
 def cmd_theme(ctx: CommandContext, args: list[str]) -> None:
     if args:
-        name = args[0]
-        if name in theme.THEMES:
+        name = args[0].lower().strip()
+        if name in theme.SKINS:
             ctx.state.theme_name = name
+            # Persist skin selection to HundConfig
+            cfg = getattr(ctx.rt, "cfg", None) or HundConfig.load()
+            cfg.theme = name
+            try:
+                cfg.save()
+            except Exception:
+                pass
+            # Dynamically update active Prompt Toolkit application style if running
+            try:
+                from prompt_toolkit.application.current import get_app
+                app = get_app()
+                if app is not None:
+                    app.style = theme.make_pt_style(name)
+                    app.invalidate()
+            except Exception:
+                pass
             ctx.console.print(f"[green][OK][/green] theme: {name}")
         else:
             ctx.console.print(
@@ -512,6 +584,8 @@ def cmd_model(ctx: CommandContext, args: list[str]) -> None:
         return
     ctx.console.print(f"  model:      [bold]{cfg.provider.model}[/bold]")
     ctx.console.print(f"  base_url:   {cfg.provider.base_url}")
+    ctx.console.print(f"  available:  [dim]{', '.join(KNOWN_MODELS)}[/dim]")
+    ctx.console.print("  switch:     /model deepseek-v4-flash   (flash = cheaper)")
 
 
 def cmd_usage(ctx: CommandContext, args: list[str]) -> None:
@@ -629,6 +703,8 @@ COMMANDS = {
     "progress": cmd_progress,
     "mascot": cmd_mascot,
     "memory": cmd_memory,
+    "lessons": cmd_lessons,
+    "feedback": cmd_lessons,
     "notifications": cmd_notifications,
     "clear": cmd_clear,
     "restore": cmd_restore,
@@ -643,7 +719,8 @@ HELP_ROWS = [
     ("/compress", "compress context to save tokens"),
     ("/diff", "view working tree modifications"),
     ("/undo", "file backup & restore information"),
-    ("/skills", "declarative skills"),
+    ("/skills [vault|core|equip|swap]", "inspect & manage equipped skills"),
+    ("/lessons", "view learned lessons & feedback"),
     ("/profile", "user profile + environment"),
     ("/tools", "available tools + risk levels"),
     ("/history [search <q> | <id>]", "session messages / search"),

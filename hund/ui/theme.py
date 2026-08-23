@@ -6,16 +6,217 @@ and strict zero-emoji invariants.
 """
 from __future__ import annotations
 
+import os
 import re
+import sys
+from typing import Any
+
+from prompt_toolkit.styles import Style
+
+
+def supports_truecolor() -> bool:
+    """Check if the terminal environment supports 24-bit truecolor (hex colors)."""
+    if "NO_COLOR" in os.environ:
+        return False
+    colorterm = os.environ.get("COLORTERM", "").lower()
+    if colorterm in ("truecolor", "24bit"):
+        return True
+    term_program = os.environ.get("TERM_PROGRAM", "").lower()
+    if term_program in ("iterm.app", "wezterm", "vscode", "alacritty", "ghostty", "hyper", "mintty"):
+        return True
+    if os.environ.get("WT_SESSION"):  # Windows Terminal
+        return True
+    if sys.platform == "win32":
+        return True
+    return False
+
+
+# -- 3 Named Skins (Bone / Nord / Synthwave) -------------------------------
+
+SKINS: dict[str, dict[str, Any]] = {
+    "bone": {
+        "name": "bone",
+        "pygments": "one-dark",
+        "tokens": {
+            "primary": "#E3E3E4",
+            "secondary": "#6E7380",
+            "accent": "#4EBCD5",
+            "user": "#50FA7B",
+            "success": "#50FA7B",
+            "warning": "#F1FA8C",
+            "danger": "#FF5555",
+            "tool": "#C792EA",
+            "thinking": "#7DC8D8",
+            "learning": "#E6C07B",
+            "add": "#50FA7B",
+            "del": "#FF5555",
+            "mascot": "#E3E3E4",
+        },
+        "ansi": {
+            "primary": "ansiwhite",
+            "secondary": "ansibrightblack",
+            "accent": "ansicyan",
+            "user": "ansigreen",
+            "success": "ansigreen",
+            "warning": "ansibrightyellow",
+            "danger": "ansired",
+            "tool": "ansimagenta",
+            "thinking": "ansibrightcyan",
+            "learning": "ansiyellow",
+            "add": "ansigreen",
+            "del": "ansired",
+            "mascot": "ansiwhite",
+        },
+    },
+    "nord": {
+        "name": "nord",
+        "pygments": "nord",
+        "tokens": {
+            "primary": "#D8DEE9",
+            "secondary": "#4C566A",
+            "accent": "#88C0D0",
+            "user": "#A3BE8C",
+            "success": "#A3BE8C",
+            "warning": "#EBCB8B",
+            "danger": "#BF616A",
+            "tool": "#B48EAD",
+            "thinking": "#81A1C1",
+            "learning": "#EBCB8B",
+            "add": "#A3BE8C",
+            "del": "#BF616A",
+            "mascot": "#D8DEE9",
+        },
+        "ansi": {
+            "primary": "ansiwhite",
+            "secondary": "ansibrightblack",
+            "accent": "ansicyan",
+            "user": "ansigreen",
+            "success": "ansigreen",
+            "warning": "ansiyellow",
+            "danger": "ansired",
+            "tool": "ansimagenta",
+            "thinking": "ansibrightcyan",
+            "learning": "ansiyellow",
+            "add": "ansigreen",
+            "del": "ansired",
+            "mascot": "ansiwhite",
+        },
+    },
+    "synthwave": {
+        "name": "synthwave",
+        "pygments": "dracula",
+        "tokens": {
+            "primary": "#E0DEF4",
+            "secondary": "#6E6A86",
+            "accent": "#8BE9FD",
+            "user": "#A6E3A1",
+            "success": "#A6E3A1",
+            "warning": "#F9E2AF",
+            "danger": "#F38BA8",
+            "tool": "#C4A7E7",
+            "thinking": "#F5E0DC",
+            "learning": "#F9E2AF",
+            "add": "#A6E3A1",
+            "del": "#F38BA8",
+            "mascot": "#E0DEF4",
+        },
+        "ansi": {
+            "primary": "ansiwhite",
+            "secondary": "ansibrightblack",
+            "accent": "ansibrightcyan",
+            "user": "ansibrightgreen",
+            "success": "ansibrightgreen",
+            "warning": "ansiyellow",
+            "danger": "ansibrightred",
+            "tool": "ansibrightmagenta",
+            "thinking": "ansiwhite",
+            "learning": "ansiyellow",
+            "add": "ansibrightgreen",
+            "del": "ansibrightred",
+            "mascot": "ansiwhite",
+        },
+    },
+}
+
+DEFAULT_SKIN = "bone"
+DEFAULT_THEME = DEFAULT_SKIN
+THEMES = SKINS  # Alias for backward compatibility
+
+PYGMENTS_THEMES: dict[str, str] = {
+    "bone": "one-dark",
+    "nord": "nord",
+    "synthwave": "dracula",
+}
+
+
+def get_pygments_theme(skin_name: str | None = None) -> str:
+    """Get the corresponding Pygments syntax highlighting theme name for a skin."""
+    return PYGMENTS_THEMES.get((skin_name or DEFAULT_SKIN).lower(), "one-dark")
+
+
+def get_skin(name: str | None = None) -> dict[str, Any]:
+    """Retrieve skin definition by name (defaults to bone)."""
+    return SKINS.get((name or DEFAULT_SKIN).lower(), SKINS[DEFAULT_SKIN])
+
+
+def get_theme(name: str | None = None) -> dict[str, Any]:
+    """Backward compatibility alias for get_skin."""
+    return get_skin(name)
+
+
+def theme_names() -> list[str]:
+    """List all available skin names."""
+    return list(SKINS)
+
+
+def make_pt_style(skin_name: str | None = None) -> Style:
+    """Construct a prompt_toolkit Style object tailored for the specified skin."""
+    skin = get_skin(skin_name)
+    tokens = skin["tokens"]
+    return Style.from_dict(
+        {
+            "primary": tokens["primary"],
+            "secondary": tokens["secondary"],
+            "accent": tokens["accent"],
+            "success": tokens["success"],
+            "danger": tokens["danger"],
+            "warning": tokens["warning"],
+            "tool": tokens["tool"],
+            "thinking": tokens["thinking"],
+            "learning": tokens["learning"],
+            "add": tokens["add"],
+            "del": tokens["del"],
+            "mascot": tokens["mascot"],
+            "user": tokens["user"],
+            "prompt": "bold " + tokens["user"],
+            "status": tokens["secondary"],
+            "header": "bold " + tokens["accent"],
+            "number": "bold " + tokens["accent"],
+            "bullet": "bold " + tokens["accent"],
+            "label": "bold " + tokens["primary"],
+            "code": tokens["tool"],
+            "completion-menu": "bg:ansiblack fg:" + tokens["primary"],
+            "completion-menu.completion": "bg:ansiblack fg:" + tokens["accent"],
+            "completion-menu.completion.current": "bold bg:ansibrightblack fg:" + tokens["accent"],
+            "completion-menu.meta.completion": "bg:ansiblack fg:" + tokens["secondary"],
+            "completion-menu.meta.completion.current": "bg:ansibrightblack fg:" + tokens["primary"],
+            "scrollbar.background": "bg:ansiblack",
+            "scrollbar.button": "bg:" + tokens["secondary"],
+        }
+    )
+
 
 # -- Core Design Tokens (Hex + 16-ANSI fallback) ---------------------------
 COLOR_TOKENS: dict[str, dict[str, str]] = {
-    "text":   {"hex": "#E3E3E4", "rich": "white",          "pt": "ansiwhite"},
-    "dim":    {"hex": "#6E7380", "rich": "bright_black",   "pt": "ansibrightblack"},
-    "cyan":   {"hex": "#4EBCD5", "rich": "cyan",           "pt": "ansicyan"},
-    "green":  {"hex": "#50FA7B", "rich": "green",          "pt": "ansigreen"},
-    "yellow": {"hex": "#F1FA8C", "rich": "bright_yellow",   "pt": "ansibrightyellow"},
-    "red":    {"hex": "#FF5555", "rich": "red",            "pt": "ansired"},
+    "text":     {"hex": "#E3E3E4", "rich": "white",          "pt": "ansiwhite"},
+    "dim":      {"hex": "#6E7380", "rich": "bright_black",   "pt": "ansibrightblack"},
+    "cyan":     {"hex": "#4EBCD5", "rich": "cyan",           "pt": "ansicyan"},
+    "green":    {"hex": "#50FA7B", "rich": "green",          "pt": "ansigreen"},
+    "yellow":   {"hex": "#F1FA8C", "rich": "bright_yellow",   "pt": "ansibrightyellow"},
+    "red":      {"hex": "#FF5555", "rich": "red",            "pt": "ansired"},
+    "thinking": {"hex": "#7DC8D8", "rich": "bright_cyan",    "pt": "ansibrightcyan"},
+    "learning": {"hex": "#E6C07B", "rich": "yellow",         "pt": "ansiyellow"},
+    "tool":     {"hex": "#C792EA", "rich": "magenta",        "pt": "ansimagenta"},
 }
 
 HUND_TEXT = "#E3E3E4"    # Primary bone white text
@@ -38,6 +239,11 @@ SEMANTIC: dict[str, str] = {
     "warning": HUND_YELLOW,    # permissions, warnings
     "tool": "#C792EA",         # tool calls (purple)
     "user": HUND_GREEN,        # user input
+    "thinking": "#7DC8D8",     # thinking phrase
+    "learning": "#E6C07B",     # reflection & XP
+    "add": "#50FA7B",          # diff additions
+    "del": "#FF5555",          # diff deletions
+    "mascot": "#E3E3E4",       # mascot neutral color
 }
 
 EMDASH = "—"  # Tier placeholder when unranked
@@ -82,7 +288,6 @@ HUND_ASCII_COMPACT = (
     "░░░░░░░░░░░░░░░░\n"
     "  ░░░░░░  ░░  ░░"
 )
-
 
 
 STAT_ABBR: dict[str, str] = {
@@ -147,22 +352,3 @@ def boxify(
     bottom = f"[{border_style}]└{'─' * inner_width}┘[/{border_style}]"
     lines.append(bottom)
     return "\n".join(lines)
-
-
-# -- Themes -----------------------------------------------------------------
-
-THEMES: dict[str, dict[str, str]] = {
-    "default": {"user_prefix_rich": "bold green", "user_prefix_pt": "ansigreen"},
-    "dark":    {"user_prefix_rich": "bold cyan",  "user_prefix_pt": "ansicyan"},
-    "light":   {"user_prefix_rich": "bold blue",  "user_prefix_pt": "ansiblue"},
-    "minimal": {"user_prefix_rich": "green",      "user_prefix_pt": "ansigreen"},
-}
-DEFAULT_THEME = "default"
-
-
-def theme_names() -> list[str]:
-    return list(THEMES)
-
-
-def get_theme(name: str | None = None) -> dict[str, str]:
-    return THEMES.get(name or DEFAULT_THEME, THEMES[DEFAULT_THEME])

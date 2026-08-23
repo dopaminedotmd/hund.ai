@@ -76,12 +76,18 @@ class OpenAICompatibleClient(ProviderClient):
         self._require_key()
         url = f"{self.base_url}/chat/completions"
         t0 = time.perf_counter()
-        with httpx.Client(timeout=self.timeout) as client:
-            resp = client.post(url, json=self._payload(messages, tools, model, False), headers=self._headers())
-            latency_ms = int((time.perf_counter() - t0) * 1000)
-            if resp.status_code >= 400:
-                raise RuntimeError(self._err_msg(resp))
-            data = resp.json()
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                resp = client.post(url, json=self._payload(messages, tools, model, False), headers=self._headers())
+                latency_ms = int((time.perf_counter() - t0) * 1000)
+                if resp.status_code >= 400:
+                    raise RuntimeError(self._err_msg(resp))
+                data = resp.json()
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"provider request timeout: {e}") from e
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"provider HTTP error: {e}") from e
         choice = data["choices"][0]
         msg = choice.get("message", {})
         usage = data.get("usage", {}) or {}
@@ -123,51 +129,60 @@ class OpenAICompatibleClient(ProviderClient):
         pt = ct = tt = 0
         t0 = time.perf_counter()
 
-        with httpx.Client(timeout=self.timeout) as client:
-            with client.stream(
-                "POST",
-                url,
-                json=self._payload(messages, tools, model, True),
-                headers=self._headers(),
-            ) as resp:
-                if resp.status_code >= 400:
-                    body = resp.read().decode("utf-8", "replace")
-                    raise RuntimeError(f"Provider HTTP {resp.status_code} — {body[:200]}")
-                for line in resp.iter_lines():
-                    if not line or line.startswith(":"):  # keepalive-kommentar
-                        continue
-                    if not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue
-                    choices = chunk.get("choices") or []
-                    if choices:
-                        delta = choices[0].get("delta", {}) or {}
-                        if delta.get("content"):
-                            yield delta["content"]
-                        for tc in delta.get("tool_calls") or []:
-                            idx = tc.get("index", 0)
-                            acc = tool_acc.setdefault(
-                                idx,
-                                {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
-                            )
-                            if tc.get("id"):
-                                acc["id"] = tc["id"]
-                            fn = tc.get("function", {}) or {}
-                            if fn.get("name"):
-                                acc["function"]["name"] += fn["name"]
-                            if fn.get("arguments") is not None:
-                                acc["function"]["arguments"] += fn["arguments"]
-                        if choices[0].get("finish_reason"):
-                            finish = choices[0]["finish_reason"]
-                    u = chunk.get("usage")
-                    if u:
-                        pt, ct, tt = u.get("prompt_tokens", 0), u.get("completion_tokens", 0), u.get("total_tokens", 0)
+        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        try:
+            with httpx.Client(timeout=timeout) as client:
+                with client.stream(
+                    "POST",
+                    url,
+                    json=self._payload(messages, tools, model, True),
+                    headers=self._headers(),
+                ) as resp:
+                    if resp.status_code >= 400:
+                        body = resp.read().decode("utf-8", "replace")
+                        raise RuntimeError(f"Provider HTTP {resp.status_code} — {body[:200]}")
+                    deadline = time.monotonic() + self.timeout
+                    for line in resp.iter_lines():
+                        if time.monotonic() > deadline:
+                            raise RuntimeError(f"provider stream timeout after {self.timeout:.0f}s")
+                        if not line or line.startswith(":"):  # keepalive-kommentar
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+                        choices = chunk.get("choices") or []
+                        if choices:
+                            delta = choices[0].get("delta", {}) or {}
+                            if delta.get("content"):
+                                yield delta["content"]
+                            for tc in delta.get("tool_calls") or []:
+                                idx = tc.get("index", 0)
+                                acc = tool_acc.setdefault(
+                                    idx,
+                                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                                )
+                                if tc.get("id"):
+                                    acc["id"] = tc["id"]
+                                fn = tc.get("function", {}) or {}
+                                if fn.get("name"):
+                                    acc["function"]["name"] += fn["name"]
+                                if fn.get("arguments") is not None:
+                                    acc["function"]["arguments"] += fn["arguments"]
+                            if choices[0].get("finish_reason"):
+                                finish = choices[0]["finish_reason"]
+                        u = chunk.get("usage")
+                        if u:
+                            pt, ct, tt = u.get("prompt_tokens", 0), u.get("completion_tokens", 0), u.get("total_tokens", 0)
+        except httpx.TimeoutException as e:
+            raise RuntimeError(f"provider stream timeout: {e}") from e
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"provider HTTP error: {e}") from e
 
         self.last_result = CompletionResult(
             text="",

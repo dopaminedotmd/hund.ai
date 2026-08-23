@@ -5,13 +5,20 @@ Körningen nås via entrypoint `hund = "hund.main:app"` i pyproject.toml.
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-# Windows console defaultar till cp1252 → kraschar på å/ä/ö/Σ i piped output.
-# Tvinga UTF-8 tidigt (review flaggade Windows-encoding som verklig risk).
+# Force UTF-8 console output and input code pages on Windows (65001)
+if sys.platform == "win32":
+    try:
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        ctypes.windll.kernel32.SetConsoleCP(65001)
+    except Exception:
+        pass
+
 for _stream in (sys.stdout, sys.stderr):
     if hasattr(_stream, "reconfigure"):
         try:

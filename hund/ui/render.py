@@ -82,8 +82,11 @@ def mascot() -> str:
 
 
 def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
-    """Fastfetch-style two-column startup banner with ASCII art and system telemetry."""
+    """Fastfetch-style two-column startup banner with skill bars and system telemetry."""
     from ..doctor import profile_environment
+    from ..stats import compute_all
+    from ..skills.vault import SkillVault
+
     profile = getattr(rt, "profile", None)
     if profile is None:
         try:
@@ -115,9 +118,44 @@ def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
     cfg = getattr(rt, "cfg", None)
     provider_name = getattr(getattr(cfg, "provider", None), "name", "DeepSeek")
     model_name = getattr(getattr(cfg, "provider", None), "model", "deepseek-v4-pro")
-    slots_str = "6/6 active skills equipped · sqlite ok"
 
-    mascot_lines = theme.HUND_ASCII_COMPACT.splitlines()
+    try:
+        vault = SkillVault()
+        active_skills = vault.get_active_skills()
+        core_skills = vault.get_core_skills()
+        slots_str = f"{len(active_skills)}/{vault.max_active} active skills · {len(core_skills)} core"
+    except Exception:
+        active_skills = []
+        core_skills = []
+        slots_str = "0/6 active skills"
+
+    try:
+        stats = compute_all()
+    except Exception:
+        stats = {}
+
+    import re
+
+    skill_lines = []
+    for key in theme.STAT_ORDER:
+        abbr = theme.STAT_ABBR[key]
+        s = stats.get(key, {})
+        tier = s.get("tier") or theme.EMDASH
+        tier_short = (tier[:4]) if tier else theme.EMDASH
+        progress = int(s.get("progress", 0) or 0)
+        bar = _bar(progress, width=8)
+        color = theme.tier_rich(tier)
+        skill_lines.append(f"[bold]{abbr}[/bold] [{color}]{bar}[/{color}] [dim]{tier_short:<4}[/dim]")
+
+    skill_lines.append("[dim]───────────────────[/dim]")
+    if active_skills:
+        skill_lines.append(f"[bold cyan]SKILLS[/bold cyan] [dim]({len(active_skills)}/6 active)[/dim]")
+        for s in active_skills[:2]:
+            skill_lines.append(f"[dim]• {s.name[:17]}[/dim]")
+    else:
+        skill_lines.append(f"[bold cyan]SKILLS[/bold cyan] [dim](0/6 active)[/dim]")
+        skill_lines.append(f"[dim]• {len(core_skills)} core instincts[/dim]")
+
     info_lines = [
         f"OS       : {os_str[:38]}",
         f"HOST     : {host_str[:38]}",
@@ -130,18 +168,18 @@ def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
     ]
 
     combined = []
-    for i in range(max(len(mascot_lines), len(info_lines))):
-        left = mascot_lines[i] if i < len(mascot_lines) else "                   "
+    COL_WIDTH = 20
+    for i in range(max(len(skill_lines), len(info_lines))):
+        left = skill_lines[i] if i < len(skill_lines) else ""
         right = info_lines[i] if i < len(info_lines) else ""
-        combined.append(f"{left:<21}  [dim]{right}[/dim]")
+        visible_len = len(re.sub(r"\[.*?\]", "", left))
+        pad = " " * max(COL_WIDTH - visible_len, 1)
+        combined.append(f"{left}{pad}│ [dim]{right}[/dim]")
 
     card = theme.boxify("HUND AI [v0.1.0]", combined, width=74, border_style="dim", title_style="bold cyan")
     console.print(card)
 
-    console.print("[bold cyan]hund[/bold cyan] is awake. machine feels stable.")
-    domain = getattr(rt, "domain_hint", "?")
-    sid = getattr(rt, "session_id", "??????")
-    console.print(f"[dim]session #{sid[:6]} · {domain}[/dim]\n")
+    console.print("[bold cyan]hund[/bold cyan] is awake. machine feels stable.\n")
 
 
 def render_diff(console: Console, old: str, new: str, filename: str = "") -> None:
@@ -297,3 +335,89 @@ def render_character_card(
 
     card = theme.boxify("CHARACTER SHEET: HUND", body_lines, width=72, border_style="cyan", title_style="bold white")
     console.print(card)
+
+
+# -- Response Box Side Rails & Deterministic Word-Wrap ----------------------
+
+import textwrap
+
+
+def wrap_content(text: str, content_width: int) -> list[str]:
+    """Deterministically word-wrap text to content_width using stdlib textwrap.
+
+    Empty lines are preserved. Long unbreakable words (longer than content_width)
+    overflow that single line only (break_long_words=False).
+    """
+    if not text:
+        return []
+    cw = max(content_width, 1)
+    wrapped: list[str] = []
+    for raw_line in text.split("\n"):
+        if not raw_line:
+            wrapped.append("")
+        else:
+            lines = textwrap.wrap(
+                raw_line,
+                width=cw,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            if not lines:
+                wrapped.append("")
+            else:
+                wrapped.extend(lines)
+    return wrapped
+
+
+def box_top(width: int = 80) -> str:
+    """Render top border for assistant response box."""
+    w = max(width, 12)
+    return f"┌─ hund {'─' * max(w - 9, 2)}┐"
+
+
+def box_bottom(width: int = 80, meta: str | None = None) -> str:
+    """Render bottom border for assistant response box with optional right-aligned meta."""
+    w = max(width, 12)
+    if meta is None or not str(meta).strip():
+        return f"└{'─' * max(w - 2, 2)}┘"
+    meta_str = str(meta).strip()
+    dashes = max(w - len(meta_str) - 4, 2)
+    return f"└{'─' * dashes} {meta_str} ┘"
+
+
+def render_response_box(
+    text: str,
+    terminal_width: int = 80,
+    meta: str | None = None,
+) -> str:
+    """Render response text inside a geometric box with '│ ' prefix and ' │' suffix rails.
+
+    - Short answers stay compact (rails wrap only as wide as needed, up to terminal_width - 4).
+    - Long answers expand up to full terminal_width with content_width = terminal_width - 4.
+    - Meta is rendered right-aligned in the bottom border (e.g. '└── 2.3s ┘').
+    """
+    max_cw = max(terminal_width - 4, 8)
+    wrapped = wrap_content(text, max_cw)
+
+    if not wrapped:
+        box_w = min(terminal_width, 24)
+        return f"{box_top(box_w)}\n{box_bottom(box_w, meta)}"
+
+    max_line_len = max(len(line) for line in wrapped)
+    meta_len = (len(str(meta).strip()) + 4) if (meta and str(meta).strip()) else 0
+    needed_w = max(max_line_len + 4, 12, meta_len + 4)
+
+    if needed_w >= terminal_width - 4:
+        box_w = terminal_width
+    else:
+        box_w = min(terminal_width, max(needed_w, 20))
+
+    cw = max(box_w - 4, 1)
+    lines = [box_top(box_w)]
+    for line in wrapped:
+        if len(line) <= cw:
+            lines.append(f"│ {line:<{cw}} │")
+        else:
+            lines.append(f"│ {line} │")
+    lines.append(box_bottom(box_w, meta))
+    return "\n".join(lines)

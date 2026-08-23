@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "name": "skill-authoring",
+  "domain": "general",
+  "status": "active",
+  "immutable": true,
+  "triggers": [
+    "skill",
+    "skills",
+    "skapa skill",
+    "bygga skill",
+    "create skill",
+    "author skill",
+    "mastery",
+    "lära dig skill",
+    "skapa en skill",
+    "hur skapar du skills",
+    "how do you create skills"
+  ],
+  "when_to_use": "When authoring, creating, explaining, or inspecting declarative domain skills (brain/skills/<name>.json).",
+  "steps": [
+    "Phase 1 — Specification: Define kebab-case name, target domain, triggers, when_to_use, required tools, and verification checks.",
+    "Phase 2 — Implementation: Draft declarative schema adhering strictly to schema_version 1 with structured steps (Inspection -> Implementation -> Verification) and forbidden_actions (all banned actions included).",
+    "Phase 3 — Persistence & Verification: Save valid JSON directly to 'brain/skills/<name>.json' and verify syntax without elevating permissions or modifying builtins.",
+    "Output Rule: When asked how skills are created, reply in 1-3 concise plain-text lines in third person without dumping raw JSON schemas or decorative boxes."
+  ],
+  "required_tools": [
+    "read_file",
+    "write_file",
+    "search_files"
+  ],
+  "forbidden_actions": [
+    "apply_update",
+    "delete",
+    "elevate_permissions",
+    "modify_tcb",
+    "self_update"
+  ],
+  "safety_level": "confirm_for_write",
+  "verification": [
+    "read_file confirms brain/skills/<name>.json is valid JSON with schema_version 1",
+    "response to creation inquiries is 1-3 concise plain-text lines in third person"
+  ],
+  "examples": []
+}

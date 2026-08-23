@@ -9,7 +9,7 @@ from rich.console import Console
 from hund.ui.commands import CommandContext, dispatch_command
 
 
-def _ctx(theme_name="default", notif=True) -> CommandContext:
+def _ctx(theme_name="bone", notif=True) -> CommandContext:
     console = Console(force_terminal=False, width=120, file=StringIO())
     rt = types.SimpleNamespace(skills=[], profile=None, session_id=None,
                                domain_hint="?", workspace="?", cfg=None)

@@ -490,9 +490,10 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
     turn_id = uuid.uuid4().hex
     _trace_event(engine, session_id, run_id, "run_started", {"model": cfg.provider.model})
     _trace_event(engine, session_id, run_id, "turn_started", {}, turn_id=turn_id)
+    consecutive_tool_errors = 0
+    if sink is not None:
+        sink.thinking()
     for _ in range(MAX_TOOL_ROUNDS):
-        if sink is not None:
-            sink.thinking()
         import time
         MAX_RETRIES = 3
         for attempt in range(MAX_RETRIES + 1):
@@ -509,7 +510,7 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                     else:
                         console.print(chunk, end="", markup=False, highlight=False)
                 break  # lyckades
-            except RuntimeError as e:
+            except (RuntimeError, Exception) as e:
                 msg_str = str(e)
                 if "429" in msg_str and attempt < MAX_RETRIES:
                     delay = 2 ** attempt  # 1, 2, 4 sekunder
@@ -563,6 +564,20 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
             tc_id = tc.get("id") if isinstance(tc, dict) else None
             messages.append(Message(role="tool", content=outcome, tool_call_id=tc_id))
             _session_save(session_id, "tool", outcome, run_id=run_id)
+            if outcome.startswith("[error]"):
+                consecutive_tool_errors += 1
+            else:
+                consecutive_tool_errors = 0
+            if consecutive_tool_errors >= 3:
+                _trace_event(engine, session_id, run_id, "turn_completed", {"error": "repeated_tool_failure"}, turn_id=turn_id)
+                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "repeated_tool_failure"})
+                _feedback_hook(session_id, run_id, str(engine.workspace_root))
+                msg = "repeated tool failure — stopping turn"
+                if sink is not None:
+                    sink.error(f"[red]{msg}[/red]")
+                else:
+                    console.print(f"[red]{msg}[/red]\n")
+                return
     _trace_event(engine, session_id, run_id, "turn_completed", {"error": "max_tool_rounds"}, turn_id=turn_id)
     _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "max_tool_rounds"})
     _feedback_hook(session_id, run_id, str(engine.workspace_root))

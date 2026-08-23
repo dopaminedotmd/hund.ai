@@ -113,8 +113,9 @@ def test_dispatch_terminal_verification_events(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "db_path", lambda: tmp_path / "home" / "hund.db")
     register_defaults(tmp_path)
     class Hooks:
-        def confirm(self, prompt):
-            return True
+        def confirm(self, request):
+            from hund.agent.types import ConfirmVerdict
+            return ConfirmVerdict.APPROVE_ONCE
         def tool_start(self, name, args):
             pass
         def tool_result(self, name, shown):

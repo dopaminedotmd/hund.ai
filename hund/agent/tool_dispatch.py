@@ -17,6 +17,7 @@ from rich.console import Console
 
 from ..tools import registry
 from .safety import PermissionEngine, RiskLevel, Decision
+from .types import ConfirmRequest, ConfirmVerdict
 from ..trace.events import create_event, write_event
 
 class SessionAllowlist:
@@ -129,50 +130,59 @@ def dispatch_tool_call(
         if hooks is not None:
             hooks.blocked(name, decision.reason)
         else:
-            console.print(f"[red]BLOCKERAD[/red] {name} — {decision.reason}")
+            console.print(f"[red]BLOCKED[/red] {name} — {decision.reason}")
         return f"[blocked] {decision.reason}"
 
     if not (decision.risk is RiskLevel.SAFE and auto_approve_safe):
         approved_id = str(uuid.uuid4())
         if noninteractive:
-            reason = f"{decision.risk} kräver godkännande"
+            reason = f"{decision.risk} requires approval"
             _emit("tool_call_declined", {"reason": reason}, risk_level=decision.risk.value, approval_id=approved_id)
             if hooks is not None:
                 hooks.declined(name, reason)
             else:
-                console.print(f"[yellow]NEKAD[/yellow] (noninteractive) {name} {args}")
+                console.print(f"[yellow]DECLINED[/yellow] (noninteractive) {name} {args}")
             return f"[declined: {reason}]"
-        preview = json.dumps(args, ensure_ascii=False)
-        if len(preview) > 200:
-            preview = preview[:200] + "…"
-        prompt = (
-            f"[yellow]{decision.risk.upper()}[/yellow] Hund vill köra "
-            f"[bold]{name}[/bold] {preview} — tillåt? [j/N]"
-        )
+
+        request = ConfirmRequest(tool_name=name, args=args, risk=decision.risk.value)
+
         if hooks is not None:
-            approved = hooks.confirm(prompt)
+            verdict = hooks.confirm(request)
         else:
+            preview = json.dumps(args, ensure_ascii=False)
+            if len(preview) > 200:
+                preview = preview[:200] + "…"
+            prompt = (
+                f"[yellow]{decision.risk.upper()}[/yellow] hund wants to run "
+                f"[bold]{name}[/bold] {preview} — allow? [y/N]"
+            )
             ans = console.input(prompt + " ").strip().lower()
-            approved = ans in {"j", "y", "ja", "yes"}
-        if not approved:
+            if ans in {"y", "yes", "j", "ja"}:
+                verdict = ConfirmVerdict.APPROVE_ONCE
+            else:
+                verdict = ConfirmVerdict.DENY
+
+        if verdict is ConfirmVerdict.DENY:
             _emit("tool_call_declined", {"reason": "user declined"}, risk_level=decision.risk.value, approval_id=approved_id)
             if hooks is not None:
-                hooks.declined(name, "nekad av användare")
+                hooks.declined(name, "declined by user")
             else:
-                console.print("[dim]nekad av användare[/dim]")
+                console.print("[dim]declined by user[/dim]")
             return "[declined by user]"
-        _emit("tool_call_approved", {}, risk_level=decision.risk.value, approval_id=approved_id)
-        # Efter godkannande: erbjud session-allowlist
-        if decision.risk == RiskLevel.CONFIRM:
+
+        if verdict is ConfirmVerdict.EDIT:
+            # TODO(edit): full edit-and-rerun flow is a separate task
+            _emit("tool_call_declined", {"reason": "edit requested"}, risk_level=decision.risk.value, approval_id=approved_id)
             if hooks is not None:
-                allow_all = hooks.confirm("Tillat alla " + name + " i denna session? [j/N/a(lla)]")
+                hooks.declined(name, "edit requested (not yet implemented)")
             else:
-                ans = console.input(
-                    f"[dim]Tillat alla [bold]{name}[/bold] i denna session? [j/N/a(lla)] [/dim]"
-                ).strip().lower()
-                allow_all = ans in {"a", "alla"}
-            if allow_all:
-                _SESSION_ALLOWLIST.allow(session_id, name)
+                console.print("[dim]edit requested — declining for now[/dim]")
+            return "[declined: edit requested]"
+
+        _emit("tool_call_approved", {}, risk_level=decision.risk.value, approval_id=approved_id)
+
+        if verdict is ConfirmVerdict.ALLOW_SESSION and decision.risk == RiskLevel.CONFIRM:
+            _SESSION_ALLOWLIST.allow(session_id, name)
 
     _emit("tool_call_started", args, risk_level=decision.risk.value)
     if hooks is not None:

@@ -3,6 +3,7 @@
   "name": "python-project-inspection",
   "domain": "software-development",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "pytest",
     "pyproject.toml",

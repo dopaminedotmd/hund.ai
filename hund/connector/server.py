@@ -109,7 +109,9 @@ class ConnectorSink:
     def error(self, markup): self.errors.append(markup)
     def blocked(self, name, reason): self.tool_logs.append(f"Blocked tool {name}: {reason}")
     def declined(self, name, reason): self.tool_logs.append(f"Declined tool {name}: {reason}")
-    def confirm(self, prompt): return False
+    def confirm(self, request):
+        from ..agent.types import ConfirmVerdict
+        return ConfirmVerdict.DENY
     def tool_start(self, name, args): self.tool_logs.append(f"Starting tool {name}")
     def tool_result(self, name, result): self.tool_logs.append(f"Tool {name} result: {result}")
 

@@ -36,7 +36,8 @@ def make_handler(workspace: Path) -> dict:
             cwd=str(ws),
             shell=True,
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
         out = (proc.stdout or "") + (proc.stderr or "")

@@ -142,3 +142,40 @@ def test_summaries_returns_compact_lines():
     skills = [_valid_skill(name="s1", triggers=("pytest",))]
     lines = summaries(skills, "kör pytest")
     assert lines == ["[s1] (software-development) när X"]
+
+
+def test_builtin_skills_are_immutable():
+    from hund.skills.loader import load_builtins
+    skills = load_builtins()
+    assert len(skills) >= 11
+    for s in skills:
+        assert s.immutable is True, f"Builtin skill {s.name} should have immutable=True"
+
+
+def test_skill_authoring_specialized_schema_and_rules():
+    skill = get_skill("skill-authoring")
+    assert skill is not None
+    assert skill.immutable is True
+    assert "hur skapar du skills" in skill.triggers
+    assert any("Output Rule" in step or "1-3" in step for step in skill.steps)
+    assert any("1-3" in v for v in skill.verification)
+
+
+def test_file_tool_path_guard_blocks_builtins(tmp_path):
+    from hund.tools.file_tool import make_handlers
+    # Test writing to builtins path
+    handlers = make_handlers(tmp_path)
+    builtins_dir = Path(__file__).resolve().parent.parent / "hund" / "skills" / "builtins"
+    target = str((builtins_dir / "test-hack.json").resolve())
+    
+    # If target is outside tmp_path workspace, make_handlers throws ValueError via _resolve, which is also protected.
+    # If workspace is root or encompasses builtins:
+    ws_handlers = make_handlers(builtins_dir.parent.parent.parent)
+    rel_path = str((builtins_dir / "skill-authoring.json").relative_to(builtins_dir.parent.parent.parent))
+    res = ws_handlers["write_file"]({"path": rel_path, "content": "{}"})
+    assert "[error] write blocked" in res
+    assert "protected" in res
+
+    res_del = ws_handlers["delete_file"]({"path": rel_path})
+    assert "[error] delete blocked" in res_del
+    assert "protected" in res_del

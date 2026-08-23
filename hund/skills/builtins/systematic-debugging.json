@@ -3,6 +3,7 @@
   "name": "systematic-debugging",
   "domain": "software-development",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "error",
     "bug",

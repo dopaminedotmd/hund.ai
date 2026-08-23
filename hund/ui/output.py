@@ -29,6 +29,8 @@ from rich.console import Console
 from rich.markdown import Markdown
 
 from . import theme
+from .phrases import select_thinking_phrase
+from ..agent.types import ConfirmRequest, ConfirmVerdict
 
 _APPROVE_ONCE = {"y", "yes", "j", "ja", "approve"}
 _APPROVE_ALL = {"a", "all", "alla", "session"}
@@ -51,16 +53,16 @@ def _short_args(args) -> str:
     return s if len(s) <= 120 else s[:120] + "..."
 
 
-def parse_confirm_input(ans: str) -> str:
+def parse_confirm_input(ans: str) -> ConfirmVerdict:
     """Parse confirmation action string into canonical verdict."""
     raw = (ans or "").strip().lower()
     if raw in _APPROVE_ONCE:
-        return "approve"
+        return ConfirmVerdict.APPROVE_ONCE
     if raw in _EDIT:
-        return "edit"
+        return ConfirmVerdict.EDIT
     if raw in _APPROVE_ALL:
-        return "session"
-    return "deny"
+        return ConfirmVerdict.ALLOW_SESSION
+    return ConfirmVerdict.DENY
 
 
 class StreamingMarkdownFilter:
@@ -184,37 +186,72 @@ def strip_rich(text: str) -> str:
     return _RICH_TAG_RE.sub("", text)
 
 
-def interactive_confirm_menu(prompt: str) -> str:
+def _confirm_title(request: ConfirmRequest) -> str:
+    """Derive a human-readable title from a ConfirmRequest."""
+    titles = {
+        "terminal": "hund wants to run a command",
+        "read_file": "hund wants to read a file",
+        "write_file": "hund wants to write a file",
+        "delete_file": "hund wants to delete a file",
+        "search_files": "hund wants to search",
+    }
+    return titles.get(request.tool_name, f"hund wants to use {request.tool_name}")
+
+
+def _confirm_detail(request: ConfirmRequest) -> str:
+    """Derive a detail line from a ConfirmRequest."""
+    args = request.args
+    if request.tool_name == "terminal":
+        return f"$ {args.get('command', '')}"
+    if request.tool_name in ("read_file", "write_file", "delete_file"):
+        return str(args.get("path", ""))
+    if request.tool_name == "search_files":
+        return str(args.get("pattern", "*"))
+    try:
+        s = json.dumps(args, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = str(args)
+    return s if len(s) <= 55 else s[:52] + "..."
+
+
+_CONFIRM_MENU_OPTIONS = [
+    (ConfirmVerdict.APPROVE_ONCE, "Run once", "ansigreen"),
+    (ConfirmVerdict.EDIT, "Edit command", "ansicyan"),
+    (ConfirmVerdict.ALLOW_SESSION, "Allow for this session", "ansiyellow"),
+    (ConfirmVerdict.DENY, "Deny", "ansired"),
+]
+
+
+def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
     """Render interactive arrow-key selection menu for tool confirmation."""
-    options = [
-        ("approve", "Approve once", "ansigreen"),
-        ("edit", "Edit command", "ansicyan"),
-        ("session", "Allow for session", "ansiyellow"),
-        ("deny", "Deny (Default)", "ansired"),
-    ]
+    options = _CONFIRM_MENU_OPTIONS
     selected = [0]
     width = 72
     inner_width = width - 4
+    title = _confirm_title(request)
+    detail = _confirm_detail(request)
 
     def get_formatted_text():
         lines = []
-        title = "CONFIRMATION REQUIRED"
-        header = f"┌── {title} {'─' * max(0, inner_width - len(title) - 4)}┐"
+        header = f"┌─ {title} {'─' * max(0, inner_width - len(title) - 2)}┐"
         lines.append(("class:border fg:ansiyellow bold", header + "\n"))
 
-        clean_p = prompt.strip().replace("\n", " ")
-        if len(clean_p) > inner_width:
-            clean_p = clean_p[:inner_width - 3] + "..."
         lines.append(("class:border fg:ansiyellow", "│ "))
-        lines.append(("bold fg:ansiwhite", f"{clean_p:<{inner_width}}"))
+        lines.append(("class:border fg:ansiyellow", "│ " + " " * inner_width + " │\n"))
+
+        detail_display = detail
+        if len(detail_display) > inner_width:
+            detail_display = detail_display[:inner_width - 3] + "..."
+        lines.append(("class:border fg:ansiyellow", "│ "))
+        lines.append(("bold fg:ansicyan", f"  {detail_display:<{inner_width - 2}}"))
         lines.append(("class:border fg:ansiyellow", " │\n"))
 
         lines.append(("class:border fg:ansiyellow", "│ " + " " * inner_width + " │\n"))
 
-        for idx, (code, label, color) in enumerate(options):
+        for idx, (verdict, label, color) in enumerate(options):
             lines.append(("class:border fg:ansiyellow", "│ "))
             if idx == selected[0]:
-                opt_str = f"  ❯ ● [{label}]"
+                opt_str = f"  ❯ ● {label}"
                 lines.append((f"bold fg:{color}", f"{opt_str:<{inner_width}}"))
             else:
                 opt_str = f"    ○ {label}"
@@ -223,7 +260,7 @@ def interactive_confirm_menu(prompt: str) -> str:
 
         bottom = f"└{'─' * (width - 2)}┘"
         lines.append(("class:border fg:ansiyellow bold", bottom + "\n"))
-        lines.append(("fg:ansibrightblack dim", "Use ↑/↓ arrows to select · Enter to confirm · Esc to deny"))
+        lines.append(("fg:ansibrightblack dim", " ↑↓ select · Enter confirm · Esc deny"))
         return lines
 
     kb = KeyBindings()
@@ -245,32 +282,32 @@ def interactive_confirm_menu(prompt: str) -> str:
     @kb.add("y")
     @kb.add("Y")
     def _y(event):
-        event.app.exit(result="approve")
+        event.app.exit(result=ConfirmVerdict.APPROVE_ONCE)
 
     @kb.add("e")
     @kb.add("E")
     def _e(event):
-        event.app.exit(result="edit")
+        event.app.exit(result=ConfirmVerdict.EDIT)
 
     @kb.add("a")
     @kb.add("A")
     def _a(event):
-        event.app.exit(result="session")
+        event.app.exit(result=ConfirmVerdict.ALLOW_SESSION)
 
     @kb.add("n")
     @kb.add("N")
     @kb.add("escape")
     @kb.add("c-c")
     def _n(event):
-        event.app.exit(result="deny")
+        event.app.exit(result=ConfirmVerdict.DENY)
 
-    layout = Layout(Window(FormattedTextControl(get_formatted_text), height=10))
+    layout = Layout(Window(FormattedTextControl(get_formatted_text), height=12))
     app = Application(layout=layout, key_bindings=kb, full_screen=False)
     try:
         res = app.run()
-        return res or "deny"
+        return res if isinstance(res, ConfirmVerdict) else ConfirmVerdict.DENY
     except Exception:
-        return "deny"
+        return ConfirmVerdict.DENY
 
 
 class StreamingSink:
@@ -279,8 +316,14 @@ class StreamingSink:
     def __init__(self, console: Console, *, stream_delay_s: float | None = None):
         self.console = console
         self._thinking_active = False
+        self._thinking_text = "hund is reading..."
+        self._thinking_past: str | None = None
+        self._tool_switched = False
+        self._user_input = ""
         self._stream_filter = StreamingMarkdownFilter()
         self._box_open = False
+        self._at_line_start = True
+        self._line_len = 0
         if stream_delay_s is None:
             raw_delay = os.environ.get("HUND_STREAM_DELAY_S", "")
             try:
@@ -289,23 +332,34 @@ class StreamingSink:
                 stream_delay_s = _DEFAULT_STREAM_DELAY_S
         self.stream_delay_s = max(0.0, min(stream_delay_s, 0.02))
 
+    def set_user_input(self, text: str) -> None:
+        self._user_input = text or ""
+        self._tool_switched = False
+
     # -- streaming protocol ----------------------------------------------
 
     def thinking(self, msg: str | None = None) -> None:
-        text = msg or "hund is analyzing..."
-        self.console.print(f"[dim]{theme.HUND_INDENT}{text}[/dim]", end="")
         self._thinking_active = True
+        self._tool_switched = False
+        text = msg.rstrip(".…") if msg else "hund is reading"
+        self._thinking_text = text + "..."
+        self._thinking_past = None
+        self.console.print(f"[dim]{theme.HUND_INDENT}{self._thinking_text}[/dim]", end="")
 
     def clear_thinking(self) -> None:
         if not self._thinking_active:
             return
-        f = self.console.file
-        try:
-            f.write("\r" + " " * 60 + "\r")
-            f.flush()
-        except Exception:
-            pass
+        if self._thinking_past:
+            self.console.print(f"[dim]{theme.HUND_INDENT}{self._thinking_past}[/dim]")
+        else:
+            f = self.console.file
+            try:
+                f.write("\r" + " " * 60 + "\r")
+                f.flush()
+            except Exception:
+                pass
         self._thinking_active = False
+        self._thinking_past = None
 
     def _width(self) -> int:
         try:
@@ -317,16 +371,25 @@ class StreamingSink:
         if self._box_open:
             return
         w = self._width()
-        fill = max(w - 9, 2)  # "╭─ " (3) + "hund" (4) + " " (1) + "╮" (1)
-        self.console.print(f"[dim]╭─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}╮[/dim]")
+        fill = max(w - 9, 2)  # "┌─ " (3) + "hund" (4) + " " (1) + "┐" (1)
+        self.console.print(f"[dim]┌─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}┐[/dim]")
         self._box_open = True
+        self._at_line_start = True
+        self._line_len = 0
 
-    def _close_box(self) -> None:
+    def _close_box(self, meta: str | None = None) -> None:
         if not self._box_open:
             return
         w = self._width()
-        self.console.print(f"[dim]╰{'─' * max(w - 2, 2)}╯[/dim]")
+        if meta is not None and str(meta).strip():
+            meta_str = str(meta).strip()
+            dashes = max(w - len(meta_str) - 4, 2)
+            self.console.print(f"[dim]└{'─' * dashes} {meta_str} ┘[/dim]")
+        else:
+            self.console.print(f"[dim]└{'─' * max(w - 2, 2)}┘[/dim]")
         self._box_open = False
+        self._at_line_start = True
+        self._line_len = 0
 
     def chunk(self, text: str) -> None:
         self.clear_thinking()
@@ -335,8 +398,23 @@ class StreamingSink:
             return
         if not self._box_open:
             self._open_box()
+        cw = max(self._width() - 4, 1)
         for ch in filtered:
-            self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
+            if self._at_line_start:
+                self.console.print("[dim]│ [/dim]", end="", markup=True, highlight=False)
+                self._at_line_start = False
+                self._line_len = 0
+            if ch == "\n":
+                padding = max(cw - self._line_len, 0)
+                self.console.print(" " * padding + "[dim] │[/dim]\n", end="", markup=True, highlight=False)
+                self._at_line_start = True
+                self._line_len = 0
+            else:
+                if self._line_len >= cw:
+                    self.console.print("[dim] │[/dim]\n[dim]│ [/dim]", end="", markup=True, highlight=False)
+                    self._line_len = 0
+                self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
+                self._line_len += 1
             try:
                 self.console.file.flush()
             except Exception:
@@ -350,8 +428,29 @@ class StreamingSink:
         if leftover:
             if not self._box_open:
                 self._open_box()
+            cw = max(self._width() - 4, 1)
             for ch in leftover:
-                self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
+                if self._at_line_start:
+                    self.console.print("[dim]│ [/dim]", end="", markup=True, highlight=False)
+                    self._at_line_start = False
+                    self._line_len = 0
+                if ch == "\n":
+                    padding = max(cw - self._line_len, 0)
+                    self.console.print(" " * padding + "[dim] │[/dim]\n", end="", markup=True, highlight=False)
+                    self._at_line_start = True
+                    self._line_len = 0
+                else:
+                    if self._line_len >= cw:
+                        self.console.print("[dim] │[/dim]\n[dim]│ [/dim]", end="", markup=True, highlight=False)
+                        self._line_len = 0
+                    self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
+                    self._line_len += 1
+        if self._box_open and not self._at_line_start:
+            cw = max(self._width() - 4, 1)
+            padding = max(cw - self._line_len, 0)
+            self.console.print(" " * padding + "[dim] │[/dim]\n", end="", markup=True, highlight=False)
+            self._at_line_start = True
+            self._line_len = 0
         self._close_box()
         self._stream_filter = StreamingMarkdownFilter()
         self.console.print()
@@ -363,27 +462,30 @@ class StreamingSink:
 
     # -- tool-hook contract ------------------------------------------------
 
-    def confirm(self, prompt: str) -> bool:
+    def confirm(self, request: ConfirmRequest) -> ConfirmVerdict:
         self.clear_thinking()
         self._close_box()
         if hasattr(sys.stdin, "isatty") and sys.stdin.isatty():
-            # ponytail: confirm() is sync but runs inside the REPL asyncio loop;
+            # confirm() is sync but runs inside the REPL asyncio loop;
             # run the menu in a fresh thread so app.run() gets its own event loop.
             with ThreadPoolExecutor(max_workers=1) as _ex:
-                verdict = _ex.submit(interactive_confirm_menu, prompt).result()
+                verdict = _ex.submit(interactive_confirm_menu, request).result()
         else:
             # Fallback for non-interactive / piped environments
+            title = _confirm_title(request)
+            detail = _confirm_detail(request)
             options = [
-                f"[bold white]{prompt}[/bold white]",
+                f"[bold white]{title}[/bold white]",
+                f"  [bold cyan]{detail}[/bold cyan]",
                 "",
                 "Options:",
-                "  [bold green][y][/bold green] Approve once",
+                "  [bold green][y][/bold green] Run once",
                 "  [bold cyan][e][/bold cyan] Edit command",
-                "  [bold yellow][a][/bold yellow] Allow for session",
-                "  [bold red][n][/bold red] Deny (Default)",
+                "  [bold yellow][a][/bold yellow] Allow for this session",
+                "  [bold red][n][/bold red] Deny",
             ]
             card = theme.boxify(
-                "CONFIRMATION REQUIRED",
+                title,
                 options,
                 width=68,
                 border_style="yellow",
@@ -397,17 +499,24 @@ class StreamingSink:
                 ans = "n"
             verdict = parse_confirm_input(ans)
 
-        if verdict == "edit":
-            try:
-                edited = input("Edit command: ").strip()
-                # ponytail: tool_dispatch TCB interface takes bool; editing command executes with confirmation
-                return bool(edited)
-            except (EOFError, KeyboardInterrupt):
-                return False
-        return verdict in {"approve", "session"}
+        return verdict
 
     def tool_start(self, name: str, args) -> None:
-        self.clear_thinking()
+        if self._thinking_active and not self._tool_switched:
+            f = self.console.file
+            try:
+                f.write("\r" + " " * 60 + "\r")
+                f.flush()
+            except Exception:
+                pass
+            gerund, past = select_thinking_phrase(self._user_input)
+            self._thinking_text = gerund + "..."
+            self._thinking_past = past
+            self._tool_switched = True
+            self.console.print(f"[dim]{theme.HUND_INDENT}{self._thinking_text}[/dim]")
+        elif not self._thinking_active:
+            pass
+
         self._close_box()
         card = theme.boxify(
             f"TOOL: {name}",

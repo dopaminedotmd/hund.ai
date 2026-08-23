@@ -52,8 +52,9 @@ class WorktreeSink:
     def declined(self, name: str, reason: str) -> None:
         self.tool_logs.append({"tool": name, "action": "declined", "reason": reason})
 
-    def confirm(self, prompt: str) -> bool:
-        return True  # Auto-confirm in worktree mode
+    def confirm(self, request):
+        from ..agent.types import ConfirmVerdict
+        return ConfirmVerdict.APPROVE_ONCE  # Auto-confirm in worktree mode
 
     def tool_start(self, name: str, args: dict) -> None:
         self.tool_logs.append({"tool": name, "action": "start", "args": args})

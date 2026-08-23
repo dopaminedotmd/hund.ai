@@ -3,6 +3,7 @@
   "name": "python-project-workflow",
   "domain": "software-development",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "pytest",
     "uv",

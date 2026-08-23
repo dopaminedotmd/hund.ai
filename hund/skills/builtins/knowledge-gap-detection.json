@@ -3,6 +3,7 @@
   "name": "knowledge-gap-detection",
   "domain": "general",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "*"
   ],

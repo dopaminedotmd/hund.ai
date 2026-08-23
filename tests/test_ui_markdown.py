@@ -84,31 +84,35 @@ def test_sink_chunk_streaming_eliminates_raw_markers() -> None:
 # -- confirm parser tests --------------------------------------------------
 
 def test_confirm_parser_approve() -> None:
-    assert parse_confirm_input("y") == "approve"
-    assert parse_confirm_input("yes") == "approve"
-    assert parse_confirm_input("j") == "approve"
-    assert parse_confirm_input("ja") == "approve"
-    assert parse_confirm_input(" Y ") == "approve"
+    from hund.agent.types import ConfirmVerdict
+    assert parse_confirm_input("y") == ConfirmVerdict.APPROVE_ONCE
+    assert parse_confirm_input("yes") == ConfirmVerdict.APPROVE_ONCE
+    assert parse_confirm_input("j") == ConfirmVerdict.APPROVE_ONCE
+    assert parse_confirm_input("ja") == ConfirmVerdict.APPROVE_ONCE
+    assert parse_confirm_input(" Y ") == ConfirmVerdict.APPROVE_ONCE
 
 
 def test_confirm_parser_edit() -> None:
-    assert parse_confirm_input("e") == "edit"
-    assert parse_confirm_input("edit") == "edit"
-    assert parse_confirm_input(" E ") == "edit"
+    from hund.agent.types import ConfirmVerdict
+    assert parse_confirm_input("e") == ConfirmVerdict.EDIT
+    assert parse_confirm_input("edit") == ConfirmVerdict.EDIT
+    assert parse_confirm_input(" E ") == ConfirmVerdict.EDIT
 
 
 def test_confirm_parser_session() -> None:
-    assert parse_confirm_input("a") == "session"
-    assert parse_confirm_input("all") == "session"
-    assert parse_confirm_input("alla") == "session"
+    from hund.agent.types import ConfirmVerdict
+    assert parse_confirm_input("a") == ConfirmVerdict.ALLOW_SESSION
+    assert parse_confirm_input("all") == ConfirmVerdict.ALLOW_SESSION
+    assert parse_confirm_input("alla") == ConfirmVerdict.ALLOW_SESSION
 
 
 def test_confirm_parser_deny_and_empty() -> None:
-    assert parse_confirm_input("n") == "deny"
-    assert parse_confirm_input("no") == "deny"
-    assert parse_confirm_input("nej") == "deny"
-    assert parse_confirm_input("") == "deny"
-    assert parse_confirm_input("random_invalid") == "deny"
+    from hund.agent.types import ConfirmVerdict
+    assert parse_confirm_input("n") == ConfirmVerdict.DENY
+    assert parse_confirm_input("no") == ConfirmVerdict.DENY
+    assert parse_confirm_input("nej") == ConfirmVerdict.DENY
+    assert parse_confirm_input("") == ConfirmVerdict.DENY
+    assert parse_confirm_input("random_invalid") == ConfirmVerdict.DENY
 
 
 # -- diff rendering tests --------------------------------------------------

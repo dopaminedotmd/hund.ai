@@ -35,13 +35,14 @@ class Skill:
     safety_level: str
     verification: tuple[str, ...]
     examples: tuple[str, ...] = ()
+    immutable: bool = False
 
     def summary(self) -> str:
         """Kompakt rad för prompt-injektion (ej full skill-dump)."""
         return f"[{self.name}] ({self.domain}) {self.when_to_use}"
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "schema_version": self.schema_version,
             "name": self.name,
             "domain": self.domain,
@@ -55,9 +56,28 @@ class Skill:
             "verification": list(self.verification),
             "examples": list(self.examples),
         }
+        if self.immutable:
+            d["immutable"] = True
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "Skill":
+        raw_forbidden = set(str(a) for a in d.get("forbidden_actions", []))
+        forbidden = tuple(sorted(raw_forbidden | BANNED_ACTIONS))
+
+        parsed_steps = []
+        for s in d.get("steps", []):
+            if isinstance(s, dict):
+                phase = s.get("phase", "")
+                actions = s.get("actions", [])
+                if isinstance(actions, list):
+                    action_str = "; ".join(str(a) for a in actions)
+                    parsed_steps.append(f"[{phase}] {action_str}" if phase else action_str)
+                else:
+                    parsed_steps.append(str(s))
+            else:
+                parsed_steps.append(str(s))
+
         return cls(
             schema_version=int(d.get("schema_version", 0)),
             name=str(d.get("name", "")).strip(),
@@ -65,10 +85,11 @@ class Skill:
             status=str(d.get("status", "draft")).strip(),
             triggers=tuple(str(t) for t in d.get("triggers", [])),
             when_to_use=str(d.get("when_to_use", "")).strip(),
-            steps=tuple(str(s) for s in d.get("steps", [])),
+            steps=tuple(parsed_steps),
             required_tools=tuple(str(t) for t in d.get("required_tools", [])),
-            forbidden_actions=tuple(str(a) for a in d.get("forbidden_actions", [])),
+            forbidden_actions=forbidden,
             safety_level=str(d.get("safety_level", "")).strip(),
             verification=tuple(str(v) for v in d.get("verification", [])),
             examples=tuple(str(e) for e in d.get("examples", [])),
+            immutable=bool(d.get("immutable", False)),
         )

@@ -41,6 +41,25 @@ def estimate_tokens(messages: list[Message]) -> int:
     return total
 
 
+def _safe_recent_slice(messages: list[Message], keep_recent: int) -> tuple[list[Message], int]:
+    """Slice recent messages safely without leaving orphan tool-role messages at the start.
+
+    OpenAI-compatible APIs throw HTTP 400 if a message with role='tool' does not immediately
+    follow an assistant message containing the corresponding tool_calls.
+    """
+    if len(messages) <= keep_recent + 1:
+        return list(messages[1:]), 0
+
+    start_idx = len(messages) - keep_recent
+    # If the slice starts on a 'tool' message, advance forward past the tool results
+    while start_idx < len(messages) and messages[start_idx].role == "tool":
+        start_idx += 1
+
+    recent = list(messages[start_idx:])
+    dropped = max(0, start_idx - 1)  # excluding system prompt at 0
+    return recent, dropped
+
+
 def compress(
     messages: list[Message],
     *,
@@ -48,14 +67,13 @@ def compress(
 ) -> CompressionResult:
     """Kollapsa äldre turns; bevara system[0] + senaste keep_recent.
 
-    Om listan är kort nog returneras offörändrad (compressed=False).
+    Om listan är kort nog returneras oförändrad (compressed=False).
     """
     if len(messages) <= keep_recent + 1:
         return CompressionResult(list(messages), 0, estimate_tokens(messages), False, "none")
 
     system = messages[0]
-    recent = list(messages[-keep_recent:])
-    dropped = len(messages) - 1 - keep_recent
+    recent, dropped = _safe_recent_slice(messages, keep_recent)
 
     # Behåll systemprompten oförändrad (prompt cache)
     # Markören läggs som ett separat system-meddelande
@@ -104,14 +122,15 @@ def compress_llm(
     if len(messages) <= keep_recent + 3:  # for fa meddelanden for LLM
         return None
     system = messages[0]
-    old_messages = messages[1:-keep_recent]
+    recent, dropped = _safe_recent_slice(messages, keep_recent)
+    old_messages = messages[1 : len(messages) - len(recent)]
     if not old_messages:
         return None
     # Bygg en text-representation av gamla meddelanden
     old_text_parts = []
     for m in old_messages:
         role = m.role
-        content = m.content[:500]  # trunkera langa meddelanden
+        content = (m.content or "")[:500]  # trunkera langa meddelanden
         if m.tool_calls:
             content += f" [tool_calls: {len(m.tool_calls)}]"
         old_text_parts.append(f"[{role}] {content}")
@@ -133,8 +152,6 @@ def compress_llm(
         tool_calls=[],
         tool_call_id=None,
     )
-    recent = list(messages[-keep_recent:])
     compacted = [system, marker] + recent
-    dropped = len(old_messages)
     return CompressionResult(compacted, dropped, estimate_tokens(compacted), True, "llm")
 

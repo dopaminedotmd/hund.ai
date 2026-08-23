@@ -13,6 +13,17 @@ from pydantic import BaseModel, Field
 from .paths import config_path
 
 
+# Valid DeepSeek model names (single source of truth).
+# flash = billigare. pro = högre precision.
+KNOWN_MODELS = (
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "deepseek-v4-flash-vision-exp",
+    "deepseek-chat",
+    "deepseek-reasoner",
+)
+
+
 class ProviderConfig(BaseModel):
     """OpenAI-compatible provider i v1 (en shape, BYOK). Default: DeepSeek."""
 
@@ -29,6 +40,7 @@ class HundConfig(BaseModel):
     workspace_root: Path | None = None  # None = cwd. Workspace-confined.
     telemetry_local: bool = True  # lokal prestandalog: på som default
     telemetry_upload: bool = False  # extern upload: AV som default (inte i v1)
+    theme: str = "bone"  # active skin: bone / nord / synthwave
 
     @classmethod
     def load(cls, path: Path | None = None) -> "HundConfig":
@@ -38,12 +50,12 @@ class HundConfig(BaseModel):
                 cfg = cls.model_validate_json(path.read_text(encoding="utf-8"))
                 # Sanitize DeepSeek model name if invalid or legacy
                 if "deepseek.com" in cfg.provider.base_url and (
-                    cfg.provider.model.startswith("gpt-") or cfg.provider.model not in (
-                        "deepseek-v4-pro", "deepseek-v4-flash", "deepseek-v4-flash-vision-exp",
-                        "deepseek-chat", "deepseek-reasoner"
-                    )
+                    cfg.provider.model.startswith("gpt-") or cfg.provider.model not in KNOWN_MODELS
                 ):
                     cfg.provider.model = "deepseek-v4-pro"
+                # Migrate legacy theme names if present
+                if cfg.theme not in ("bone", "nord", "synthwave"):
+                    cfg.theme = "bone"
                 return cfg
             except Exception:
                 return cls()

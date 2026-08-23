@@ -3,6 +3,7 @@
   "name": "external-content-safety",
   "domain": "security",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "web_search",
     "web_extract",

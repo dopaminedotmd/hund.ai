@@ -3,6 +3,7 @@
   "name": "git-safety",
   "domain": "software-development",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "git",
     "commit",

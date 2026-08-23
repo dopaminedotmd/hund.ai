@@ -33,23 +33,51 @@ def _read_skill_file(path: Path) -> Skill | None:
     return skill if not validate(skill) else None
 
 
-def load_skills(home: Path | None = None) -> list[Skill]:
-    """Alla giltiga skills: builtins + HundHome, namnunika (HundHome vinner)."""
+def load_builtins() -> list[Skill]:
+    """Ladda enbart inbyggda konstitutionella kärn-instinkter."""
+    bdir = _builtins_dir()
+    if not bdir.exists():
+        return []
+    skills = []
+    for f in sorted(bdir.glob("*.json")):
+        sk = _read_skill_file(f)
+        if sk:
+            skills.append(sk)
+    return skills
+
+
+def load_domain_skills(home: Path | None = None) -> list[Skill]:
+    """Ladda användarens skapade/installerade domän-skills från HundHome/brain/skills/ och workspace."""
     by_name: dict[str, Skill] = {}
 
-    bdir = _builtins_dir()
-    if bdir.exists():
-        for f in sorted(bdir.glob("*.json")):
-            sk = _read_skill_file(f)
-            if sk:
-                by_name[sk.name] = sk
-
+    # 1. Globala skills i HundHome/brain/skills/
     udir = skills_dir(home)
     if udir.exists():
         for f in sorted(udir.glob("*.json")):
             sk = _read_skill_file(f)
             if sk:
                 by_name[sk.name] = sk
+
+    # 2. Lokala skills i aktuellt workspace/brain/skills/ (om annat än home)
+    ws_dir = Path.cwd() / "brain" / "skills"
+    if ws_dir.exists() and ws_dir.resolve() != udir.resolve():
+        for f in sorted(ws_dir.glob("*.json")):
+            sk = _read_skill_file(f)
+            if sk:
+                by_name[sk.name] = sk
+
+    return list(by_name.values())
+
+
+def load_skills(home: Path | None = None) -> list[Skill]:
+    """Alla giltiga skills: builtins + HundHome, namnunika (HundHome vinner)."""
+    by_name: dict[str, Skill] = {}
+
+    for sk in load_builtins():
+        by_name[sk.name] = sk
+
+    for sk in load_domain_skills(home):
+        by_name[sk.name] = sk
 
     return list(by_name.values())
 

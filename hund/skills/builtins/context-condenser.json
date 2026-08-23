@@ -3,6 +3,7 @@
   "name": "context-condenser",
   "domain": "context",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "context",
     "tokens",

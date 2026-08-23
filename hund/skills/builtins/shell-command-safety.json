@@ -3,6 +3,7 @@
   "name": "shell-command-safety",
   "domain": "general",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "rm",
     "del",

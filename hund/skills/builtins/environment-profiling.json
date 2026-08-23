@@ -3,6 +3,7 @@
   "name": "environment-profiling",
   "domain": "general",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "doctor",
     "system",

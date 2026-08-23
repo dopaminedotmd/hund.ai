@@ -10,6 +10,8 @@ exits when there is none). The agent turn runs in a background thread.
 from __future__ import annotations
 
 import io
+from pathlib import Path
+import re
 import shutil
 import subprocess
 import threading
@@ -18,17 +20,19 @@ import uuid
 from typing import Any
 
 from prompt_toolkit import Application
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Condition
-from prompt_toolkit.application.current import get_app
+from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
-from prompt_toolkit.layout.containers import ConditionalContainer
+from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.lexers import Lexer
-from prompt_toolkit.mouse_events import MouseEventType
+from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
@@ -43,30 +47,80 @@ from ..agent.loop import (
 from ..providers.base import Message
 from . import theme
 from .commands import CommandContext, dispatch_command, is_slash
-from .input import SLASH_COMMANDS, SLASH_COMMAND_METAS, PromptState, format_status_bar
-from .output import parse_confirm_input, strip_markdown, strip_rich
-from .render import refresh_stats
+from .input import (
+    SLASH_COMMANDS,
+    SLASH_COMMAND_METAS,
+    PromptState,
+    SlashCommandCompleter,
+    format_status_bar,
+)
+from .output import parse_confirm_input, strip_markdown, strip_rich, StreamingMarkdownFilter, _confirm_title, _confirm_detail
+from .render import box_bottom as _r_box_bottom, box_top as _r_box_top, refresh_stats, render_response_box
+from ..agent.types import ConfirmRequest, ConfirmVerdict
+
+from .phrases import select_thinking_phrase
 
 _S = theme.SEMANTIC
 
-_STYLE = Style.from_dict(
-    {
-        "primary": _S["primary"],
-        "secondary": _S["secondary"],
-        "accent": _S["accent"],
-        "success": _S["success"],
-        "danger": _S["danger"],
-        "warning": _S["warning"],
-        "tool": _S["tool"],
-        "user": _S["user"],
-        "prompt": "bold " + _S["user"],
-        "status": _S["secondary"],
-    }
-)
+_STYLE = theme.make_pt_style("bone")
+
+
+def _trunc(val: Any, max_len: int = 45) -> str:
+    s = str(val or "")
+    if len(s) > max_len:
+        return s[: max_len - 1] + "…"
+    return s
+
+
+def _format_tool_desc(name: str, args: dict | None) -> str:
+    args = args or {}
+    if name == "read_file":
+        path = _trunc(args.get("path", ""))
+        return f"read {path}"
+    elif name == "search_files":
+        pattern = _trunc(args.get("pattern", "*"))
+        path = args.get("path")
+        if path and path != ".":
+            return f"searched {_trunc(path)} for {pattern}"
+        return f"searched {pattern}"
+    elif name == "write_file":
+        path = _trunc(args.get("path", ""))
+        return f"wrote {path}"
+    elif name == "delete_file":
+        path = _trunc(args.get("path", ""))
+        return f"deleted {path}"
+    elif name == "terminal":
+        cmd = _trunc(args.get("command", ""))
+        return f"ran {cmd}"
+    elif name == "web_search":
+        q = _trunc(args.get("query", ""))
+        return f"searched the web for {q}"
+    elif name == "web_extract":
+        url = _trunc(args.get("url", ""))
+        return f"read {url}"
+    elif name == "execute_code":
+        return "ran python script"
+    elif name == "delegate_task":
+        tasks = args.get("tasks", [])
+        n = len(tasks)
+        return f"delegated {n} task{'s' if n != 1 else ''}"
+    elif name == "session_search":
+        q = args.get("query")
+        if q:
+            return f"searched history for {_trunc(q)}"
+        return "searched history"
+    elif name == "cronjob":
+        action = args.get("action", "job")
+        target_name = args.get("name", "")
+        if target_name:
+            return f"scheduled {action} {_trunc(target_name)}"
+        return f"scheduled {action}"
+    else:
+        return f"ran {name}"
 
 
 class _OutputLexer(Lexer):
-    """Line-prefix lexer mapping output lines to semantic token styles."""
+    """Line-prefix & semantic markdown lexer mapping output lines to rich token styles."""
 
     def lex_document(self, document):
         lines = document.lines
@@ -77,29 +131,112 @@ class _OutputLexer(Lexer):
             except IndexError:
                 return []
             stripped = line.lstrip()
+            if not stripped:
+                return [("class:primary", line)]
             if stripped.startswith("❯"):
-                style = "class:user"
-            elif "hund is analyzing" in line:
-                style = "class:secondary"
+                return [("class:user", line)]
+            elif stripped.startswith("┊"):
+                idx = line.find("┊")
+                leading = line[:idx]
+                tokens: list[tuple[str, str]] = []
+                if leading:
+                    tokens.append(("", leading))
+                tokens.append(("class:secondary", "┊"))
+                rest = line[idx + 1 :]
+                if rest.startswith(" "):
+                    tokens.append(("class:secondary", " "))
+                    rest = rest[1:]
+                if rest.startswith("⟳"):
+                    tokens.append(("class:accent", "⟳"))
+                    tokens.append(("class:tool", rest[1:]))
+                elif rest.startswith("✓"):
+                    tokens.append(("class:success", "✓"))
+                    tokens.append(("class:tool", rest[1:]))
+                elif rest.startswith("✗") or rest.startswith("⊘"):
+                    tokens.append(("class:danger", rest[0]))
+                    tokens.append(("class:danger", rest[1:]))
+                else:
+                    tokens.append(("class:secondary", rest))
+                return tokens
+            elif "hund is " in line:
+                return [("class:secondary", line)]
             elif "CONFIRMATION REQUIRED" in line:
-                style = "class:warning"
+                return [("class:warning", line)]
             elif "[y] Approve" in line:
-                style = "class:success"
+                return [("class:success", line)]
             elif "[e] Edit" in line:
-                style = "class:accent"
+                return [("class:accent", line)]
             elif "[a] Allow" in line:
-                style = "class:warning"
+                return [("class:warning", line)]
             elif "[n] Deny" in line:
-                style = "class:danger"
+                return [("class:danger", line)]
             elif "BLOCKED" in line or "DECLINED" in line:
-                style = "class:danger"
+                return [("class:danger", line)]
             elif "tool:" in line:
-                style = "class:tool"
-            elif line.startswith("╭") or line.startswith("╰") or line.startswith("│"):
-                style = "class:secondary"
-            else:
-                style = "class:primary"
-            return [(style, line)]
+                return [("class:tool", line)]
+            elif line.startswith("┌") or line.startswith("└") or line.startswith("╭") or line.startswith("╰") or line.startswith("│"):
+                return [("class:secondary", line)]
+            elif stripped.startswith("#"):
+                return [("class:header", line)]
+
+            # Semantic parsing of assistant responses
+            indent_len = len(line) - len(stripped)
+            indent_str = line[:indent_len]
+            cur = stripped
+            tokens: list[tuple[str, str]] = []
+
+            # Numbered list item: "9. python-project-workflow — safety_level: ..."
+            num_match = re.match(r"^(\d+\.\s+)([^\s—–]+(?:[ \t]+[^\s—–]+)*)(.*)$", cur)
+            if num_match:
+                if indent_str:
+                    tokens.append(("", indent_str))
+                tokens.append(("class:number", num_match.group(1)))
+                tokens.append(("class:header", num_match.group(2)))
+                rest_str = num_match.group(3)
+                if rest_str:
+                    tokens.append(("class:secondary", rest_str))
+                return tokens
+
+            # Bullet item: "- Ansvar: ...", "• Triggras av: ...", "* **Arbetsflöde:** ..."
+            bullet_match = re.match(r"^(•|-|\*)\s+", cur)
+            if bullet_match:
+                if indent_str:
+                    tokens.append(("", indent_str))
+                tokens.append(("class:bullet", bullet_match.group(0)))
+                cur = cur[bullet_match.end():]
+
+                # Lead-in label: "Ansvar:", "Triggras av:", "**Arbetsflöde:**"
+                label_match = re.match(
+                    r"^(\*\*[^*]+\*\*|\b[A-Za-zåäöÅÄÖ_-]+(?:\s+[a-zåäö_-]+)?\s*:)\s*",
+                    cur,
+                )
+                if label_match:
+                    tokens.append(("class:label", label_match.group(0)))
+                    cur = cur[label_match.end():]
+            elif indent_str:
+                tokens.append(("", indent_str))
+
+            # Inline markdown parsing: code, bold, arrows, dashes
+            pattern = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`|->|→|—|–)")
+            pos = 0
+            for m in pattern.finditer(cur):
+                if m.start() > pos:
+                    tokens.append(("class:primary", cur[pos : m.start()]))
+                val = m.group(0)
+                if val.startswith("**") and val.endswith("**"):
+                    tokens.append(("class:label", val))
+                elif val.startswith("`") and val.endswith("`"):
+                    tokens.append(("class:code", val))
+                elif val in ("->", "→", "—", "–"):
+                    tokens.append(("class:secondary", val))
+                else:
+                    tokens.append(("class:primary", val))
+                pos = m.end()
+
+            if pos < len(cur):
+                tokens.append(("class:primary", cur[pos:]))
+
+            return tokens
 
         return get_line
 
@@ -108,33 +245,44 @@ class _SelectableControl(BufferControl):
     """Output control: wheel scroll via the view-scroll callback, and
     single-drag selection (focus on mouse-down instead of mouse-up)."""
 
-    def __init__(self, *args, scroll_cb=None, **kwargs):
+    def __init__(self, *args, scroll_cb=None, fallback_focus=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.scroll_cb = scroll_cb
+        self.fallback_focus = fallback_focus
 
-    def mouse_handler(self, mouse_event):
+    def mouse_handler(self, mouse_event: MouseEvent) -> Any:
         et = mouse_event.event_type
         if et == MouseEventType.MOUSE_DOWN:
             # Focus on mouse-down so a single drag selects (default focuses
             # on mouse-up, which swallows the first drag).
             try:
                 get_app().layout.current_control = self
-            except ValueError:
-                pass  # control not walked into the layout yet; selection still works
+            except Exception:
+                pass
         elif et in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
             if self.scroll_cb is not None:
                 self.scroll_cb(3 if et == MouseEventType.SCROLL_UP else -3)
             return None  # handled; skip the built-in laggy cursor scroll
-        return super().mouse_handler(mouse_event)
+
+        res = super().mouse_handler(mouse_event)
+
+        if et == MouseEventType.MOUSE_UP:
+            # If user just clicked without dragging a selection, restore focus to input!
+            if self.buffer.selection_state is None and self.fallback_focus is not None:
+                try:
+                    get_app().layout.focus(self.fallback_focus)
+                except Exception:
+                    pass
+        return res
 
 
 _OUTPUT_LEXER = _OutputLexer()
 
 _CONFIRM_OPTIONS = [
-    ("approve", "Approve once", "class:success"),
-    ("edit", "Edit command", "class:accent"),
-    ("session", "Allow for session", "class:warning"),
-    ("deny", "Deny (default)", "class:danger"),
+    (ConfirmVerdict.APPROVE_ONCE, "Run once", "class:success"),
+    (ConfirmVerdict.EDIT, "Edit command", "class:accent"),
+    (ConfirmVerdict.ALLOW_SESSION, "Allow for this session", "class:warning"),
+    (ConfirmVerdict.DENY, "Deny", "class:danger"),
 ]
 
 
@@ -162,19 +310,20 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     )
 
     # ---- input buffer + prompt ----
-    completer = WordCompleter(
-        SLASH_COMMANDS, ignore_case=True, meta_dict=SLASH_COMMAND_METAS, sentence=False,
-    )
+    completer = SlashCommandCompleter()
     input_buffer = Buffer(
         name="input", multiline=False, completer=completer, complete_while_typing=True,
     )
-    input_window = Window(content=BufferControl(buffer=input_buffer), height=1)
+    input_control = BufferControl(buffer=input_buffer, focus_on_click=True)
+    input_window = Window(content=input_control, height=1)
     prompt_window = Window(
         content=FormattedTextControl(lambda: [("class:prompt", "❯ ")]),
         width=3,
         dont_extend_width=True,
     )
     input_row = VSplit([prompt_window, input_window])
+
+    output_control.fallback_focus = input_window
 
     # ---- status bar ----
     def status_text() -> list[tuple[str, str]]:
@@ -207,27 +356,64 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             out.append((style, content))
             out.append(("class:secondary", " " * max(W - 4 - len(content), 0) + " │\n"))
 
-        out.append(("class:secondary", "╭" + "─" * (W - 2) + "╮\n"))
-        row("CONFIRMATION REQUIRED", "class:warning bold")
+        out.append(("class:secondary", "┌" + "─" * (W - 2) + "┐\n"))
+        row(_confirm["title"], "class:warning bold")
         row("", "class:secondary")
-        row(_confirm["prompt"], "class:primary")
+        row(_confirm["detail"], "class:accent bold")
         row("", "class:secondary")
         for i, (_code, label, color) in enumerate(_CONFIRM_OPTIONS):
             if i == _confirm["selected"]:
                 row("  ❯ ● " + label, color + " bold")
             else:
                 row("    ○ " + label, "class:secondary")
-        out.append(("class:secondary", "╰" + "─" * (W - 2) + "╯\n"))
+        out.append(("class:secondary", "└" + "─" * (W - 2) + "┘\n"))
         out.append(("class:secondary", " ↑↓ select · Enter confirm · Esc deny"))
         return out
+
+    _thinking: dict[str, Any] = {
+        "active": False,
+        "text": "hund is reading",
+        "past": None,
+        "dot_count": 1,
+        "start_time": 0.0,
+    }
+
+    def _thinking_text() -> list[tuple[str, str]]:
+        if not _thinking["active"]:
+            return []
+        dots = "." * _thinking["dot_count"]
+        return [("class:thinking", f"  {_thinking['text']}{dots}\n")]
+
+    thinking_window = Window(
+        content=FormattedTextControl(_thinking_text),
+        height=1,
+        dont_extend_height=True,
+    )
+    thinking_container = ConditionalContainer(
+        thinking_window, filter=Condition(lambda: bool(_thinking["active"]))
+    )
 
     confirm_window = Window(content=FormattedTextControl(_confirm_text), height=12)
     confirm_container = ConditionalContainer(
         confirm_window, filter=Condition(lambda: _confirm["active"])
     )
 
-    layout = Layout(HSplit([output_window, confirm_container, input_row, status_window]))
-    layout.focus(input_window)
+    # 1-row vertical breathing room between input and bottom status bar
+    input_gap = Window(height=1, char=" ")
+
+    layout = Layout(
+        FloatContainer(
+            content=HSplit([output_window, thinking_container, confirm_container, input_row, input_gap, status_window]),
+            floats=[
+                Float(
+                    xcursor=True,
+                    ycursor=True,
+                    content=CompletionsMenu(max_height=12),
+                )
+            ],
+        ),
+        focused_element=input_window,
+    )
 
     # ---- shared mutable state ----
     holder: dict[str, Any] = {}
@@ -250,13 +436,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 pass
         return _term_width()
 
-    def _box_top() -> str:
-        w = _app_width()
-        return f"╭─ hund {'─' * max(w - 9, 2)}╮"
+    def _box_top(width: int | None = None) -> str:
+        return _r_box_top(width if width is not None else _app_width())
 
-    def _box_bottom() -> str:
-        w = _app_width()
-        return f"╰{'─' * max(w - 2, 2)}╯"
+    def _box_bottom(meta: str | None = None, width: int | None = None) -> str:
+        return _r_box_bottom(width if width is not None else _app_width(), meta=meta)
 
     _append_lock = threading.Lock()
 
@@ -275,25 +459,47 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     output_buffer.set_document(Document(seed, cursor_position=len(seed)), bypass_readonly=True)
 
     def _reflow_borders() -> None:
-        """Re-width response box borders to the current terminal width."""
+        """Re-width response box borders and re-wrap content to the current terminal width."""
         with _append_lock:
             text = output_buffer.text
             lines = text.split("\n")
             new_lines: list[str] = []
             changed = False
             in_box = False
+            box_lines: list[str] = []
+
             for line in lines:
-                if line.startswith("╭─ hund "):
-                    nl = _box_top()
+                if line.startswith("┌─ hund ") or line.startswith("╭─ hund "):
                     in_box = True
-                elif in_box and line.startswith("╰"):
-                    nl = _box_bottom()
+                    box_lines = []
+                elif in_box and (line.startswith("└") or line.startswith("╰")):
                     in_box = False
-                else:
-                    nl = line
-                if nl != line:
+                    # Extract meta if present (e.g. └────── 2.3s ┘)
+                    box_meta: str | None = None
+                    trimmed = line.rstrip(" ┘╯")
+                    if " " in trimmed:
+                        parts = trimmed.split(" ")
+                        if len(parts) > 1 and parts[-1].strip():
+                            box_meta = parts[-1].strip()
+
+                    # Unbox lines
+                    content_lines: list[str] = []
+                    for bl in box_lines:
+                        if bl.startswith("│ ") and bl.endswith(" │"):
+                            content_lines.append(bl[2:-2].rstrip())
+                        elif bl.startswith("│") and bl.endswith("│"):
+                            content_lines.append(bl[1:-1].rstrip())
+                        else:
+                            content_lines.append(bl.rstrip())
+                    raw_content = "\n".join(content_lines)
+                    re_boxed = render_response_box(raw_content, _app_width(), meta=box_meta)
+                    new_lines.extend(re_boxed.split("\n"))
                     changed = True
-                new_lines.append(nl)
+                elif in_box:
+                    box_lines.append(line)
+                else:
+                    new_lines.append(line)
+
             if changed:
                 new_text = "\n".join(new_lines)
                 cur = output_buffer.cursor_position
@@ -310,64 +516,215 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     class _Sink:
         def __init__(self) -> None:
             self._box_open = False
-            self._think_marker: int | None = None
+            self._box_start_marker: int | None = None
+            self._raw_response = ""
+            self._tool_marker: int | None = None
+            self._tool_start_time: float = 0.0
+            self._tool_args: dict = {}
+            self._tool_switched = False
+            self._user_input = ""
+            self._anim_timer: threading.Timer | None = None
+            self._pending_past_timer: threading.Timer | None = None
+            self._md = StreamingMarkdownFilter()
+
+        def set_user_input(self, text: str) -> None:
+            self._user_input = text or ""
+            self._tool_switched = False
+
+        def _cancel_timers(self) -> None:
+            if self._anim_timer is not None:
+                try:
+                    self._anim_timer.cancel()
+                except Exception:
+                    pass
+                self._anim_timer = None
+            if self._pending_past_timer is not None:
+                try:
+                    self._pending_past_timer.cancel()
+                except Exception:
+                    pass
+                self._pending_past_timer = None
+
+        def _start_anim_timer(self) -> None:
+            if self._anim_timer is not None:
+                try:
+                    self._anim_timer.cancel()
+                except Exception:
+                    pass
+
+            def _tick() -> None:
+                if _thinking["active"]:
+                    _thinking["dot_count"] = (_thinking["dot_count"] % 3) + 1
+                    _invalidate()
+                    self._anim_timer = threading.Timer(0.3, _tick)
+                    self._anim_timer.daemon = True
+                    self._anim_timer.start()
+
+            self._anim_timer = threading.Timer(0.3, _tick)
+            self._anim_timer.daemon = True
+            self._anim_timer.start()
 
         def thinking(self, msg: str | None = None) -> None:
-            self._think_marker = len(output_buffer.text)
-            append("  " + (msg or "hund is analyzing...") + "\n")
+            self._cancel_timers()
+            _thinking["active"] = True
+            _thinking["text"] = msg.rstrip(".…") if msg else "hund is reading"
+            _thinking["past"] = None
+            _thinking["dot_count"] = 1
+            _thinking["start_time"] = time.time()
+            self._tool_switched = False
+            self._start_anim_timer()
+            _invalidate()
 
         def clear_thinking(self) -> None:
-            if self._think_marker is not None:
-                with _append_lock:
-                    new_text = output_buffer.text[: self._think_marker]
-                    output_buffer.set_document(
-                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                    )
-                self._think_marker = None
+            self._cancel_timers()
+            if _thinking["active"]:
+                _thinking["active"] = False
+                past = _thinking.get("past")
+                start_time = _thinking.get("start_time", 0.0)
+                _thinking["past"] = None
                 _invalidate()
 
+                if past:
+                    elapsed = time.time() - start_time
+                    if elapsed < 0.3:
+                        remaining = 0.3 - elapsed
+                        self._pending_past_timer = threading.Timer(
+                            remaining, lambda: (append(f"  {past}\n"), _invalidate())
+                        )
+                        self._pending_past_timer.daemon = True
+                        self._pending_past_timer.start()
+                    else:
+                        append(f"  {past}\n")
+                        _invalidate()
+
         def chunk(self, text: str) -> None:
+            self.clear_thinking()
+            filtered = self._md.feed(text)
+            if not filtered:
+                return
             if not self._box_open:
                 self._box_open = True
-                append(_box_top() + "\n")
-            append(text)
+                self._box_start_marker = len(output_buffer.text)
+                self._raw_response = ""
+            self._raw_response += filtered
+            boxed = render_response_box(self._raw_response, _app_width())
+            with _append_lock:
+                new_text = output_buffer.text[: self._box_start_marker] + "\n" + boxed
+                output_buffer.set_document(
+                    Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                )
+            _invalidate()
 
         def end_assistant(self) -> None:
             if self._box_open:
-                append("\n" + _box_bottom() + "\n\n")
+                leftover = self._md.flush()
+                self._raw_response += leftover
+                boxed = render_response_box(self._raw_response, _app_width(), meta=None)
+                with _append_lock:
+                    new_text = output_buffer.text[: self._box_start_marker] + "\n" + boxed + "\n\n"
+                    output_buffer.set_document(
+                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                    )
                 self._box_open = False
+                self._raw_response = ""
+                _invalidate()
             else:
                 append("\n\n")
 
         def error(self, markup: str) -> None:
-            append(strip_rich(strip_markdown(markup)) + "\n")
+            clean = strip_rich(strip_markdown(markup)).strip()
+            if self._tool_marker is not None:
+                err_line = f"  ┊ ✗ error: {_trunc(clean, 50)}\n"
+                with _append_lock:
+                    new_text = output_buffer.text[: self._tool_marker] + err_line
+                    output_buffer.set_document(
+                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                    )
+                self._tool_marker = None
+                _invalidate()
+            else:
+                append(clean + "\n")
 
-        def confirm(self, prompt: str) -> bool:
-            clean = strip_rich(strip_markdown(prompt)).strip().replace("\n", " ")
-            if len(clean) > 58:
-                clean = clean[:55] + "..."
-            _confirm["prompt"] = clean
+        def confirm(self, request: ConfirmRequest) -> ConfirmVerdict:
+            title = _confirm_title(request)
+            detail = _confirm_detail(request)
+            if len(detail) > 58:
+                detail = detail[:55] + "..."
+            _confirm["title"] = title
+            _confirm["detail"] = detail
             _confirm["selected"] = 0
-            _confirm["answer"] = "deny"
+            _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = True
             _confirm["event"].clear()
             _invalidate()
             _confirm["event"].wait()
             _confirm["active"] = False
             _invalidate()
-            return _confirm["answer"] in {"approve", "session"}
+            return _confirm["answer"]
 
         def tool_start(self, name: str, args) -> None:
-            append(f"  tool: {name}\n")
+            if _thinking["active"] and not self._tool_switched:
+                u_text = self._user_input
+                if not u_text and messages:
+                    u_text = next(
+                        (m.content for m in reversed(messages) if getattr(m, "role", "") == "user"),
+                        "",
+                    )
+                gerund, past = select_thinking_phrase(u_text)
+                _thinking["text"] = gerund
+                _thinking["past"] = past
+                _thinking["start_time"] = time.time()
+                self._tool_switched = True
+                _invalidate()
+
+            self._tool_args = args if isinstance(args, dict) else {}
+            self._tool_start_time = time.time()
+            self._tool_marker = len(output_buffer.text)
+            append(f"  ┊ ⟳ preparing {name}…\n")
 
         def tool_result(self, name: str, shown: str) -> None:
-            append(f"    -> {shown}\n\n")
+            dur = time.time() - self._tool_start_time
+            dur_str = f"{dur:.1f}s"
+            desc = _format_tool_desc(name, self._tool_args)
+            result_line = f"  ┊ ✓ {desc}  {dur_str}\n"
+            if self._tool_marker is not None:
+                with _append_lock:
+                    new_text = output_buffer.text[: self._tool_marker] + result_line
+                    output_buffer.set_document(
+                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                    )
+                self._tool_marker = None
+                _invalidate()
+            else:
+                append(result_line)
 
         def blocked(self, name: str, reason: str) -> None:
-            append(f"BLOCKED: {name} - {reason}\n")
+            clean_reason = _trunc(reason, 40)
+            blocked_line = f"  ┊ ✗ blocked {name} — {clean_reason}\n"
+            if self._tool_marker is not None:
+                with _append_lock:
+                    new_text = output_buffer.text[: self._tool_marker] + blocked_line
+                    output_buffer.set_document(
+                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                    )
+                self._tool_marker = None
+                _invalidate()
+            else:
+                append(blocked_line)
 
         def declined(self, name: str, reason: str) -> None:
-            append(f"DECLINED: {name} - {reason}\n")
+            clean_reason = _trunc(reason, 40)
+            declined_line = f"  ┊ ✗ declined {name} — {clean_reason}\n"
+            if self._tool_marker is not None:
+                with _append_lock:
+                    new_text = output_buffer.text[: self._tool_marker] + declined_line
+                    output_buffer.set_document(
+                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
+                    )
+                self._tool_marker = None
+                _invalidate()
+            else:
+                append(declined_line)
 
     sink = _Sink()
 
@@ -395,6 +752,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 (m.content for m in reversed(messages) if getattr(m, "role", "") == "user"),
                 "",
             )
+
+        sink.set_user_input(user_text or "")
 
         tokens_before = estimate_tokens(messages)
         comp = maybe_compress(messages, client=rt.client)
@@ -521,6 +880,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         output_buffer.cursor_position = output_buffer.document.translate_row_col_to_index(
             target, 0
         )
+        _invalidate()
 
     output_control.scroll_cb = _scroll_lines
 
@@ -539,7 +899,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             try:
                 subprocess.run(["clip"], input=text.encode("utf-8"), check=True)
             except Exception:
-                return False
+                pass
             buf.exit_selection()
             layout.focus(input_window)
             append("(copied)\n")
@@ -566,33 +926,40 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     @kb.add("y", filter=confirm_active)
     def _y(event):
-        _confirm["answer"] = "approve"
+        _confirm["answer"] = ConfirmVerdict.APPROVE_ONCE
         _confirm["active"] = False
         _confirm["event"].set()
 
     @kb.add("e", filter=confirm_active)
     def _e(event):
-        _confirm["answer"] = "edit"
+        _confirm["answer"] = ConfirmVerdict.EDIT
         _confirm["active"] = False
         _confirm["event"].set()
 
     @kb.add("a", filter=confirm_active)
     def _a(event):
-        _confirm["answer"] = "session"
+        _confirm["answer"] = ConfirmVerdict.ALLOW_SESSION
         _confirm["active"] = False
         _confirm["event"].set()
 
     @kb.add("n", filter=confirm_active)
     @kb.add("escape", filter=confirm_active)
     def _n(event):
-        _confirm["answer"] = "deny"
+        _confirm["answer"] = ConfirmVerdict.DENY
         _confirm["active"] = False
         _confirm["event"].set()
+
+    @kb.add("escape", filter=~confirm_active)
+    def _escape(event):
+        if output_buffer.selection_state is not None:
+            output_buffer.exit_selection()
+        layout.focus(input_window)
+        _invalidate()
 
     @kb.add("c-c")
     def _ctrl_c(event):
         if _confirm["active"]:
-            _confirm["answer"] = "deny"
+            _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = False
             _confirm["event"].set()
         elif _copy_selection():
@@ -616,22 +983,34 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _scroll_down(event):
         _scroll_lines(-3)
 
+    @kb.add(Keys.Any, filter=has_focus(output_window) & ~confirm_active)
+    def _route_output_keys_to_input(event):
+        layout.focus(input_window)
+        for k in event.key_sequence:
+            if k.key == Keys.Backspace:
+                input_buffer.delete_before_cursor(count=1)
+            elif k.key in (Keys.Enter, "\r", "\n"):
+                input_buffer.validate_and_handle()
+            elif len(k.data) == 1 and k.data.isprintable():
+                input_buffer.insert_text(k.data)
+
     # ---- application ----
+    initial_skin = getattr(state, "theme_name", "bone") or "bone"
     app = Application(
         layout=layout,
         key_bindings=kb,
         full_screen=True,
-        style=_STYLE,
+        style=theme.make_pt_style(initial_skin),
         mouse_support=True,
     )
     holder["app"] = app
 
     # Re-width box borders when the terminal is resized (polling is cheap).
     def _width_watcher() -> None:
-        last = _term_width()
+        last = _app_width()
         while True:
-            time.sleep(0.5)
-            w = _term_width()
+            time.sleep(0.25)
+            w = _app_width()
             if w != last:
                 last = w
                 _reflow_borders()
@@ -640,3 +1019,4 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     result = await app.run_async()
     return result if isinstance(result, int) else 0
+

@@ -3,6 +3,7 @@
   "name": "file-operations",
   "domain": "general",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "write",
     "delete",

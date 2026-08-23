@@ -166,21 +166,27 @@ def test_sink_error_renders_markup() -> None:
 
 
 def test_sink_confirm_yes(monkeypatch) -> None:
+    from hund.agent.types import ConfirmRequest, ConfirmVerdict
     monkeypatch.setattr("builtins.input", lambda *a, **k: "j")
     sink = StreamingSink(Console(force_terminal=False, width=120, file=StringIO()))
-    assert sink.confirm("köra?") is True
+    req = ConfirmRequest(tool_name="terminal", args={"command": "ls"})
+    assert sink.confirm(req) == ConfirmVerdict.APPROVE_ONCE
 
 
 def test_sink_confirm_no(monkeypatch) -> None:
+    from hund.agent.types import ConfirmRequest, ConfirmVerdict
     monkeypatch.setattr("builtins.input", lambda *a, **k: "n")
     sink = StreamingSink(Console(force_terminal=False, width=120, file=StringIO()))
-    assert sink.confirm("köra?") is False
+    req = ConfirmRequest(tool_name="terminal", args={"command": "ls"})
+    assert sink.confirm(req) == ConfirmVerdict.DENY
 
 
 def test_sink_confirm_allow_all(monkeypatch) -> None:
+    from hund.agent.types import ConfirmRequest, ConfirmVerdict
     monkeypatch.setattr("builtins.input", lambda *a, **k: "a")
     sink = StreamingSink(Console(force_terminal=False, width=120, file=StringIO()))
-    assert sink.confirm("tillåt alla?") is True
+    req = ConfirmRequest(tool_name="terminal", args={"command": "ls"})
+    assert sink.confirm(req) == ConfirmVerdict.ALLOW_SESSION
 
 
 def test_sink_tool_hooks_exist() -> None:

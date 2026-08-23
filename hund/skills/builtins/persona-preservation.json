@@ -3,6 +3,7 @@
   "name": "persona-preservation",
   "domain": "general",
   "status": "active",
+  "immutable": true,
   "triggers": [
     "vem är du",
     "persona",

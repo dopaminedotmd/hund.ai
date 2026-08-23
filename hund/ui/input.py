@@ -13,9 +13,11 @@ from typing import Any
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion, CompleteEvent, WordCompleter
+from prompt_toolkit.document import Document
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style
+from collections.abc import Iterable
 
 from ..paths import hund_home
 from . import theme
@@ -23,7 +25,9 @@ from .keys import build_repl_keybindings
 
 SLASH_COMMAND_METAS: dict[str, str] = {
     "/exit": "Exit the REPL session",
+    "/help": "Show command palette and keybindings",
     "/stats": "View character card and RPG stats",
+    "/model": "View or switch active LLM model",
     "/skills": "Manage and inspect equipped skills and vault",
     "/profile": "View host hardware and environment profile",
     "/tools": "List registered tools and risk levels",
@@ -32,7 +36,6 @@ SLASH_COMMAND_METAS: dict[str, str] = {
     "/progress": "View session activity and progression",
     "/domains": "View domain confidence and specializations",
     "/memory": "Show and manage persistent user memory",
-    "/help": "Show command palette and keybindings",
     "/export": "Export session transcript to file",
     "/config": "View active configuration settings",
     "/copy": "Copy last assistant response to clipboard",
@@ -42,10 +45,39 @@ SLASH_COMMAND_METAS: dict[str, str] = {
     "/restore": "Restore previous session messages into active context",
     "/notifications": "Toggle desktop notifications",
     "/mascot": "Display Hund ASCII mascot",
+    "/usage": "View token and resource consumption",
+    "/doctor": "Run hardware and system diagnosis",
+    "/compress": "Compress context to save tokens",
+    "/diff": "View working tree modifications",
+    "/undo": "File backup and restore information",
+    "/lessons": "View learned lessons and feedback",
 }
 
 
 SLASH_COMMANDS = list(SLASH_COMMAND_METAS.keys())
+
+
+class SlashCommandCompleter(Completer):
+    """Context-aware slash command completer that properly filters prefixes."""
+
+    def get_completions(
+        self, document: Document, complete_event: CompleteEvent
+    ) -> Iterable[Completion]:
+        text = document.text_before_cursor.lstrip()
+        if not text.startswith("/"):
+            return
+        # Stop completing once space/arguments are entered
+        if " " in text:
+            return
+        query = text.lower()
+        for cmd, meta in SLASH_COMMAND_METAS.items():
+            if cmd.lower().startswith(query):
+                yield Completion(
+                    text=cmd,
+                    start_position=-len(text),
+                    display=cmd,
+                    display_meta=meta,
+                )
 
 
 @dataclass
@@ -54,7 +86,7 @@ class PromptState:
     stats_text: list[tuple[str, str]] | None = None
     prev_tiers: dict[str, str] = field(default_factory=dict)
     session_id: str | None = None
-    theme_name: str = "default"
+    theme_name: str = "bone"
     notifications_enabled: bool = True
     start_time: float = field(default_factory=time.time)
     extra: dict[str, Any] = field(default_factory=dict)
