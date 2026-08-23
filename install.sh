@@ -18,7 +18,7 @@
 #   EJ för publik stable.
 set -euo pipefail
 
-REPO="https://github.com/dopaminedotmd/hund-cli"
+REPO="https://github.com/dopaminedotmd/hund.ai"
 TARGET="${HUND_HOME_DIR:-$HOME/.hund-cli}"
 RELEASE_SHA="${HUND_RELEASE_SHA:-}"  # tom = dev-läge (latest main)
 
@@ -46,7 +46,7 @@ else
   git -C "$TARGET" pull
 fi
 
-uv tool install --force --from "$TARGET" hund-cli
+uv tool install --force --from "$TARGET" hund
 
 echo "Klar. Testa:"
 echo "  hund --version"
