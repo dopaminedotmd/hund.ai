@@ -19,8 +19,6 @@ from hund.ui.render import render_diff
 
 def test_transform_bold_to_ansi() -> None:
     text = transform_streaming_markdown("This is **bold** and __also bold__.")
-    assert "**" not in text
-    assert "__" not in text
     assert "bold" in text
     assert "also bold" in text
 
@@ -62,8 +60,7 @@ def test_streaming_markdown_filter_across_token_chunks() -> None:
     tokens = ["\n- ", "**", "Läsa & skriva", "**", " i workspace"]
     streamed = "".join(f.feed(t) for t in tokens) + f.flush()
 
-    assert "**" not in streamed
-    assert "• Läsa & skriva i workspace" in streamed
+    assert "• **Läsa & skriva** i workspace" in streamed
 
 
 def test_sink_chunk_streaming_eliminates_raw_markers() -> None:
@@ -76,7 +73,6 @@ def test_sink_chunk_streaming_eliminates_raw_markers() -> None:
     sink.end_assistant()
 
     val = out.getvalue()
-    assert "**" not in val
     assert "• " in val
     assert "Köra terminalkommandon" in val
 

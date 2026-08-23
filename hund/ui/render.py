@@ -345,17 +345,21 @@ import textwrap
 def wrap_content(text: str, content_width: int) -> list[str]:
     """Deterministically word-wrap text to content_width using stdlib textwrap.
 
-    Empty lines are preserved. Long unbreakable words (longer than content_width)
-    overflow that single line only (break_long_words=False).
+    Consecutive empty lines are collapsed to at most one empty line.
+    Long unbreakable words overflow that single line only (break_long_words=False).
     """
     if not text:
         return []
     cw = max(content_width, 1)
     wrapped: list[str] = []
+    prev_empty = False
     for raw_line in text.split("\n"):
-        if not raw_line:
-            wrapped.append("")
+        if not raw_line.strip():
+            if not prev_empty and wrapped:
+                wrapped.append("")
+                prev_empty = True
         else:
+            prev_empty = False
             lines = textwrap.wrap(
                 raw_line,
                 width=cw,
@@ -390,34 +394,36 @@ def render_response_box(
     terminal_width: int = 80,
     meta: str | None = None,
 ) -> str:
-    """Render response text inside a geometric box with '│ ' prefix and ' │' suffix rails.
+    """Render response text inside a full-width geometric box with generous padding.
 
-    - Short answers stay compact (rails wrap only as wide as needed, up to terminal_width - 4).
-    - Long answers expand up to full terminal_width with content_width = terminal_width - 4.
+    - Always spans the full terminal width (fullscreen).
+    - Top and bottom padding rows inside the box.
+    - 2-space horizontal padding on both sides (│  content  │).
+    - Hard word-wrapped at content_width = terminal_width - 6.
     - Meta is rendered right-aligned in the bottom border (e.g. '└── 2.3s ┘').
     """
-    max_cw = max(terminal_width - 4, 8)
-    wrapped = wrap_content(text, max_cw)
+    box_w = max(terminal_width, 24)
+    cw = max(box_w - 6, 1)
+
+    clean_text = text.strip("\n")
+    wrapped = wrap_content(clean_text, cw)
 
     if not wrapped:
-        box_w = min(terminal_width, 24)
         return f"{box_top(box_w)}\n{box_bottom(box_w, meta)}"
 
-    max_line_len = max(len(line) for line in wrapped)
-    meta_len = (len(str(meta).strip()) + 4) if (meta and str(meta).strip()) else 0
-    needed_w = max(max_line_len + 4, 12, meta_len + 4)
-
-    if needed_w >= terminal_width - 4:
-        box_w = terminal_width
-    else:
-        box_w = min(terminal_width, max(needed_w, 20))
-
-    cw = max(box_w - 4, 1)
     lines = [box_top(box_w)]
+    # Top padding rows (2 rows)
+    lines.append(f"│{' ' * (box_w - 2)}│")
+    lines.append(f"│{' ' * (box_w - 2)}│")
+
+    # Content rows
     for line in wrapped:
         if len(line) <= cw:
-            lines.append(f"│ {line:<{cw}} │")
+            lines.append(f"│  {line:<{cw}}  │")
         else:
-            lines.append(f"│ {line} │")
+            lines.append(f"│  {line}  │")
+
+    # Bottom padding row (1 row)
+    lines.append(f"│{' ' * (box_w - 2)}│")
     lines.append(box_bottom(box_w, meta))
     return "\n".join(lines)

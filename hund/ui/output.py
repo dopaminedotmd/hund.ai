@@ -67,12 +67,11 @@ def parse_confirm_input(ans: str) -> ConfirmVerdict:
 
 class StreamingMarkdownFilter:
     """Stateful stream filter that converts markdown syntax on-the-fly.
-    
+
     Transforms:
       - Line start '- ' or '* ' -> '• '
-      - '**text**' or '__text__' -> 'text' (suppressing raw **)
-      - '`code`' -> 'code' (suppressing raw `)
       - '### Heading' -> 'Heading' (suppressing raw #)
+      - Preserves '**bold**', '__bold__', and '`code`' for lexer styling.
     """
 
     def __init__(self):
@@ -111,34 +110,7 @@ class StreamingMarkdownFilter:
                     elif j == n:
                         break
 
-            # Bold markers (** or __) -> suppress marker
-            if rem >= 2 and self._buf[i:i + 2] in ("**", "__"):
-                i += 2
-                self._at_line_start = False
-                continue
-            elif rem == 1 and ch in ("*", "_"):
-                break
-
-            # Inline code (`)
-            if ch == "`":
-                if rem >= 3 and self._buf[i:i + 3] == "```":
-                    j = i + 3
-                    while j < n and self._buf[j] != "\n":
-                        j += 1
-                    if j < n:
-                        i = j + 1
-                        self._at_line_start = True
-                        continue
-                    else:
-                        break
-                elif rem < 3 and self._buf[i:].startswith("`"):
-                    if rem == 1 or rem == 2:
-                        pass
-                i += 1
-                self._at_line_start = False
-                continue
-
-            # Regular characters
+            # Regular characters (including **, __, `)
             if ch == "\n":
                 out.append("\n")
                 self._at_line_start = True
@@ -154,8 +126,7 @@ class StreamingMarkdownFilter:
     def flush(self) -> str:
         out: list[str] = []
         if self._buf:
-            clean = strip_markdown(self._buf)
-            out.append(clean)
+            out.append(self._buf)
             self._buf = ""
         return "".join(out)
 
@@ -373,6 +344,8 @@ class StreamingSink:
         w = self._width()
         fill = max(w - 9, 2)  # "┌─ " (3) + "hund" (4) + " " (1) + "┐" (1)
         self.console.print(f"[dim]┌─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}┐[/dim]")
+        self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
+        self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
         self._box_open = True
         self._at_line_start = True
         self._line_len = 0
@@ -381,6 +354,7 @@ class StreamingSink:
         if not self._box_open:
             return
         w = self._width()
+        self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
         if meta is not None and str(meta).strip():
             meta_str = str(meta).strip()
             dashes = max(w - len(meta_str) - 4, 2)
@@ -398,20 +372,20 @@ class StreamingSink:
             return
         if not self._box_open:
             self._open_box()
-        cw = max(self._width() - 4, 1)
+        cw = max(self._width() - 6, 1)
         for ch in filtered:
             if self._at_line_start:
-                self.console.print("[dim]│ [/dim]", end="", markup=True, highlight=False)
+                self.console.print("[dim]│  [/dim]", end="", markup=True, highlight=False)
                 self._at_line_start = False
                 self._line_len = 0
             if ch == "\n":
                 padding = max(cw - self._line_len, 0)
-                self.console.print(" " * padding + "[dim] │[/dim]\n", end="", markup=True, highlight=False)
+                self.console.print(" " * padding + "[dim]  │[/dim]\n", end="", markup=True, highlight=False)
                 self._at_line_start = True
                 self._line_len = 0
             else:
                 if self._line_len >= cw:
-                    self.console.print("[dim] │[/dim]\n[dim]│ [/dim]", end="", markup=True, highlight=False)
+                    self.console.print("[dim]  │[/dim]\n[dim]│  [/dim]", end="", markup=True, highlight=False)
                     self._line_len = 0
                 self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
                 self._line_len += 1
@@ -428,27 +402,27 @@ class StreamingSink:
         if leftover:
             if not self._box_open:
                 self._open_box()
-            cw = max(self._width() - 4, 1)
+            cw = max(self._width() - 6, 1)
             for ch in leftover:
                 if self._at_line_start:
-                    self.console.print("[dim]│ [/dim]", end="", markup=True, highlight=False)
+                    self.console.print("[dim]│  [/dim]", end="", markup=True, highlight=False)
                     self._at_line_start = False
                     self._line_len = 0
                 if ch == "\n":
                     padding = max(cw - self._line_len, 0)
-                    self.console.print(" " * padding + "[dim] │[/dim]\n", end="", markup=True, highlight=False)
+                    self.console.print(" " * padding + "[dim]  │[/dim]\n", end="", markup=True, highlight=False)
                     self._at_line_start = True
                     self._line_len = 0
                 else:
                     if self._line_len >= cw:
-                        self.console.print("[dim] │[/dim]\n[dim]│ [/dim]", end="", markup=True, highlight=False)
+                        self.console.print("[dim]  │[/dim]\n[dim]│  [/dim]", end="", markup=True, highlight=False)
                         self._line_len = 0
                     self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
                     self._line_len += 1
         if self._box_open and not self._at_line_start:
-            cw = max(self._width() - 4, 1)
+            cw = max(self._width() - 6, 1)
             padding = max(cw - self._line_len, 0)
-            self.console.print(" " * padding + "[dim] │[/dim]\n", end="", markup=True, highlight=False)
+            self.console.print(" " * padding + "[dim]  │[/dim]\n", end="", markup=True, highlight=False)
             self._at_line_start = True
             self._line_len = 0
         self._close_box()

@@ -28,6 +28,7 @@ from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
+from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.menus import CompletionsMenu
@@ -119,6 +120,74 @@ def _format_tool_desc(name: str, args: dict | None) -> str:
         return f"ran {name}"
 
 
+def _parse_semantic_line(cur: str, indent_str: str = "") -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    if indent_str:
+        tokens.append(("", indent_str))
+
+    # Numbered skill/item list with emdash: "9. python-project-workflow — safety_level: ..."
+    skill_num_match = re.match(r"^(\d+\.\s+)([^\s—–]+(?:[ \t]+[^\s—–]+)*)(\s+[—–]\s+.*)$", cur)
+    if skill_num_match:
+        tokens.append(("class:number", skill_num_match.group(1)))
+        tokens.append(("class:header", skill_num_match.group(2)))
+        tokens.append(("class:secondary", skill_num_match.group(3)))
+        return tokens
+
+    # Numbered list item with optional bullet: "1. Trigger: ...", "- 1. Trigger: ..."
+    num_match = re.match(r"^((?:•|-|\*)\s+)?(\d+\.\s+)(.*?)$", cur)
+    if num_match:
+        bullet_part = num_match.group(1)
+        num_part = num_match.group(2)
+        rest_str = num_match.group(3)
+        if bullet_part:
+            tokens.append(("class:bullet", bullet_part))
+        tokens.append(("class:number", num_part))
+        cur = rest_str
+    else:
+        bullet_match = re.match(r"^(•|-|\*)\s+", cur)
+        if bullet_match:
+            tokens.append(("class:bullet", bullet_match.group(0)))
+            cur = cur[bullet_match.end():]
+
+    # Lead-in label before colon: "Trigger:", "Hur hund går tillväga:", "Ansvar:", "**Arbetsflöde:**"
+    # Guard: not URL, not Python def/class, not timestamp (10:30)
+    if not cur.startswith("http:") and not cur.startswith("https:") and not cur.startswith("def ") and not re.match(r"^\d{1,2}:\d{2}", cur):
+        label_match = re.match(
+            r"^(\*\*[^*]+\*\*|\b[A-Za-zåäöÅÄÖ0-9_-]+(?:\s+[A-Za-zåäöÅÄÖ0-9_-]+){0,3}\s*:)\s*",
+            cur,
+        )
+        if label_match:
+            raw_label = label_match.group(1)
+            display_label = raw_label[2:-2] if (raw_label.startswith("**") and raw_label.endswith("**")) else raw_label
+            tokens.append(("class:label", display_label))
+            cur = cur[len(raw_label):]
+            if cur.startswith(" "):
+                tokens.append(("class:primary", " "))
+                cur = cur[1:]
+
+    # Inline markdown parsing: code, bold, arrows, dashes
+    pattern = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`|->|→|—|–)")
+    pos = 0
+    for m in pattern.finditer(cur):
+        if m.start() > pos:
+            tokens.append(("class:primary", cur[pos : m.start()]))
+        val = m.group(0)
+        if val.startswith("**") and val.endswith("**"):
+            tokens.append(("class:label", val[2:-2]))
+        elif val.startswith("`") and val.endswith("`"):
+            tokens.append(("class:code", val[1:-1]))
+        elif val in ("->", "→", "—", "–"):
+            tokens.append(("class:secondary", val))
+        else:
+            tokens.append(("class:primary", val))
+        pos = m.end()
+
+    if pos < len(cur):
+        tokens.append(("class:primary", cur[pos:]))
+
+    return tokens
+
+
 class _OutputLexer(Lexer):
     """Line-prefix & semantic markdown lexer mapping output lines to rich token styles."""
 
@@ -158,7 +227,12 @@ class _OutputLexer(Lexer):
                 else:
                     tokens.append(("class:secondary", rest))
                 return tokens
-            elif "hund is " in line:
+            elif (
+                line.startswith("  hund ")
+                or stripped.startswith("hund is ")
+                or stripped.startswith("hund was ")
+                or (stripped.startswith("hund ") and stripped.endswith("."))
+            ):
                 return [("class:secondary", line)]
             elif "CONFIRMATION REQUIRED" in line:
                 return [("class:warning", line)]
@@ -174,69 +248,41 @@ class _OutputLexer(Lexer):
                 return [("class:danger", line)]
             elif "tool:" in line:
                 return [("class:tool", line)]
-            elif line.startswith("┌") or line.startswith("└") or line.startswith("╭") or line.startswith("╰") or line.startswith("│"):
+            elif line.startswith("┌─ hund ") or line.startswith("╭─ hund "):
+                idx = line.find("hund")
+                return [
+                    ("class:secondary", line[:idx]),
+                    ("class:accent bold", "hund"),
+                    ("class:secondary", line[idx + 4 :]),
+                ]
+            elif line.startswith("└") or line.startswith("╰"):
                 return [("class:secondary", line)]
+            elif line.startswith("│") and line.endswith("│") and not line.strip("│ "):
+                return [("class:secondary", line)]
+            elif line.startswith("│  ") and line.endswith("  │") and len(line) >= 6:
+                content = line[3:-3]
+                indent_len = len(content) - len(content.lstrip())
+                indent_str = content[:indent_len]
+                cur = content.lstrip()
+                return [("class:secondary", "│  ")] + _parse_semantic_line(cur, indent_str) + [("class:secondary", "  │")]
+            elif line.startswith("│ ") and line.endswith(" │") and len(line) >= 4:
+                content = line[2:-2]
+                indent_len = len(content) - len(content.lstrip())
+                indent_str = content[:indent_len]
+                cur = content.lstrip()
+                return [("class:secondary", "│ ")] + _parse_semantic_line(cur, indent_str) + [("class:secondary", " │")]
+            elif line.startswith("│") and line.endswith("│") and len(line) >= 2:
+                content = line[1:-1]
+                indent_len = len(content) - len(content.lstrip())
+                indent_str = content[:indent_len]
+                cur = content.lstrip()
+                return [("class:secondary", "│")] + _parse_semantic_line(cur, indent_str) + [("class:secondary", "│")]
             elif stripped.startswith("#"):
                 return [("class:header", line)]
 
-            # Semantic parsing of assistant responses
             indent_len = len(line) - len(stripped)
             indent_str = line[:indent_len]
-            cur = stripped
-            tokens: list[tuple[str, str]] = []
-
-            # Numbered list item: "9. python-project-workflow — safety_level: ..."
-            num_match = re.match(r"^(\d+\.\s+)([^\s—–]+(?:[ \t]+[^\s—–]+)*)(.*)$", cur)
-            if num_match:
-                if indent_str:
-                    tokens.append(("", indent_str))
-                tokens.append(("class:number", num_match.group(1)))
-                tokens.append(("class:header", num_match.group(2)))
-                rest_str = num_match.group(3)
-                if rest_str:
-                    tokens.append(("class:secondary", rest_str))
-                return tokens
-
-            # Bullet item: "- Ansvar: ...", "• Triggras av: ...", "* **Arbetsflöde:** ..."
-            bullet_match = re.match(r"^(•|-|\*)\s+", cur)
-            if bullet_match:
-                if indent_str:
-                    tokens.append(("", indent_str))
-                tokens.append(("class:bullet", bullet_match.group(0)))
-                cur = cur[bullet_match.end():]
-
-                # Lead-in label: "Ansvar:", "Triggras av:", "**Arbetsflöde:**"
-                label_match = re.match(
-                    r"^(\*\*[^*]+\*\*|\b[A-Za-zåäöÅÄÖ_-]+(?:\s+[a-zåäö_-]+)?\s*:)\s*",
-                    cur,
-                )
-                if label_match:
-                    tokens.append(("class:label", label_match.group(0)))
-                    cur = cur[label_match.end():]
-            elif indent_str:
-                tokens.append(("", indent_str))
-
-            # Inline markdown parsing: code, bold, arrows, dashes
-            pattern = re.compile(r"(\*\*[^*]+\*\*|`[^`]+`|->|→|—|–)")
-            pos = 0
-            for m in pattern.finditer(cur):
-                if m.start() > pos:
-                    tokens.append(("class:primary", cur[pos : m.start()]))
-                val = m.group(0)
-                if val.startswith("**") and val.endswith("**"):
-                    tokens.append(("class:label", val))
-                elif val.startswith("`") and val.endswith("`"):
-                    tokens.append(("class:code", val))
-                elif val in ("->", "→", "—", "–"):
-                    tokens.append(("class:secondary", val))
-                else:
-                    tokens.append(("class:primary", val))
-                pos = m.end()
-
-            if pos < len(cur):
-                tokens.append(("class:primary", cur[pos:]))
-
-            return tokens
+            return _parse_semantic_line(stripped, indent_str)
 
         return get_line
 
@@ -305,17 +351,21 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     output_control = _SelectableControl(buffer=output_buffer, lexer=_OUTPUT_LEXER)
     output_window = Window(
         content=output_control,
-        wrap_lines=True,
+        wrap_lines=False,
         always_hide_cursor=True,
     )
 
     # ---- input buffer + prompt ----
     completer = SlashCommandCompleter()
     input_buffer = Buffer(
-        name="input", multiline=False, completer=completer, complete_while_typing=True,
+        name="input", multiline=True, completer=completer, complete_while_typing=True,
     )
     input_control = BufferControl(buffer=input_buffer, focus_on_click=True)
-    input_window = Window(content=input_control, height=1)
+    input_window = Window(
+        content=input_control,
+        height=Dimension(min=1, max=10, preferred=1),
+        wrap_lines=True,
+    )
     prompt_window = Window(
         content=FormattedTextControl(lambda: [("class:prompt", "❯ ")]),
         width=3,
@@ -398,12 +448,21 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         confirm_window, filter=Condition(lambda: _confirm["active"])
     )
 
-    # 1-row vertical breathing room between input and bottom status bar
-    input_gap = Window(height=1, char=" ")
+    # 2-line vertical breathing room above and below input
+    input_gap_top = Window(height=2, char=" ")
+    input_gap_bottom = Window(height=2, char=" ")
 
     layout = Layout(
         FloatContainer(
-            content=HSplit([output_window, thinking_container, confirm_container, input_row, input_gap, status_window]),
+            content=HSplit([
+                output_window,
+                thinking_container,
+                confirm_container,
+                input_gap_top,
+                input_row,
+                input_gap_bottom,
+                status_window,
+            ]),
             floats=[
                 Float(
                     xcursor=True,
@@ -428,12 +487,6 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 pass
 
     def _app_width() -> int:
-        app = holder.get("app")
-        if app is not None:
-            try:
-                return app.output.get_size().columns
-            except Exception:
-                pass
         return _term_width()
 
     def _box_top(width: int | None = None) -> str:
@@ -485,13 +538,17 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                     # Unbox lines
                     content_lines: list[str] = []
                     for bl in box_lines:
-                        if bl.startswith("│ ") and bl.endswith(" │"):
+                        if not bl.strip("│ "):
+                            continue  # Skip top/bottom padding rows
+                        if bl.startswith("│  ") and bl.endswith("  │"):
+                            content_lines.append(bl[3:-3].rstrip())
+                        elif bl.startswith("│ ") and bl.endswith(" │"):
                             content_lines.append(bl[2:-2].rstrip())
                         elif bl.startswith("│") and bl.endswith("│"):
                             content_lines.append(bl[1:-1].rstrip())
                         else:
                             content_lines.append(bl.rstrip())
-                    raw_content = "\n".join(content_lines)
+                    raw_content = "\n".join(content_lines).strip("\n")
                     re_boxed = render_response_box(raw_content, _app_width(), meta=box_meta)
                     new_lines.extend(re_boxed.split("\n"))
                     changed = True
@@ -663,24 +720,32 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             return _confirm["answer"]
 
         def tool_start(self, name: str, args) -> None:
-            if _thinking["active"] and not self._tool_switched:
+            if not self._tool_switched:
                 u_text = self._user_input
                 if not u_text and messages:
                     u_text = next(
                         (m.content for m in reversed(messages) if getattr(m, "role", "") == "user"),
                         "",
                     )
-                gerund, past = select_thinking_phrase(u_text)
+                gerund, past = select_thinking_phrase(u_text, tool_name=name)
                 _thinking["text"] = gerund
                 _thinking["past"] = past
                 _thinking["start_time"] = time.time()
+                _thinking["active"] = True
                 self._tool_switched = True
+                self._start_anim_timer()
                 _invalidate()
+
+            if self._box_open:
+                self._box_open = False
+                self._box_start_marker = None
+                self._raw_response = ""
 
             self._tool_args = args if isinstance(args, dict) else {}
             self._tool_start_time = time.time()
             self._tool_marker = len(output_buffer.text)
-            append(f"  ┊ ⟳ preparing {name}…\n")
+            desc = _format_tool_desc(name, self._tool_args)
+            append(f"  ┊ ⟳ {desc}\n")
 
         def tool_result(self, name: str, shown: str) -> None:
             dur = time.time() - self._tool_start_time
@@ -982,6 +1047,15 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     @kb.add("<scroll-down>")
     def _scroll_down(event):
         _scroll_lines(-3)
+
+    @kb.add("enter", filter=has_focus(input_window) & ~confirm_active)
+    def _enter_submit(event):
+        input_buffer.validate_and_handle()
+
+    @kb.add("s-enter", filter=has_focus(input_window) & ~confirm_active)
+    @kb.add("c-j", filter=has_focus(input_window) & ~confirm_active)
+    def _newline_input(event):
+        input_buffer.insert_text("\n")
 
     @kb.add(Keys.Any, filter=has_focus(output_window) & ~confirm_active)
     def _route_output_keys_to_input(event):

@@ -39,23 +39,25 @@ def test_wrap_content_unbreakable_long_word() -> None:
     assert wrapped[0] == long_url
 
 
-def test_render_response_box_short_compact() -> None:
+def test_render_response_box_fullscreen_and_padding() -> None:
     short_reply = "hund är vaken."
     box = render_response_box(short_reply, terminal_width=80)
     lines = box.split("\n")
-    assert len(lines) == 3
+    # Top border, 2 top padding rows, content, bottom padding row, bottom border = 6 lines
+    assert len(lines) == 6
     assert lines[0].startswith("┌─ hund ")
     assert lines[0].endswith("┐")
-    assert lines[1].startswith("│ ")
-    assert lines[1].endswith(" │")
-    assert lines[2].startswith("└")
-    assert lines[2].endswith("┘")
+    assert lines[1].startswith("│") and lines[1].endswith("│") and not lines[1].strip("│ ")
+    assert lines[2].startswith("│") and lines[2].endswith("│") and not lines[2].strip("│ ")
+    assert lines[3].startswith("│  hund är vaken.")
+    assert lines[3].endswith("  │")
+    assert lines[4].startswith("│") and lines[4].endswith("│") and not lines[4].strip("│ ")
+    assert lines[5].startswith("└")
+    assert lines[5].endswith("┘")
 
-    # Assert all lines have identical compact width (< 80)
-    w0 = len(lines[0])
-    assert w0 < 80
-    assert len(lines[1]) == w0
-    assert len(lines[2]) == w0
+    # Assert all lines span the full terminal width (80)
+    for line in lines:
+        assert len(line) == 80
 
 
 def test_render_response_box_long_full_width() -> None:
@@ -67,12 +69,12 @@ def test_render_response_box_long_full_width() -> None:
     term_width = 80
     box = render_response_box(long_reply, terminal_width=term_width)
     lines = box.split("\n")
-    assert len(lines) >= 4
+    assert len(lines) >= 6
     for line in lines:
         assert len(line) == term_width
-        if line.startswith("│"):
-            assert line.startswith("│ ")
-            assert line.endswith(" │")
+        if line.startswith("│") and line.strip("│ "):
+            assert line.startswith("│  ")
+            assert line.endswith("  │")
 
 
 def test_box_bottom_meta_render() -> None:
@@ -100,7 +102,65 @@ def test_streaming_sink_renders_rails_and_meta() -> None:
 
     captured = out.getvalue()
     assert "┌─ hund " in captured
-    assert "│ hund svarar med sidolinjer." in captured
+    assert "│  hund svarar med sidolinjer." in captured
     assert "│" in captured
     assert "└" in captured
     assert "┘" in captured
+
+
+def test_output_lexer_box_and_thinking_styles() -> None:
+    from prompt_toolkit.document import Document
+    from hund.ui.fullscreen import _OUTPUT_LEXER
+
+    doc = Document(
+        "  hund planned.\n"
+        "┌─ hund ──────────────────────────────────────────────┐\n"
+        "│                                                      │\n"
+        "│                                                      │\n"
+        "│  hund skapar skills som deklarativa JSON-filer       │\n"
+        "│  Hur hund går tillväga:                              │\n"
+        "│  - 1. Trigger: användaren ber hund skapa             │\n"
+        "│  detta är **fetstil** och `inline_kod` här.          │\n"
+        "│                                                      │\n"
+        "└──────────────────────────────────────────────────────┘\n"
+    )
+    lexer_fn = _OUTPUT_LEXER.lex_document(doc)
+
+    # Line 0: "  hund planned." -> class:secondary (dim)
+    t0 = lexer_fn(0)
+    assert any(style == "class:secondary" for style, text in t0 if "hund planned." in text)
+
+    # Line 1: "┌─ hund ..." -> border with accent bold "hund"
+    t1 = lexer_fn(1)
+    assert any("hund" in text and "class:accent" in style for style, text in t1)
+
+    # Line 2 & 3: padding lines -> class:secondary
+    t2 = lexer_fn(2)
+    assert t2[0][0] == "class:secondary"
+    t3 = lexer_fn(3)
+    assert t3[0][0] == "class:secondary"
+
+    # Line 4: "│  hund skapar skills ...  │" -> primary text
+    t4 = lexer_fn(4)
+    assert t4[0] == ("class:secondary", "│  ")
+    assert any("hund skapar skills" in text and style == "class:primary" for style, text in t4)
+    assert t4[-1] == ("class:secondary", "  │")
+
+    # Line 5: "│  Hur hund går tillväga: ...  │" -> label bold
+    t5 = lexer_fn(5)
+    assert any("Hur hund går tillväga:" in text and "class:label" in style for style, text in t5)
+
+    # Line 6: "│  - 1. Trigger: användaren ber hund skapa ...  │" -> bullet + number + label + primary
+    t6 = lexer_fn(6)
+    assert any(style == "class:bullet" for style, text in t6)
+    assert any(style == "class:number" for style, text in t6)
+    assert any("Trigger:" in text and "class:label" in style for style, text in t6)
+    assert any("användaren ber hund skapa" in text and style == "class:primary" for style, text in t6)
+
+    # Line 7: "│  detta är **fetstil** och `inline_kod` här.          │"
+    # Markers must be stripped in tokens: "fetstil" (no **) and "inline_kod" (no `)
+    t7 = lexer_fn(7)
+    assert any(style == "class:label" and text == "fetstil" for style, text in t7)
+    assert not any("**" in text for style, text in t7)
+    assert any(style == "class:code" and text == "inline_kod" for style, text in t7)
+    assert not any("`" in text for style, text in t7)

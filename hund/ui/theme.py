@@ -38,7 +38,7 @@ SKINS: dict[str, dict[str, Any]] = {
         "name": "bone",
         "pygments": "one-dark",
         "tokens": {
-            "primary": "#E3E3E4",
+            "primary": "#FFFFFF",
             "secondary": "#6E7380",
             "accent": "#4EBCD5",
             "user": "#50FA7B",
@@ -50,7 +50,7 @@ SKINS: dict[str, dict[str, Any]] = {
             "learning": "#E6C07B",
             "add": "#50FA7B",
             "del": "#FF5555",
-            "mascot": "#E3E3E4",
+            "mascot": "#FFFFFF",
         },
         "ansi": {
             "primary": "ansiwhite",
@@ -72,7 +72,7 @@ SKINS: dict[str, dict[str, Any]] = {
         "name": "nord",
         "pygments": "nord",
         "tokens": {
-            "primary": "#D8DEE9",
+            "primary": "#ECEFF4",
             "secondary": "#4C566A",
             "accent": "#88C0D0",
             "user": "#A3BE8C",
@@ -84,7 +84,7 @@ SKINS: dict[str, dict[str, Any]] = {
             "learning": "#EBCB8B",
             "add": "#A3BE8C",
             "del": "#BF616A",
-            "mascot": "#D8DEE9",
+            "mascot": "#ECEFF4",
         },
         "ansi": {
             "primary": "ansiwhite",
@@ -106,7 +106,7 @@ SKINS: dict[str, dict[str, Any]] = {
         "name": "synthwave",
         "pygments": "dracula",
         "tokens": {
-            "primary": "#E0DEF4",
+            "primary": "#FFFFFF",
             "secondary": "#6E6A86",
             "accent": "#8BE9FD",
             "user": "#A6E3A1",
@@ -118,7 +118,7 @@ SKINS: dict[str, dict[str, Any]] = {
             "learning": "#F9E2AF",
             "add": "#A6E3A1",
             "del": "#F38BA8",
-            "mascot": "#E0DEF4",
+            "mascot": "#FFFFFF",
         },
         "ansi": {
             "primary": "ansiwhite",
@@ -131,8 +131,8 @@ SKINS: dict[str, dict[str, Any]] = {
             "tool": "ansibrightmagenta",
             "thinking": "ansiwhite",
             "learning": "ansiyellow",
-            "add": "ansibrightgreen",
-            "del": "ansibrightred",
+            "add": "ansigreen",
+            "del": "ansired",
             "mascot": "ansiwhite",
         },
     },
@@ -155,8 +155,9 @@ def get_pygments_theme(skin_name: str | None = None) -> str:
 
 
 def get_skin(name: str | None = None) -> dict[str, Any]:
-    """Retrieve skin definition by name (defaults to bone)."""
-    return SKINS.get((name or DEFAULT_SKIN).lower(), SKINS[DEFAULT_SKIN])
+    """Retrieve skin definition by name with fallback to DEFAULT_SKIN."""
+    key = (name or DEFAULT_SKIN).lower().strip()
+    return SKINS.get(key, SKINS[DEFAULT_SKIN])
 
 
 def get_theme(name: str | None = None) -> dict[str, Any]:
@@ -175,8 +176,10 @@ def make_pt_style(skin_name: str | None = None) -> Style:
     tokens = skin["tokens"]
     return Style.from_dict(
         {
+            "": tokens["primary"],
             "primary": tokens["primary"],
             "secondary": tokens["secondary"],
+            "dim": tokens["secondary"],
             "accent": tokens["accent"],
             "success": tokens["success"],
             "danger": tokens["danger"],
