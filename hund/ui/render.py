@@ -192,12 +192,12 @@ def build_startup_banner(rt, width: int = 80) -> str:
         pct = int(s.get("progress", 0) or 0)
         attr_data.append((abbr, name, pct))
 
-    # Skill and Domain XP data
-    all_display_skills = list(active_skills) + [s for s in core_skills if s not in active_skills]
+    # Skill and Domain XP data — only show active custom domain skills
+    active_domain_skills = list(active_skills)
     skill_data: list[tuple[str, str, int]] = []
     try:
         from hund.domains.xp import get_xp
-        for s in all_display_skills[:6]:
+        for s in active_domain_skills[:6]:
             s_name = getattr(s, "name", str(s))[:17]
             s_domain = getattr(s, "domain", "") or s_name
             xp_info = get_xp(s_domain)
@@ -205,11 +205,11 @@ def build_startup_banner(rt, width: int = 80) -> str:
                 xp_info = get_xp(s_name)
             skill_data.append((s_name, xp_info["tier"], xp_info["progress_pct"]))
     except Exception:
-        for s in all_display_skills[:6]:
+        for s in active_domain_skills[:6]:
             s_name = getattr(s, "name", str(s))[:17]
             skill_data.append((s_name, "Novice", 0))
 
-    total_display_skills = len(all_display_skills[:6])
+    total_display_skills = len(active_domain_skills)
     skills_header = f"── SKILLS ({total_display_skills}/{max_slots}) ──"
 
     commands_text = "commands: /skills · /stats · /theme · /model · /clear · /exit"
@@ -241,7 +241,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
 
         lines.append(split_row("── BASE ATTRIBUTES ──", skills_header))
         bar_w = 8 if W < 80 else 10
-        max_rows = max(len(attr_data), len(skill_data))
+        max_rows = max(len(attr_data), len(skill_data) if skill_data else 2)
         for i in range(max_rows):
             l_str = ""
             if i < len(attr_data):
@@ -249,10 +249,15 @@ def build_startup_banner(rt, width: int = 80) -> str:
                 bar = _bar(pct, width=bar_w)
                 l_str = f"{abbr} {name:<10} {bar} {pct}%"
             r_str = ""
-            if i < len(skill_data):
+            if skill_data and i < len(skill_data):
                 sname, stier, pct = skill_data[i]
                 bar = _bar(pct, width=bar_w)
                 r_str = f"{sname:<17} {bar} {pct}%"
+            elif not skill_data:
+                if i == 0:
+                    r_str = "(no custom skills equipped)"
+                elif i == 1:
+                    r_str = "(use /skills to equip)"
             lines.append(split_row(l_str, r_str))
     else:
         bar_w = max(4, min(8, (W - 28) // 2))
@@ -262,9 +267,13 @@ def build_startup_banner(rt, width: int = 80) -> str:
             lines.append(row(f"{abbr} {name:<9} {bar} {pct}%"))
         lines.append(empty)
         lines.append(row(skills_header))
-        for sname, stier, pct in skill_data[:4]:
-            bar = _bar(pct, width=bar_w)
-            lines.append(row(f"{sname:<16} {bar} {pct}%"))
+        if skill_data:
+            for sname, stier, pct in skill_data[:4]:
+                bar = _bar(pct, width=bar_w)
+                lines.append(row(f"{sname:<16} {bar} {pct}%"))
+        else:
+            lines.append(row("(no custom skills equipped)"))
+            lines.append(row("(use /skills to equip)"))
 
     lines.extend([
         empty,

@@ -108,7 +108,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
             ctx.console.print("[yellow]Usage: /skills info <skill_name>[/yellow]")
             return
         target = args[1]
-        detail_card = render_skill_detail(target, ctx.rt, vault=vault, width=80)
+        detail_card = render_skill_detail(target, ctx.rt, vault=vault)
         ctx.console.print(detail_card)
         return
 
@@ -192,7 +192,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
         return
 
     # Default / all / active -> Render complete 2-layer fullscreen panel per TUI_FACIT.md §12
-    panel = render_skills_panel(ctx.rt, vault=vault, width=80)
+    panel = render_skills_panel(ctx.rt, vault=vault)
     ctx.console.print(panel)
 
 

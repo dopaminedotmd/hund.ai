@@ -1,10 +1,12 @@
 """Skills View — renders the 2-layer fullscreen skills panel & detailed inspection cards.
 
 Adheres strictly to TUI_FACIT.md §12, PLAN_2026-08-23.md §15, and PLAN_2026-08-24_learning_engine.md §8.
+Uses identical border and row geometry to build_startup_banner in render.py.
 """
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 from typing import Any, Optional
 
 from hund.domains.xp import get_xp
@@ -28,7 +30,7 @@ def _truncate_pad(text: str, length: int) -> str:
 def render_skills_panel(
     rt: Any = None,
     vault: Optional[SkillVault] = None,
-    width: int = 80,
+    width: int | None = None,
     db_path: Path | str | None = None,
 ) -> str:
     """Render the 2-layer fullscreen skills panel per TUI_FACIT.md §12.
@@ -37,8 +39,9 @@ def render_skills_panel(
     Middle layer: Equipped domain skills with XP bars, tiers, and levels.
     Bottom layer: Vaulted/parked skills with slot capacity.
     """
-    w = max(width, 70)
-    inner_w = w - 4  # inside borders '║  ...  ║'
+    term_cols = shutil.get_terminal_size((80, 24)).columns
+    W = max(width if width is not None else min(term_cols, 80), 40)
+    inner_w = W - 6  # text space inside '║  ...  ║'
 
     if vault is None:
         vault = SkillVault()
@@ -57,71 +60,68 @@ def render_skills_panel(
     max_slots = vault.max_active
     slot_info = f"[{len(active_skills)}/{max_slots} slots]"
 
-    lines: list[str] = []
+    top = "╔" + "═" * (W - 2) + "╗"
+    bottom = "╚" + "═" * (W - 2) + "╝"
+    empty = "║" + " " * (W - 2) + "║"
 
-    # Header border
-    title_part = "  SKILLS"
-    slots_part = slot_info + "  "
-    header_dashes = w - 2 - len(title_part) - len(slots_part)
-    if header_dashes < 2:
-        header_dashes = 2
-    top_line = f"╔{title_part}{'═' * header_dashes}{slots_part}╗"
-    lines.append(top_line)
-    lines.append(f"║{' ' * (w - 2)}║")
+    def row(content: str) -> str:
+        c = content[: W - 6]
+        return "║  " + c.ljust(W - 6) + "  ║"
+
+    lines: list[str] = [top, empty]
+
+    # Title header line
+    header_left = "SKILLS"
+    header_line = f"{header_left}{' ' * max(inner_w - len(header_left) - len(slot_info), 2)}{slot_info}"
+    lines.append(row(header_line))
+    lines.append(empty)
 
     # Section 1: Motor Skills (Always on, immutable)
-    sec1_title = "  ── MOTOR SKILLS · always on · immutable "
-    sec1_dashes = inner_w - len(sec1_title) + 2
-    if sec1_dashes < 2:
-        sec1_dashes = 2
-    lines.append(f"║  {sec1_title}{'─' * sec1_dashes}║")
+    sec1_title = "── MOTOR SKILLS · always on · immutable "
+    sec1_dashes = inner_w - len(sec1_title)
+    lines.append(row(f"{sec1_title}{'─' * max(sec1_dashes, 2)}"))
 
     # Format motor skills in 2 columns
-    col_w = inner_w // 2
+    col_w = (inner_w - 2) // 2
     for i in range(0, len(motor_names), 2):
         col1 = motor_names[i]
         col2 = motor_names[i + 1] if (i + 1) < len(motor_names) else ""
-        row_str = f"  {_truncate_pad(col1, col_w - 2)}  {_truncate_pad(col2, col_w - 2)}"
-        lines.append(f"║{row_str.ljust(w - 2)}║")
+        row_str = f"{_truncate_pad(col1, col_w)}  {_truncate_pad(col2, col_w)}"
+        lines.append(row(row_str))
 
-    lines.append(f"║{' ' * (w - 2)}║")
+    lines.append(empty)
 
     # Section 2: Domain Skills (Equipped)
-    sec2_title = "  ── DOMAIN SKILLS · equipped "
-    sec2_dashes = inner_w - len(sec2_title) + 2
-    if sec2_dashes < 2:
-        sec2_dashes = 2
-    lines.append(f"║  {sec2_title}{'─' * sec2_dashes}║")
+    sec2_title = "── DOMAIN SKILLS · equipped "
+    sec2_dashes = inner_w - len(sec2_title)
+    lines.append(row(f"{sec2_title}{'─' * max(sec2_dashes, 2)}"))
 
     if not active_skills:
-        empty_str = "  (no domain skills equipped — use /skills equip <name>)"
-        lines.append(f"║{empty_str.ljust(w - 2)}║")
+        lines.append(row("(no domain skills equipped — use /skills equip <name>)"))
     else:
+        bar_w = 8 if W < 80 else 10
         for s in active_skills:
             dom = s.domain or s.name
             xp_info = get_xp(dom, db_path=db_path)
             tier = xp_info["tier"]
             lvl = xp_info["level"]
             pct = xp_info["progress_pct"]
-            bar = render_bar(pct, width=10)
+            bar = render_bar(pct, width=bar_w)
 
             # Format row
             name_col = _truncate_pad(s.name, 18)
-            row_str = f"  {name_col} {bar}  {tier:<8} {pct:>3}%  (Lvl {lvl})"
-            lines.append(f"║{row_str.ljust(w - 2)}║")
+            row_str = f"{name_col} {bar}  {tier:<8} {pct:>3}%  (Lvl {lvl})"
+            lines.append(row(row_str))
 
-    lines.append(f"║{' ' * (w - 2)}║")
+    lines.append(empty)
 
     # Section 3: Vault (Parked)
-    sec3_title = "  ── VAULT · parked "
-    sec3_dashes = inner_w - len(sec3_title) + 2
-    if sec3_dashes < 2:
-        sec3_dashes = 2
-    lines.append(f"║  {sec3_title}{'─' * sec3_dashes}║")
+    sec3_title = "── VAULT · parked "
+    sec3_dashes = inner_w - len(sec3_title)
+    lines.append(row(f"{sec3_title}{'─' * max(sec3_dashes, 2)}"))
 
     if not vaulted_skills:
-        vault_empty = "  (vault is empty — all custom skills equipped)"
-        lines.append(f"║{vault_empty.ljust(w - 2)}║")
+        lines.append(row("(vault is empty — all custom skills equipped)"))
     else:
         for s in vaulted_skills:
             dom = s.domain or s.name
@@ -129,15 +129,15 @@ def render_skills_panel(
             tier = xp_info["tier"]
             lvl = xp_info["level"]
             name_col = _truncate_pad(s.name, 18)
-            row_str = f"  {name_col} {tier:<8} (Lvl {lvl})                       [equip]"
-            lines.append(f"║{row_str.ljust(w - 2)}║")
+            row_str = f"{name_col} {tier:<8} (Lvl {lvl})                       [equip]"
+            lines.append(row(row_str))
 
-    lines.append(f"║{' ' * (w - 2)}║")
+    lines.append(empty)
 
     # Footer navigation / commands
-    footer_text = "  commands: /skills equip <name> · /skills park <name> · /skills info <name>"
-    lines.append(f"║{footer_text.ljust(w - 2)}║")
-    lines.append(f"╚{'═' * (w - 2)}╝")
+    footer_text = "commands: /skills equip <name> · /skills park <name> · /skills info <name>"
+    lines.append(row(footer_text))
+    lines.append(bottom)
 
     return "\n".join(lines)
 
@@ -146,11 +146,12 @@ def render_skill_detail(
     skill_name: str,
     rt: Any = None,
     vault: Optional[SkillVault] = None,
-    width: int = 80,
+    width: int | None = None,
     db_path: Path | str | None = None,
 ) -> str:
     """Render detailed inspection view for a single skill."""
-    w = max(width, 70)
+    term_cols = shutil.get_terminal_size((80, 24)).columns
+    W = max(width if width is not None else min(term_cols, 80), 40)
     if vault is None:
         vault = SkillVault()
 
@@ -177,14 +178,20 @@ def render_skill_detail(
     dom = skill.domain or skill.name
     xp_info = get_xp(dom, db_path=db_path)
 
-    lines: list[str] = []
-    top_line = f"╔═ SKILL DETAIL: {skill.name} {'═' * (w - len(skill.name) - 20)}╗"
-    lines.append(top_line)
-    lines.append(f"║{' ' * (w - 2)}║")
+    top = "╔" + "═" * (W - 2) + "╗"
+    bottom = "╚" + "═" * (W - 2) + "╝"
+    empty = "║" + " " * (W - 2) + "║"
+
+    def row(content: str) -> str:
+        c = content[: W - 6]
+        return "║  " + c.ljust(W - 6) + "  ║"
+
+    lines: list[str] = [top, empty]
+    lines.append(row(f"SKILL DETAIL: {skill.name}"))
+    lines.append(empty)
 
     def _add_field(label: str, val: str) -> None:
-        row = f"  {label:<16}: {val}"
-        lines.append(f"║{row.ljust(w - 2)}║")
+        lines.append(row(f"{label:<16}: {val}"))
 
     _add_field("Type", "Motor Instinct (Immutable)" if is_motor else "Domain Skill")
     _add_field("Domain", skill.domain or "core")
@@ -203,14 +210,14 @@ def render_skill_detail(
     deps = getattr(skill, "deps", {}) or {}
     _add_field("Dependencies", str(deps) if deps else "(no external deps)")
 
-    lines.append(f"║{' ' * (w - 2)}║")
+    lines.append(empty)
 
     # When to use / trigger
     when = (getattr(skill, "when_to_use", "") or "").strip()
     if when:
-        _add_field("When to use", when[: w - 24])
+        _add_field("When to use", when)
 
-    lines.append(f"║{' ' * (w - 2)}║")
-    lines.append(f"╚{'═' * (w - 2)}╝")
+    lines.append(empty)
+    lines.append(bottom)
 
     return "\n".join(lines)
