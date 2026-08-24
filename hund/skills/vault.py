@@ -1,7 +1,7 @@
 """Skill Vault — manages active capacity (max 6 slots) vs vaulted domain skills.
 
 Persists active and vaulted domain skill states to HundHome/brain/skill_state.json.
-Constitutional builtins (11 core instincts) are always active in background
+Constitutional builtins (12 core instincts) are always active in background
 and never consume domain inventory slots.
 """
 from __future__ import annotations

@@ -22,13 +22,16 @@ def test_activity_timeline_replaces_running_state() -> None:
     assert timeline.render_lines() == ["  ┊ ✓ searched the web for Hund · 0.4s"]
 
 
-def test_activity_timeline_groups_related_web_events() -> None:
+def test_activity_timeline_renders_each_event_on_own_line() -> None:
     timeline = ActivityTimeline()
     first = timeline.start("web_open", "read source one")
     timeline.finish(first, ActivityStatus.COMPLETE, duration_s=0.2)
     second = timeline.start("web_open", "read source two")
     timeline.finish(second, ActivityStatus.COMPLETE, duration_s=0.3)
-    assert timeline.render_lines()[0] == "  ┊ ✓ read 2 relevant pages · 0.5s"
+    lines = timeline.render_lines()
+    assert lines[0] == "  ┊ ✓ read source one · 0.2s"
+    assert lines[1] == "  ┊ ✓ read source two · 0.3s"
+    assert lines[2] == "  ╰─ cross-checked · 0.5s"
 
 
 def test_activity_capsule_only_for_verified_complex_or_failed_work() -> None:

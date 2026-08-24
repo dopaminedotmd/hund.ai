@@ -144,63 +144,26 @@ class ActivityTimeline:
                 )
                 return
 
-    def _groups(self) -> list[list[ToolActivity]]:
-        groups: list[list[ToolActivity]] = []
-        for event in self._events:
-            if groups and groups[-1][0].group == event.group:
-                groups[-1].append(event)
-            else:
-                groups.append([event])
-        return groups
-
-    @staticmethod
-    def _group_description(events: list[ToolActivity]) -> str:
-        if len(events) == 1:
-            return events[0].description
-        group = events[0].group
-        count = len(events)
-        labels = {
-            "web_search": f"searched {count} web queries",
-            "web_read": f"read {count} relevant pages",
-            "inspection": f"inspected {count} sources",
-            "edit": f"adjusted {count} files",
-            "verification": f"ran {count} verification checks",
-            "execution": f"ran {count} commands",
-        }
-        return labels.get(group, f"used {events[0].tool_name} {count} times")
-
-    @staticmethod
-    def _group_status(events: Iterable[ToolActivity]) -> ActivityStatus:
-        statuses = {event.status for event in events}
-        for status in (ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED):
-            if status in statuses:
-                return status
-        if ActivityStatus.RUNNING in statuses:
-            return ActivityStatus.RUNNING
-        return ActivityStatus.COMPLETE
-
     def render_lines(self) -> list[str]:
         lines: list[str] = []
-        groups = self._groups()
-        for events in groups:
-            status = self._group_status(events)
-            symbol = "⟳" if status is ActivityStatus.RUNNING else "✓"
-            if status in {ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED}:
+        for event in self._events:
+            symbol = "⟳" if event.status is ActivityStatus.RUNNING else "✓"
+            if event.status in {ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED}:
                 symbol = "✗"
-            desc = self._group_description(events)
-            duration = sum(event.duration_s for event in events)
-            suffix = f" · {duration:.1f}s" if duration > 0 and status is not ActivityStatus.RUNNING else ""
-            detail = next((event.detail for event in reversed(events) if event.detail), "")
-            if detail and status is not ActivityStatus.COMPLETE:
+            desc = event.description
+            duration = event.duration_s
+            suffix = f" · {duration:.1f}s" if duration > 0 and event.status is not ActivityStatus.RUNNING else ""
+            detail = event.detail
+            if detail and event.status is not ActivityStatus.COMPLETE:
                 desc = f"{desc} — {detail}"
             lines.append(f"  ┊ {symbol} {desc}{suffix}")
 
-        if groups and all(self._group_status(group) is not ActivityStatus.RUNNING for group in groups):
-            statuses = {self._group_status(group) for group in groups}
+        if self._events and all(ev.status is not ActivityStatus.RUNNING for ev in self._events):
+            statuses = {ev.status for ev in self._events}
             total = sum(event.duration_s for event in self._events)
-            has_verification = any(group[0].group == "verification" for group in groups)
-            has_edits = any(group[0].group == "edit" for group in groups)
-            has_web = any(group[0].group in {"web_search", "web_read"} for group in groups)
+            has_verification = any(ev.group == "verification" for ev in self._events)
+            has_edits = any(ev.group == "edit" for ev in self._events)
+            has_web = any(ev.group in {"web_search", "web_read"} for ev in self._events)
 
             if statuses & {ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED}:
                 lines.append(f"  ╰─ stopped · {total:.1f}s")
@@ -208,10 +171,10 @@ class ActivityTimeline:
                 lines.append(f"  ╰─ change holds · {total:.1f}s")
             elif has_verification:
                 lines.append(f"  ╰─ clean run · {total:.1f}s")
-            elif has_web and len(groups) >= 2:
+            elif has_web and len(self._events) >= 2:
                 lines.append(f"  ╰─ cross-checked · {total:.1f}s")
-            elif len(groups) >= 3:
-                lines.append(f"  ╰─ completed · {len(groups)} steps · {total:.1f}s")
+            elif len(self._events) >= 3:
+                lines.append(f"  ╰─ completed · {len(self._events)} steps · {total:.1f}s")
         return lines
 
     def render(self) -> str:

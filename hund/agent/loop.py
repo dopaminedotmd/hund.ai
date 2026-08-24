@@ -167,7 +167,7 @@ def _init_runtime():
     import types
 
     cfg = HundConfig.load()
-    key = load_api_key(cfg.provider.api_key_env)
+    key = load_api_key(cfg.provider.api_key_env, getattr(cfg.provider, "credential_id", "deepseek"))
     local_mode = False
 
     if not key:

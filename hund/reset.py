@@ -108,6 +108,24 @@ def reset_all_progress(home: Optional[Path] = None) -> list[str]:
         except Exception:
             pass
 
+    # 5. Clear knowledge database and memory database
+    knowledge_db_file = base / "knowledge" / "knowledge.db"
+    if knowledge_db_file.exists():
+        try:
+            knowledge_db_file.unlink()
+            cleared.append("Cleared knowledge database")
+        except Exception:
+            pass
+
+    mem_dir = base / "memory"
+    if mem_dir.exists():
+        for db_item in mem_dir.glob("*.db"):
+            try:
+                db_item.unlink()
+                cleared.append(f"Removed memory database {db_item.name}")
+            except Exception:
+                pass
+
     if cleared:
         try:
             from .stats.epochs import advance_epoch

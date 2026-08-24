@@ -1794,6 +1794,17 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         if _confirm["active"] or turn_running[0]:
             screens.status = "Wait for the active turn to finish."
             return
+        if overlay is OverlayView.THEME:
+            names = theme.theme_names()
+            current = getattr(state, "theme_name", "marshmallow")
+            if current in names:
+                screens.selected["theme"] = names.index(current)
+        elif overlay is OverlayView.MODEL:
+            current_model = getattr(rt.cfg.provider, "model", "")
+            for idx, opt in enumerate(model_options):
+                if opt.model_id == current_model:
+                    screens.selected["model"] = idx
+                    break
         screens.open_overlay(overlay)
         modal_input[0] = ""
         _invalidate()

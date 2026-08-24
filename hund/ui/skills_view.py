@@ -35,7 +35,7 @@ def render_skills_panel(
 ) -> str:
     """Render the 2-layer fullscreen skills panel per TUI_FACIT.md §12.
 
-    Top layer: Motor skills (11 builtins, immutable, always on).
+    Top layer: Motor skills (12 builtins, immutable, always on).
     Middle layer: Equipped domain skills with XP bars, tiers, and levels.
     Bottom layer: Vaulted/parked skills with slot capacity.
     """

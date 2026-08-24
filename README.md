@@ -1,135 +1,115 @@
-# Hund.ai
+# hund.ai
 
 ```text
- / \__
-(    @\___
- /         O
-/   (_____/
-/_____/   U
+▄▄                   ▄▄
+██                   ██
+████▄ ██ ██ ████▄ ▄████
+██ ██ ██ ██ ██ ██ ██ ██
+██ ██ ▀██▀█ ██ ██ ▀████ ██
 ```
 
-Hund is a local-first terminal AI companion with persistent memory, a calm canine personality, and a full-screen TUI for working with models, tools, skills, and usage data.
+> **A self-learning, local-first terminal companion.**
+> Hund reads your machine and workspace, develops specialized skills from your real workflow, and helps you build without generic boilerplate or hallucinated assumptions.
 
-It is designed to be useful from the first prompt while keeping approvals, tool execution, credentials, and learned context visible and controlled.
+---
 
-## Highlights
+## What makes Hund unique
 
-- Interactive terminal chat with Prompt Toolkit.
-- Full-screen views for stats, skills, tools, and token usage.
-- Domain skills with equip/park lifecycle management.
-- Built-in and registered tools with safety levels and approval gates.
-- DeepSeek, OpenRouter, and local model configuration.
-- Windows Credential Manager/keyring support for API keys.
-- Persistent memory, XP, skill progression, and activity telemetry.
-- Responsive layouts for narrow terminals, ASCII fallback, reduced motion, and screen-reader mode.
-- Plain CLI commands remain available for scripting and automation.
+Most AI assistants reset every turn or rely on generic web prompts. Hund is built differently:
 
-## Requirements
+1. **System & Workspace Awareness**: Upon startup, Hund profiles your real machine environment (OS, architecture, shell, installed runtimes, and git state). Hund never gives generic Linux commands on a Windows terminal or guesses what packages you have installed.
+2. **Specific, Evidence-Based Advice**: Hund observes before assuming. When you ask about a project, Hund checks actual repository files, lockfiles, and configs rather than guessing library versions.
+3. **Adaptive Skill Synthesis**: As you work, Hund identifies recurring patterns and procedures. When proven knowledge repeats across tasks and sessions, Hund's skill factory compiles declarative, sandbox-tested skills tailored specifically to your projects.
+4. **The Six-Slot Skill Vault**: Six specialized domain skills work together in active hot-slots, while motor skills remain permanently pinned in the background. You can equip, park, and inspect skills directly in the TUI.
+5. **Real XP & Progression**: Hund earns experience points from verified knowledge discoveries and cross-session reuses. No XP is awarded for trivial tool calls—only for validated, empirical learning.
+6. **Base Stats & Character Sheet**: Base attributes (**Clarity**, **Precision**, **Efficiency**, **Endurance**) and level tiers evolve based on real telemetry, verified tasks, and session velocity.
 
-- Windows, macOS, or Linux.
-- Python 3.11 or newer.
-- An API key for the provider/model you want to use, unless you run a local model.
+---
 
-## Install
+## Quick Start
 
-The recommended installer is `uv`:
+### 1. Installation
+
+The fastest way to install Hund globally is via [`uv`](https://github.com/astral-sh/uv):
 
 ```bash
-uv tool install git+https://github.com/<OWNER>/<REPO>.git
-hund --help
+uv tool install git+https://github.com/dopaminedotmd/hund.ai.git
 ```
 
-For a local checkout:
+To run from a local source clone:
 
 ```bash
-git clone https://github.com/<OWNER>/<REPO>.git
+git clone https://github.com/dopaminedotmd/hund.ai.git
 cd hund.ai
 uv sync
 uv run hund
 ```
 
-Replace `<OWNER>/<REPO>` with the repository URL once published.
+### 2. Configure Your API Key
 
-## Configure a provider
+You can configure your provider and API key interactively using the built-in setup wizard:
 
-Start Hund and use the model menu, or set a key through the environment for automation:
+```bash
+hund setup
+```
+
+Or configure via environment variable:
 
 ```powershell
-$env:HUND_API_KEY = "your-api-key"
-hund
+# Windows PowerShell
+$env:HUND_API_KEY = "sk-..."
+
+# Linux / macOS
+export HUND_API_KEY="sk-..."
 ```
 
-Environment variables take precedence over the OS credential store. In the interactive TUI, `/model` can select a supported preset and `[k]` can store a key in the platform credential manager. Keys are never written to `config.json`, chat history, traces, or the request database.
+Hund natively supports OpenRouter, DeepSeek, and custom OpenAI-compatible endpoints. In the fullscreen interface, you can also press `/model` and `k` to store keys securely in your operating system's native credential vault (Windows Credential Manager / macOS Keychain / Linux Secret Service).
 
-## Run Hund
+### 3. Launch Hund
 
 ```bash
 hund
 ```
 
-Useful commands:
+---
 
-```text
-/help       Show available commands
-/stats      Open the character sheet and activity view
-/skills     Manage domain skills
-/tools      Browse tools and built-in capabilities
-/usage      Open the token usage heatmap
-/theme      Choose a visual theme
-/model      Choose or configure a model
-/clear      Clear the current chat view
-/exit       Leave Hund
-```
+## Fullscreen TUI & Controls
 
-Inside a full-screen view:
+Hund features a full-screen terminal interface with keyboard-first navigation:
 
-- `↑` / `↓` moves the selection.
-- `Enter` selects or opens the focused item.
-- `Esc` backs out one layer at a time.
-- Mouse wheel scrolls long views.
+| Command | Action |
+|---|---|
+| `/stats` | Open character sheet, base stats, XP bars, and 7-day velocity |
+| `/skills` | Browse, equip, and park active and vaulted domain skills |
+| `/tools` | Inspect registered tools and constitutional motor safety rules |
+| `/usage` | View token consumption heatmap and session telemetry |
+| `/theme` | Change visual theme (defaults to Marshmallow) |
+| `/model` | Switch model presets or configure custom endpoints |
+| `/copy` | Copy last assistant response to system clipboard |
+| `/retry` | Regenerate last turn |
+| `/clear` | Clear output history from screen |
+| `/exit` | Exit Hund (`/quit` or `Ctrl+D`) |
 
-## Safety and privacy
+**Navigation Keys:**
+- `↑` / `↓` : Move focus in lists and menus.
+- `Enter` : Select item or confirm input.
+- `Esc` : Instant back navigation (nested modal → modal → destination view → chat).
+- `Mouse Wheel` : Scroll output and panels smoothly.
 
-Hund treats tool execution as an explicit capability. Risky actions can require confirmation, and tool metadata is kept separate from handlers and secrets. Provider credentials are loaded from the environment or the operating system's credential manager and are not included in model prompts or persisted telemetry.
+---
 
-Review approval prompts carefully before allowing filesystem, network, process, or code-execution tools.
+## Security & Epistemic Integrity
 
-## Development
+Hund is built with strict privacy and trust boundaries:
 
-```bash
-git clone https://github.com/<OWNER>/<REPO>.git
-cd hund.ai
-uv sync --extra dev
-uv run pytest
-uv run hund
-```
+- **Local Storage**: All learning events, knowledge units, XP ledgers, and session histories stay on your local disk under `~/.hund/`.
+- **Credential Protection**: API keys and secrets are never committed to disk in plaintext, never logged in chat history, and never passed to subagents.
+- **Safety Levels**: File writes, deletions, and arbitrary terminal commands are gated with interactive approval modals (`[y] Approve`, `[e] Edit`, `[n] Deny`).
+- **Web Safety**: Web requests enforce strict SSRF guards, private IP blocking, domain pinning, resource size caps, and automatic secret redaction.
 
-Build the distributable wheel with:
+---
 
-```bash
-uv build
-```
+## Repository
 
-## Project layout
-
-```text
-hund/
-  agent/       Agent loop, prompts, safety, and tool dispatch
-  memory/      Persistent memory and retrieval
-  providers/   Model presets and provider clients
-  skills/      Skill definitions and lifecycle/vault management
-  stats/       Progress and telemetry calculations
-  tools/       Built-in tools and registry
-  ui/          Prompt Toolkit TUI, screens, themes, and snapshots
-tests/         Unit, integration, security, and TUI regression tests
-```
-
-## Status
-
-Hund is actively being developed. The TUI, provider switching, usage telemetry, skills, tool registry, and credential handling are covered by automated tests, but APIs and UI details may continue to evolve.
-
-Issues, reproduction steps, screenshots, and terminal dimensions are especially helpful when reporting a problem.
-
-## License
-
-See the repository license file for the current license and distribution terms.
+- **GitHub Remote**: [https://github.com/dopaminedotmd/hund.ai.git](https://github.com/dopaminedotmd/hund.ai.git)
+- **License**: MIT

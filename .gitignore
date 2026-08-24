@@ -26,6 +26,12 @@ coverage.xml
 secrets/
 connector_secret.json
 connector_user_secret.json
+*.db
+*.sqlite
+*.sqlite3
+*.trace
+*.trace.json
+*.log
 
 # Hund local data (skapas vid körning, ej repo)
 hund_local/

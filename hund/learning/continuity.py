@@ -6,14 +6,16 @@ import re
 from typing import Any
 
 _CUES = (
-    "vi gjorde", "som förra gången", "fortsätt", "den där", "vår ",
-    "förra gången", "last time", "we decided", "continue", "that parser",
+    "vi gjorde", "vi bestämde", "som förra gången", "den där", "fortsätt", "igen",
+    "mitt projekt", "vår parser", "vår ", "lösningen vi hade", "last time",
+    "we decided", "you changed", "continue", "that parser", "som sist", "förra gången",
 )
 _WORDS = re.compile(r"[A-Za-zÅÄÖåäö0-9_+.#/-]{3,}")
 _STOP = {
     "gjorde", "gången", "fortsätt", "fortsatta", "snackade", "igår", "denna",
     "där", "förra", "last", "time", "decided", "continue", "that", "with",
-    "what", "were", "från", "som", "och", "the", "vår", "our", "we",
+    "what", "were", "från", "som", "och", "the", "vår", "our", "we", "hade",
+    "bestämde", "igen", "mitt", "projekt", "changed",
 }
 
 
