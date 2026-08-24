@@ -339,6 +339,25 @@ def test_output_lexer_rich_markdown_tokens() -> None:
     assert any(t[0] == "class:code" and "uv run pytest" in t[1] for t in toks3)
     assert any(t[0] == "class:secondary" and "->" in t[1] for t in toks3)
 
+def test_fullscreen_statusbar_rendering() -> None:
+    from hund.ui.input import PromptState
+    from hund.ui.fullscreen import format_tokens_ratio, format_duration, format_status_bar
 
+    state = PromptState()
+    state.extra["model"] = "deepseek-v4-pro"
+    state.extra["tokens"] = 14_000
+    state.extra["token_limit"] = 1_000_000
 
+    token_str = format_tokens_ratio(state.extra["tokens"], state.extra["token_limit"])
+    dur_str = format_duration(300)
+    assert token_str == "14K/1M"
+    assert dur_str == "5m"
 
+    status_str = format_status_bar(
+        model=state.extra["model"],
+        tokens=state.extra["tokens"],
+        limit=state.extra["token_limit"],
+        duration_s=300,
+        latency_s=2.3,
+    )
+    assert status_str == "deepseek-v4-pro │ 14K/1M │ 5m │ 2.3s"

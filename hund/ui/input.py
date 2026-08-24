@@ -127,9 +127,9 @@ def format_status_bar(
     tokens: int = 0,
     limit: int = 1_000_000,
     duration_s: float = 0.0,
-    latency_s: float = 0.0,
+    latency_s: float | None = None,
 ) -> str:
-    """Build canonical single-line status bar text."""
+    """Build canonical single-line status bar text (no emojis, latency optional)."""
     # Clean model name e.g. "DeepSeek (deepseek-v4-pro)" -> "deepseek-v4-pro"
     cleaned_model = model
     if "(" in model and ")" in model:
@@ -139,9 +139,11 @@ def format_status_bar(
 
     token_str = format_tokens_ratio(tokens, limit)
     duration_str = format_duration(duration_s)
-    latency_str = f"⏱ {latency_s:.1f}s"
 
-    return f"{cleaned_model} │ {token_str} │ {duration_str} │ {latency_str}"
+    base = f"{cleaned_model} │ {token_str} │ {duration_str}"
+    if latency_s is not None and latency_s > 0:
+        return f"{base} │ {latency_s:.1f}s"
+    return base
 
 
 def _toolbar(state: PromptState):
@@ -150,7 +152,7 @@ def _toolbar(state: PromptState):
     tokens = state.extra.get("tokens", 0)
     limit = state.extra.get("token_limit", 1_000_000)
     duration_s = time.time() - state.start_time
-    latency_s = state.extra.get("last_latency_s", 0.0)
+    latency_s = state.extra.get("last_latency_s")
 
     text = format_status_bar(model, tokens, limit, duration_s, latency_s)
     return [("class:bottom-toolbar fg:ansibrightblack", text)]
@@ -179,7 +181,7 @@ def create_session(state: PromptState) -> PromptSession:
         complete_while_typing=True,
         enable_history_search=True,
         key_bindings=build_repl_keybindings(),
-        style=Style.from_dict({"bottom-toolbar": "fg:#6E7380"}),
+        style=Style.from_dict({"bottom-toolbar": "fg:#3E4451"}),
     )
 
 

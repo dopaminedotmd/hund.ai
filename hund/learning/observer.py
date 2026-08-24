@@ -39,6 +39,12 @@ def add_gap_event(symptom: str, domain: str = "unknown", study_target: str = "")
     )
     conn.commit()
     conn.close()
+    if domain and domain != "unknown":
+        try:
+            from hund.domains.xp import add_xp
+            add_xp(domain, 2)
+        except Exception:
+            pass
     return gid
 
 

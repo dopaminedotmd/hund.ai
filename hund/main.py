@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import ctypes
 import json
+from pathlib import Path
 import subprocess
 import sys
-from pathlib import Path
+from typing import Any, Optional
 
 # Force UTF-8 console output and input code pages on Windows (65001)
 if sys.platform == "win32":
@@ -100,6 +101,25 @@ def repl() -> None:
     """Starta interaktiv REPL (terminal)."""
     from .ui import run_repl
     raise typer.Exit(run_repl())
+
+
+@app.command()
+def reset(
+    force: bool = typer.Option(False, "--force", "-f", help="Bypass confirmation prompt."),
+) -> None:
+    """Reset all learned progression, XP, confidence, gap events, and skill state."""
+    from .reset import reset_all_progress
+
+    if not force:
+        confirm = console.input("[yellow]Reset all learned data and progression? [y/N][/yellow] ").strip().lower()
+        if confirm not in ("y", "yes", "j", "ja"):
+            console.print("[dim]Aborted.[/dim]")
+            return
+
+    results = reset_all_progress()
+    console.print("[bold cyan]hund reset complete:[/bold cyan]")
+    for r in results:
+        console.print(f"  • {r}")
 
 
 @app.command()
@@ -256,7 +276,114 @@ def migrate(
     console.print("[green]migrering klar.[/green]")
 
 
-# ---- memory (fas 9.5 Del A) ----
+# ---- memory (Fas M) ----
+@memory_app.command("list")
+def memory_list(
+    scope: Optional[str] = typer.Option(None, "--scope", "-s", help="Filtrera per scope"),
+    include_drafts: bool = typer.Option(False, "--all", "-a", help="Inkludera draft-minnen"),
+) -> None:
+    """Lista aktiva verifierade minnen ur memory.db."""
+    from . import memory as M
+
+    items = M.list_active_memories(scope=scope, include_drafts=include_drafts)
+    if not items:
+        console.print("(inga aktiva minnen)")
+        return
+    for item in items:
+        tag = "[bold cyan][CORE][/bold cyan]" if item.is_core else f"[dim]{item.category}[/dim]"
+        console.print(f"  • {tag} [bold]{item.memory_id}[/bold] (conf {item.confidence:.2f}): {item.statement}")
+
+
+@memory_app.command("add")
+def memory_add(
+    text: str = typer.Argument(..., help="Minnespåstående att spara"),
+    is_core: bool = typer.Option(False, "--core", "-c", help="Markera som oföränderlig #core-regel"),
+    category: str = typer.Option("stable_preference", "--category", help="Minneskategori"),
+) -> None:
+    """Lägg till ett verifierat användarminne direkt i databasen."""
+    from . import memory as M
+
+    cat = "core" if is_core else category
+    item = M.record_memory(statement=text, category=cat, source_type="user", is_core=is_core)
+    M.sync_user_md()
+    console.print(f"[green]minne sparat:[/green] {item.memory_id} ({'core' if item.is_core else item.category})")
+
+
+@memory_app.command("why")
+def memory_why(
+    memory_id: str = typer.Argument(..., help="Minnes-ID att granska"),
+) -> None:
+    """Visa proveniens, bevis och audithistorik för ett minne."""
+    from . import memory as M
+
+    item = M.get_memory(memory_id)
+    if not item:
+        console.print(f"[yellow]inget minne matchade '{memory_id}'[/yellow]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Minnesdetaljer: {item.memory_id}[/bold]")
+    console.print(f"  statement:      {item.statement}")
+    console.print(f"  status:         {item.status}")
+    console.print(f"  category:       {item.category}")
+    console.print(f"  scope:          {item.scope}")
+    console.print(f"  confidence:     {item.confidence:.2f}")
+    console.print(f"  source_type:    {item.source_type}")
+    console.print(f"  is_core:        {item.is_core}")
+    console.print(f"  first_seen:     {item.first_seen}")
+    console.print(f"  last_seen:      {item.last_seen}")
+    console.print(f"  support_count:  {item.support_count}")
+    console.print(f"  contradictions: {item.contradiction_count}")
+    if item.supersedes:
+        console.print(f"  supersedes:     {item.supersedes}")
+    if item.superseded_by:
+        console.print(f"  superseded_by:  {item.superseded_by}")
+    if item.evidence_ids:
+        console.print(f"  evidence_ids:   {', '.join(item.evidence_ids)}")
+
+    audits = M.get_audit_history(memory_id)
+    if audits:
+        console.print("\n[bold]Audit Trail:[/bold]")
+        for a in audits:
+            console.print(f"  • {a.timestamp[:19]} [{a.action}] {a.reason}")
+
+
+@memory_app.command("forget")
+def memory_forget(
+    memory_id: str = typer.Argument(..., help="Minnes-ID att glömma"),
+) -> None:
+    """Markera ett minne som glömt."""
+    from . import memory as M
+
+    ok = M.forget_memory(memory_id)
+    if ok:
+        M.sync_user_md()
+        console.print(f"[green]glömde minne:[/green] {memory_id}")
+    else:
+        console.print(f"[yellow]inget minne matchade '{memory_id}'[/yellow]")
+
+
+@memory_app.command("conflicts")
+def memory_conflicts() -> None:
+    """Visa motsägelser och flaggade minnen."""
+    from . import memory as M
+
+    conflicts = M.list_conflicts()
+    if not conflicts:
+        console.print("(inga minneskonflikter)")
+        return
+    for c in conflicts:
+        console.print(f"  • [{c.status}] {c.memory_id} (conf {c.confidence:.2f}, contra {c.contradiction_count}): {c.statement}")
+
+
+@memory_app.command("sync")
+def memory_sync() -> None:
+    """Synka materialiserad vy user.md från memory.db."""
+    from . import memory as M
+
+    p = M.sync_user_md()
+    console.print(f"[green]user.md synkad:[/green] {p}")
+
+
 @memory_app.command("show")
 def memory_show() -> None:
     """Visa allt persistent minne (user.md + environment.md)."""

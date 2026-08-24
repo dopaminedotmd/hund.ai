@@ -182,6 +182,9 @@ def build_system_prompt(
     parts.append(
         "- Använd backticks (`kod`) för filnamn, kommandon, funktioner och tekniska termer."
     )
+    parts.append(
+        "- När verktyg (som write_file eller edit_file) skapar eller ändrar filer renderas koden och diffen automatiskt i aktivitetsfeeden (under ✓ wrote/modified). Hund behöver därför INTE upprepa hela källkoden i sin svarsbox, utan håller sitt svar rent, precist och i tredje person (t.ex. 'hund skapade test_kod.py på skrivbordet.')."
+    )
 
     parts.append("")
     parts.append("## Skill-skapande och Mastery")

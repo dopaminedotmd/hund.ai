@@ -43,17 +43,16 @@ def test_render_response_box_fullscreen_and_padding() -> None:
     short_reply = "hund är vaken."
     box = render_response_box(short_reply, terminal_width=80)
     lines = box.split("\n")
-    # Top border, 2 top padding rows, content, bottom padding row, bottom border = 6 lines
-    assert len(lines) == 6
+    # Top border, 1 top padding row, content, bottom padding row, bottom border = 5 lines per TUI_FACIT.md §2
+    assert len(lines) == 5
     assert lines[0].startswith("┌─ hund ")
     assert lines[0].endswith("┐")
     assert lines[1].startswith("│") and lines[1].endswith("│") and not lines[1].strip("│ ")
-    assert lines[2].startswith("│") and lines[2].endswith("│") and not lines[2].strip("│ ")
-    assert lines[3].startswith("│  hund är vaken.")
-    assert lines[3].endswith("  │")
-    assert lines[4].startswith("│") and lines[4].endswith("│") and not lines[4].strip("│ ")
-    assert lines[5].startswith("└")
-    assert lines[5].endswith("┘")
+    assert lines[2].startswith("│  hund är vaken.")
+    assert lines[2].endswith("  │")
+    assert lines[3].startswith("│") and lines[3].endswith("│") and not lines[3].strip("│ ")
+    assert lines[4].startswith("└")
+    assert lines[4].endswith("┘")
 
     # Assert all lines span the full terminal width (80)
     for line in lines:
@@ -69,7 +68,7 @@ def test_render_response_box_long_full_width() -> None:
     term_width = 80
     box = render_response_box(long_reply, terminal_width=term_width)
     lines = box.split("\n")
-    assert len(lines) >= 6
+    assert len(lines) >= 5
     for line in lines:
         assert len(line) == term_width
         if line.startswith("│") and line.strip("│ "):
@@ -84,12 +83,12 @@ def test_box_bottom_meta_render() -> None:
     assert len(bottom_plain) == 80
 
     bottom_meta = box_bottom(80, meta="2.3s")
-    assert "2.3s ┘" in bottom_meta
+    assert "2.3s ───┘" in bottom_meta
     assert len(bottom_meta) == 80
 
     # Short box
     bottom_short = box_bottom(12, meta="2.3s")
-    assert "└── 2.3s ┘" in bottom_short or "2.3s ┘" in bottom_short
+    assert "2.3s ───┘" in bottom_short
 
 
 def test_streaming_sink_renders_rails_and_meta() -> None:

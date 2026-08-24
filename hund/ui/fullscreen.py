@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import textwrap
 import threading
 import time
 import uuid
@@ -23,6 +24,7 @@ from prompt_toolkit import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
 from prompt_toolkit.filters import Condition, has_focus
 from prompt_toolkit.key_binding import KeyBindings
@@ -53,7 +55,9 @@ from .input import (
     SLASH_COMMAND_METAS,
     PromptState,
     SlashCommandCompleter,
+    format_duration,
     format_status_bar,
+    format_tokens_ratio,
 )
 from .output import parse_confirm_input, strip_markdown, strip_rich, StreamingMarkdownFilter, _confirm_title, _confirm_detail
 from .render import box_bottom as _r_box_bottom, box_top as _r_box_top, refresh_stats, render_response_box
@@ -120,10 +124,31 @@ def _format_tool_desc(name: str, args: dict | None) -> str:
         return f"ran {name}"
 
 
-def _parse_semantic_line(cur: str, indent_str: str = "") -> list[tuple[str, str]]:
+def _parse_semantic_line(text: str, indent_str: str = "") -> list[tuple[str, str]]:
     tokens: list[tuple[str, str]] = []
     if indent_str:
         tokens.append(("", indent_str))
+    cur = text
+
+    # Code / diff block headers and footers
+    if cur.startswith("──"):
+        if not cur.strip("─ "):
+            return tokens + [("class:secondary", cur)]
+        m_diff = re.match(r"^(──\s+)(.*?)(\s+·\s+changed\s+)(─+)$", cur)
+        if m_diff:
+            return tokens + [
+                ("class:secondary", m_diff.group(1)),
+                ("class:accent bold", m_diff.group(2)),
+                ("class:secondary", m_diff.group(3) + m_diff.group(4)),
+            ]
+        m_code = re.match(r"^(──\s+)(.*?)(\s+─+)$", cur)
+        if m_code:
+            return tokens + [
+                ("class:secondary", m_code.group(1)),
+                ("class:accent bold", m_code.group(2)),
+                ("class:secondary", m_code.group(3)),
+            ]
+        return tokens + [("class:secondary", cur)]
 
     # Numbered skill/item list with emdash: "9. python-project-workflow — safety_level: ..."
     skill_num_match = re.match(r"^(\d+\.\s+)([^\s—–]+(?:[ \t]+[^\s—–]+)*)(\s+[—–]\s+.*)$", cur)
@@ -144,10 +169,38 @@ def _parse_semantic_line(cur: str, indent_str: str = "") -> list[tuple[str, str]
         tokens.append(("class:number", num_part))
         cur = rest_str
     else:
-        bullet_match = re.match(r"^(•|-|\*)\s+", cur)
-        if bullet_match:
-            tokens.append(("class:bullet", bullet_match.group(0)))
-            cur = cur[bullet_match.end():]
+        # Diff lines with line numbers: "+ 3   text", "- 3   text"
+        diff_num_add = re.match(r"^(\+\s*)(\d+\s+)(.*)$", cur)
+        diff_num_del = re.match(r"^(-+\s*)(\d+\s+)(.*)$", cur)
+        if diff_num_add:
+            tokens.append(("class:add", diff_num_add.group(1)))
+            tokens.append(("class:secondary", diff_num_add.group(2)))
+            tokens.append(("class:add", diff_num_add.group(3)))
+            return tokens
+        elif diff_num_del:
+            tokens.append(("class:del", diff_num_del.group(1)))
+            tokens.append(("class:secondary", diff_num_del.group(2)))
+            tokens.append(("class:del", diff_num_del.group(3)))
+            return tokens
+
+        if cur.startswith("+ "):
+            tokens.append(("class:add", "+ "))
+            cur = cur[2:]
+            tokens.append(("class:add", cur))
+            return tokens
+        elif cur.startswith("- ") and (
+            re.match(r"^-\s+(?:[a-zA-Z0-9_]+\s*=|return\s|const\s|let\s|var\s|import\s|def\s|function\s|class\s|if\s|else\s|for\s|while\s|self\.)", cur)
+            or re.match(r"^-\s+[a-zA-Z0-9_]+\s*\(", cur)
+        ):
+            tokens.append(("class:del", "- "))
+            cur = cur[2:]
+            tokens.append(("class:del", cur))
+            return tokens
+        elif cur.startswith("• ") or cur.startswith("* ") or cur.startswith("- "):
+            bullet_match = re.match(r"^(•|\*|-)\s+", cur)
+            if bullet_match:
+                tokens.append(("class:bullet", bullet_match.group(0)))
+                cur = cur[bullet_match.end():]
 
     # Lead-in label before colon: "Trigger:", "Hur hund går tillväga:", "Ansvar:", "**Arbetsflöde:**"
     # Guard: not URL, not Python def/class, not timestamp (10:30)
@@ -188,22 +241,186 @@ def _parse_semantic_line(cur: str, indent_str: str = "") -> list[tuple[str, str]
     return tokens
 
 
+_MODAL_ACTIVE: list[bool] = [False]
+
+
+def _lex_pygments_code(cur: str, indent_str: str, lang: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    if indent_str:
+        tokens.append(("", indent_str))
+    try:
+        from pygments.lexers import get_lexer_by_name, TextLexer
+        lexer = get_lexer_by_name(lang)
+    except Exception:
+        from pygments.lexers import TextLexer
+        lexer = TextLexer()
+
+    try:
+        import pygments
+        from prompt_toolkit.styles.pygments import pygments_token_to_classname
+
+        for tok_type, val in pygments.lex(cur, lexer):
+            if val.endswith("\n") and not cur.endswith("\n"):
+                val = val[:-1]
+            if not val:
+                continue
+            cls = "class:pygments." + pygments_token_to_classname(tok_type)
+            tokens.append((cls, val))
+        return tokens
+    except Exception:
+        return [("", indent_str), ("class:primary", cur)] if indent_str else [("class:primary", cur)]
+
+
+def _lex_stat_or_skill_part(part: str) -> list[tuple[str, str]]:
+    m_stat = re.search(r"^(.*?\b)(CLR|PRC|EFF|END|MAS)(\s+\w+\s+)([█░]+)(\s+\d+%)(\s*)$", part)
+    if m_stat:
+        return [
+            ("", m_stat.group(1)),
+            ("class:accent bold", m_stat.group(2)),
+            ("class:primary", m_stat.group(3)),
+            ("class:learning", m_stat.group(4)),
+            ("class:secondary", m_stat.group(5)),
+            ("", m_stat.group(6)),
+        ]
+    m_skill = re.search(r"^(.*?\s+)([\w\-]+)(\s+)([█░]+)(\s+\d+%)(\s*)$", part)
+    if m_skill:
+        return [
+            ("", m_skill.group(1)),
+            ("class:primary", m_skill.group(2)),
+            ("", m_skill.group(3)),
+            ("class:learning", m_skill.group(4)),
+            ("class:secondary", m_skill.group(5)),
+            ("", m_skill.group(6)),
+        ]
+    return [("class:primary", part)]
+
+
+def _lex_banner_line(line: str) -> list[tuple[str, str]]:
+    if line.startswith("╔") and line.endswith("╗"):
+        return [("class:accent", line)]
+    if line.startswith("╚") and line.endswith("╝"):
+        return [("class:accent", line)]
+    if not (line.startswith("║") and line.endswith("║")):
+        return [("class:primary", line)]
+
+    content = line[1:-1]
+    tokens: list[tuple[str, str]] = [("class:accent", "║")]
+
+    if any(c in content for c in ("▄▄", "▀██", "████▄")):
+        tokens.append(("class:logo", content))
+    elif "commands:" in content:
+        tokens.append(("class:secondary", content))
+    elif "HUND AI" in content:
+        idx = content.find("HUND AI")
+        leading = content[:idx]
+        if leading:
+            tokens.append(("", leading))
+        tokens.append(("class:accent bold", "HUND AI"))
+        tokens.append(("class:secondary", content[idx + 7 :]))
+    elif re.match(r"^\s+(OS|HOST|CPU|RAM|GPU|MODEL)\s+", content):
+        m = re.match(r"^(\s+)(OS|HOST|CPU|RAM|GPU|MODEL)(\s+)(.*)$", content)
+        if m:
+            tokens.append(("", m.group(1)))
+            tokens.append(("class:label", m.group(2)))
+            tokens.append(("", m.group(3)))
+            tokens.append(("class:primary", m.group(4)))
+    elif "── BASE ATTRIBUTES ──" in content or "── SKILLS" in content:
+        if "│" in content:
+            left, right = content.split("│", 1)
+            tokens.append(("class:header", left))
+            tokens.append(("class:secondary", "│"))
+            tokens.append(("class:header", right))
+        else:
+            tokens.append(("class:header", content))
+    elif "│" in content:
+        left, right = content.split("│", 1)
+        tokens.extend(_lex_stat_or_skill_part(left))
+        tokens.append(("class:secondary", "│"))
+        tokens.extend(_lex_stat_or_skill_part(right))
+    else:
+        tokens.append(("class:primary", content))
+
+    tokens.append(("class:accent", "║"))
+    return tokens
+
+
 class _OutputLexer(Lexer):
     """Line-prefix & semantic markdown lexer mapping output lines to rich token styles."""
 
+    def invalidation_hash(self) -> bool:
+        return _MODAL_ACTIVE[0]
+
     def lex_document(self, document):
         lines = document.lines
+
+        if _MODAL_ACTIVE[0]:
+            def get_dim_line(lineno: int):
+                try:
+                    line = lines[lineno]
+                except IndexError:
+                    return []
+                return [("class:backdrop", line)]
+
+            return get_dim_line
+
+        # Pre-scan for code blocks, their languages, and multiline user messages
+        code_langs: dict[int, str] = {}
+        user_lines: set[int] = set()
+        in_code = False
+        in_user = False
+        cur_lang = "python"
+        for i, raw_line in enumerate(lines):
+            line_content = raw_line
+            stripped_l = line_content.strip()
+            if stripped_l.startswith("❯"):
+                in_user = True
+                user_lines.add(i)
+            elif in_user:
+                if (
+                    not stripped_l
+                    or stripped_l.startswith("┊")
+                    or stripped_l.startswith("·")
+                    or stripped_l.startswith("┌─ hund")
+                    or stripped_l.startswith("╭─ hund")
+                    or stripped_l.startswith("╔")
+                ):
+                    in_user = False
+                else:
+                    user_lines.add(i)
+
+            if line_content.startswith("── ") and not line_content.endswith("· changed ──"):
+                parts = line_content.strip("─ ").split()
+                if parts:
+                    fn_or_lang = parts[0]
+                    if "." in fn_or_lang:
+                        ext = fn_or_lang.rsplit(".", 1)[-1].lower()
+                        lang_map = {
+                            "py": "python", "ts": "typescript", "js": "javascript",
+                            "json": "json", "rs": "rust", "go": "go", "md": "markdown",
+                            "sh": "bash", "html": "html", "css": "css", "yaml": "yaml",
+                            "yml": "yaml", "toml": "toml", "sql": "sql",
+                        }
+                        cur_lang = lang_map.get(ext, "python")
+                    else:
+                        cur_lang = fn_or_lang.lower()
+                in_code = True
+            elif in_code and (not line_content.strip("─ ") or line_content.startswith("──")):
+                in_code = False
+            elif in_code:
+                code_langs[i] = cur_lang
 
         def get_line(lineno: int):
             try:
                 line = lines[lineno]
             except IndexError:
                 return []
+            if line.startswith("╔") or line.startswith("║") or line.startswith("╚"):
+                return _lex_banner_line(line)
+            if lineno in user_lines:
+                return [("class:user", line)]
             stripped = line.lstrip()
             if not stripped:
                 return [("class:primary", line)]
-            if stripped.startswith("❯"):
-                return [("class:user", line)]
             elif stripped.startswith("┊"):
                 idx = line.find("┊")
                 leading = line[:idx]
@@ -226,6 +443,30 @@ class _OutputLexer(Lexer):
                     tokens.append(("class:danger", rest[1:]))
                 else:
                     tokens.append(("class:secondary", rest))
+                return tokens
+            elif line.startswith("  · ") or stripped.startswith("· "):
+                rest = line[4:] if line.startswith("  · ") else stripped[2:]
+                tokens: list[tuple[str, str]] = [("class:secondary", "  "), ("class:learning", "· ")]
+                if "⟶ level up!" in rest:
+                    before, after = rest.split("⟶ level up!", 1)
+                    if before:
+                        tokens.append(("class:learning", before))
+                    tokens.append(("class:accent bold", "⟶ level up!"))
+                    if after:
+                        tokens.append(("class:accent", after))
+                    return tokens
+                bar_match = re.search(r"^(.*?)([█░]+)(\s+\+\d+\s+XP|\s*\+\d+\s+XP)?(.*)$", rest)
+                if bar_match:
+                    prefix_text, bar_text, xp_text, suffix_text = bar_match.groups()
+                    if prefix_text:
+                        tokens.append(("class:learning", prefix_text))
+                    tokens.append(("class:learning", bar_text))
+                    if xp_text:
+                        tokens.append(("class:learning bold", xp_text))
+                    if suffix_text:
+                        tokens.append(("class:learning", suffix_text))
+                    return tokens
+                tokens.append(("class:learning", rest))
                 return tokens
             elif (
                 line.startswith("  hund ")
@@ -256,6 +497,13 @@ class _OutputLexer(Lexer):
                     ("class:secondary", line[idx + 4 :]),
                 ]
             elif line.startswith("└") or line.startswith("╰"):
+                meta_match = re.search(r"^(.*?─\s+)([0-9.]+(?:s|ms|m|h)?|\w+)(\s+─+┘|─+┘|┘)$", line)
+                if meta_match:
+                    return [
+                        ("class:secondary", meta_match.group(1)),
+                        ("class:accent bold", meta_match.group(2)),
+                        ("class:secondary", meta_match.group(3)),
+                    ]
                 return [("class:secondary", line)]
             elif line.startswith("│") and line.endswith("│") and not line.strip("│ "):
                 return [("class:secondary", line)]
@@ -264,19 +512,44 @@ class _OutputLexer(Lexer):
                 indent_len = len(content) - len(content.lstrip())
                 indent_str = content[:indent_len]
                 cur = content.lstrip()
-                return [("class:secondary", "│  ")] + _parse_semantic_line(cur, indent_str) + [("class:secondary", "  │")]
+                if lineno in code_langs and not (
+                    cur.startswith("──")
+                    or cur.startswith("+ ")
+                    or cur.startswith("- ")
+                    or re.match(r"^[+-]\s*\d+\s+", cur)
+                ):
+                    parsed = _lex_pygments_code(cur, indent_str, code_langs[lineno])
+                else:
+                    parsed = _parse_semantic_line(cur, indent_str)
+                diff = len(content) - sum(len(t[1]) for t in parsed)
+                fill = [("class:primary", " " * diff)] if diff > 0 else []
+                return [("class:secondary", "│  ")] + parsed + fill + [("class:secondary", "  │")]
             elif line.startswith("│ ") and line.endswith(" │") and len(line) >= 4:
                 content = line[2:-2]
                 indent_len = len(content) - len(content.lstrip())
                 indent_str = content[:indent_len]
                 cur = content.lstrip()
-                return [("class:secondary", "│ ")] + _parse_semantic_line(cur, indent_str) + [("class:secondary", " │")]
+                if lineno in code_langs and not (
+                    cur.startswith("──")
+                    or cur.startswith("+ ")
+                    or cur.startswith("- ")
+                    or re.match(r"^[+-]\s*\d+\s+", cur)
+                ):
+                    parsed = _lex_pygments_code(cur, indent_str, code_langs[lineno])
+                else:
+                    parsed = _parse_semantic_line(cur, indent_str)
+                diff = len(content) - sum(len(t[1]) for t in parsed)
+                fill = [("class:primary", " " * diff)] if diff > 0 else []
+                return [("class:secondary", "│ ")] + parsed + fill + [("class:secondary", " │")]
             elif line.startswith("│") and line.endswith("│") and len(line) >= 2:
                 content = line[1:-1]
                 indent_len = len(content) - len(content.lstrip())
                 indent_str = content[:indent_len]
                 cur = content.lstrip()
-                return [("class:secondary", "│")] + _parse_semantic_line(cur, indent_str) + [("class:secondary", "│")]
+                parsed = _parse_semantic_line(cur, indent_str)
+                diff = len(content) - sum(len(t[1]) for t in parsed)
+                fill = [("class:primary", " " * diff)] if diff > 0 else []
+                return [("class:secondary", "│")] + parsed + fill + [("class:secondary", "│")]
             elif stripped.startswith("#"):
                 return [("class:header", line)]
 
@@ -295,6 +568,15 @@ class _SelectableControl(BufferControl):
         super().__init__(*args, **kwargs)
         self.scroll_cb = scroll_cb
         self.fallback_focus = fallback_focus
+
+    def create_content(self, width: int, height: int | None) -> Any:
+        content = super().create_content(width, height)
+        # Prevent horizontal scrolling off-screen by pinning cursor x=0 when not actively selecting
+        if self.buffer.selection_state is None:
+            orig_cursor = content.cursor_position
+            if orig_cursor is not None:
+                content.cursor_position = Point(x=0, y=orig_cursor.y)
+        return content
 
     def mouse_handler(self, mouse_event: MouseEvent) -> Any:
         et = mouse_event.event_type
@@ -339,9 +621,9 @@ def _discard_console(width: int = 100) -> Console:
 
 def _term_width() -> int:
     try:
-        return shutil.get_terminal_size().columns
+        return shutil.get_terminal_size((80, 24)).columns
     except Exception:
-        return 100
+        return 80
 
 
 async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
@@ -353,6 +635,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         content=output_control,
         wrap_lines=False,
         always_hide_cursor=True,
+        dont_extend_height=False,
+        height=Dimension(weight=1),
     )
 
     # ---- input buffer + prompt ----
@@ -360,16 +644,35 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     input_buffer = Buffer(
         name="input", multiline=True, completer=completer, complete_while_typing=True,
     )
+
+    def _input_height() -> int:
+        text = input_buffer.text
+        if not text:
+            return 1
+        # Usable width for text inside input row (terminal width minus prompt width '❯ ')
+        w = max(_app_width() - 4, 15)
+        lines = text.split("\n")
+        total_rows = 0
+        for l in lines:
+            if not l:
+                total_rows += 1
+            else:
+                total_rows += max(1, (len(l) + w - 1) // w)
+        return min(max(total_rows, 1), 10)
+
     input_control = BufferControl(buffer=input_buffer, focus_on_click=True)
     input_window = Window(
         content=input_control,
-        height=Dimension(min=1, max=10, preferred=1),
+        height=_input_height,
+        dont_extend_height=False,
         wrap_lines=True,
     )
     prompt_window = Window(
         content=FormattedTextControl(lambda: [("class:prompt", "❯ ")]),
         width=3,
         dont_extend_width=True,
+        height=_input_height,
+        dont_extend_height=False,
     )
     input_row = VSplit([prompt_window, input_window])
 
@@ -381,17 +684,34 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         tokens = state.extra.get("tokens", 0)
         limit = state.extra.get("token_limit", 1_000_000)
         dur = time.time() - state.start_time
-        lat = state.extra.get("last_latency_s", 0.0)
-        return [("class:status", " " + format_status_bar(model, tokens, limit, dur, lat))]
+        lat = state.extra.get("last_latency_s", 0.0) if turn_running[0] else None
+
+        cleaned_model = model
+        if "(" in model and ")" in model:
+            cleaned_model = model.split("(")[-1].split(")")[0].strip()
+        if not cleaned_model:
+            cleaned_model = "deepseek-v4-pro"
+
+        token_str = format_tokens_ratio(tokens, limit)
+        duration_str = format_duration(dur)
+
+        segments: list[tuple[str, str]] = [
+            ("class:header", " " + cleaned_model),
+            ("class:status", f" │ {token_str} │ {duration_str}"),
+        ]
+        if lat is not None and lat > 0:
+            segments.append(("class:status", f" │ {lat:.1f}s"))
+        return segments
 
     status_window = Window(content=FormattedTextControl(status_text), height=1)
 
     # ---- confirmation modal (arrow-key select) ----
     _confirm = {
         "active": False,
-        "prompt": "",
+        "title": "hund wants to run a command",
+        "detail": "",
         "selected": 0,
-        "answer": "deny",
+        "answer": ConfirmVerdict.DENY,
         "event": threading.Event(),
     }
 
@@ -406,18 +726,24 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             out.append((style, content))
             out.append(("class:secondary", " " * max(W - 4 - len(content), 0) + " │\n"))
 
-        out.append(("class:secondary", "┌" + "─" * (W - 2) + "┐\n"))
-        row(_confirm["title"], "class:warning bold")
+        title = _confirm.get("title", "hund wants to run a command")
+        title_dashes = max(W - len(title) - 5, 2)
+        out.append(("class:secondary", "┌─ "))
+        out.append(("class:warning bold", title))
+        out.append(("class:secondary", " " + "─" * title_dashes + "┐\n"))
+
         row("", "class:secondary")
-        row(_confirm["detail"], "class:accent bold")
+        detail = _confirm.get("detail", "")
+        row(f"  {detail}", "class:accent")
         row("", "class:secondary")
         for i, (_code, label, color) in enumerate(_CONFIRM_OPTIONS):
             if i == _confirm["selected"]:
                 row("  ❯ ● " + label, color + " bold")
             else:
                 row("    ○ " + label, "class:secondary")
+        row("", "class:secondary")
         out.append(("class:secondary", "└" + "─" * (W - 2) + "┘\n"))
-        out.append(("class:secondary", " ↑↓ select · Enter confirm · Esc deny"))
+        out.append(("class:secondary", "   ↑↓ select · Enter confirm · Esc deny"))
         return out
 
     _thinking: dict[str, Any] = {
@@ -448,22 +774,34 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         confirm_window, filter=Condition(lambda: _confirm["active"])
     )
 
-    # 2-line vertical breathing room above and below input
-    input_gap_top = Window(height=2, char=" ")
-    input_gap_bottom = Window(height=2, char=" ")
+    # 1-row border lines above and below input per TUI_FACIT.md §5.1
+    input_border_top = Window(
+        content=FormattedTextControl(lambda: [("class:secondary", "─" * _app_width())]),
+        height=1,
+        dont_extend_height=True,
+        wrap_lines=False,
+    )
+    input_border_bottom = Window(
+        content=FormattedTextControl(lambda: [("class:secondary", "─" * _app_width())]),
+        height=1,
+        dont_extend_height=True,
+        wrap_lines=False,
+    )
 
     layout = Layout(
         FloatContainer(
             content=HSplit([
                 output_window,
                 thinking_container,
-                confirm_container,
-                input_gap_top,
+                input_border_top,
                 input_row,
-                input_gap_bottom,
+                input_border_bottom,
                 status_window,
             ]),
             floats=[
+                Float(
+                    content=confirm_container,
+                ),
                 Float(
                     xcursor=True,
                     ycursor=True,
@@ -482,11 +820,23 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         app = holder.get("app")
         if app is not None:
             try:
+                # Always reset horizontal scroll so the left border (│) is never
+                # clipped off-screen – it can drift > 0 after text selection in a
+                # long message and prompt_toolkit won't auto-reset it.
+                output_window.horizontal_scroll = 0
                 app.invalidate()
             except Exception:
                 pass
 
     def _app_width() -> int:
+        app = holder.get("app")
+        if app is not None:
+            try:
+                cols = app.output.get_size().columns
+                if cols > 0:
+                    return cols
+            except Exception:
+                pass
         return _term_width()
 
     def _box_top(width: int | None = None) -> str:
@@ -497,19 +847,32 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     _append_lock = threading.Lock()
 
+    def _set_output(new_text: str) -> None:
+        """Set output_buffer with cursor at start-of-last-line so horizontal scroll is always 0."""
+        last_nl = new_text.rfind("\n")
+        cur_pos = last_nl + 1 if last_nl >= 0 else 0
+        try:
+            output_window.horizontal_scroll = 0
+        except Exception:
+            pass
+        output_buffer.set_document(
+            Document(new_text, cursor_position=cur_pos), bypass_readonly=True
+        )
+
     def append(text: str) -> None:
         if not text:
             return
         with _append_lock:
             new_text = output_buffer.text + text
-            output_buffer.set_document(
-                Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-            )
+            _set_output(new_text)
         _invalidate()
 
     # seed banner
-    seed = banner.rstrip("\n") + "\n\n"
-    output_buffer.set_document(Document(seed, cursor_position=len(seed)), bypass_readonly=True)
+    from .render import build_startup_banner
+    actual_width = _app_width()
+    rendered_banner = build_startup_banner(rt, width=actual_width)
+    seed = rendered_banner.rstrip("\n") + "\n\n"
+    _set_output(seed)
 
     def _reflow_borders() -> None:
         """Re-width response box borders and re-wrap content to the current terminal width."""
@@ -519,21 +882,29 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             new_lines: list[str] = []
             changed = False
             in_box = False
+            in_banner = False
             box_lines: list[str] = []
 
             for line in lines:
-                if line.startswith("┌─ hund ") or line.startswith("╭─ hund "):
+                if line.startswith("╔") and line.endswith("╗"):
+                    in_banner = True
+                    new_banner = build_startup_banner(rt, width=_app_width())
+                    new_lines.extend(new_banner.split("\n"))
+                    changed = True
+                elif in_banner and (line.startswith("╚") and line.endswith("╝")):
+                    in_banner = False
+                elif in_banner:
+                    continue
+                elif line.startswith("┌─ hund ") or line.startswith("╭─ hund "):
                     in_box = True
                     box_lines = []
                 elif in_box and (line.startswith("└") or line.startswith("╰")):
                     in_box = False
-                    # Extract meta if present (e.g. └────── 2.3s ┘)
+                    # Extract meta if present (e.g. └────── 2.3s ───┘ or └────── 2.3s ┘)
                     box_meta: str | None = None
-                    trimmed = line.rstrip(" ┘╯")
-                    if " " in trimmed:
-                        parts = trimmed.split(" ")
-                        if len(parts) > 1 and parts[-1].strip():
-                            box_meta = parts[-1].strip()
+                    trimmed = line.lstrip("└╰─ ").rstrip(" ┘╯─")
+                    if trimmed:
+                        box_meta = trimmed.strip()
 
                     # Unbox lines
                     content_lines: list[str] = []
@@ -559,11 +930,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
             if changed:
                 new_text = "\n".join(new_lines)
-                cur = output_buffer.cursor_position
-                output_buffer.set_document(
-                    Document(new_text, cursor_position=min(cur, len(new_text))),
-                    bypass_readonly=True,
-                )
+                _set_output(new_text)
                 _invalidate()
 
     messages = rt.messages
@@ -580,13 +947,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             self._tool_args: dict = {}
             self._tool_switched = False
             self._user_input = ""
+            self._turn_start_time: float = 0.0
             self._anim_timer: threading.Timer | None = None
             self._pending_past_timer: threading.Timer | None = None
             self._md = StreamingMarkdownFilter()
+            self._snapshot = None
 
         def set_user_input(self, text: str) -> None:
             self._user_input = text or ""
             self._tool_switched = False
+            self._turn_start_time = time.time()
+
+        def set_turn_snapshot(self, snapshot) -> None:
+            self._snapshot = snapshot
 
         def _cancel_timers(self) -> None:
             if self._anim_timer is not None:
@@ -622,6 +995,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             self._anim_timer.start()
 
         def thinking(self, msg: str | None = None) -> None:
+            if not self._turn_start_time:
+                self._turn_start_time = time.time()
             self._cancel_timers()
             _thinking["active"] = True
             _thinking["text"] = msg.rstrip(".…") if msg else "hund is reading"
@@ -655,38 +1030,92 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                         _invalidate()
 
         def chunk(self, text: str) -> None:
+            if not self._turn_start_time:
+                self._turn_start_time = time.time()
             self.clear_thinking()
             filtered = self._md.feed(text)
             if not filtered:
                 return
             if not self._box_open:
                 self._box_open = True
+                # Ensure a blank line separates preceding content from the box.
+                with _append_lock:
+                    cur = output_buffer.text
+                    if cur and not cur.endswith("\n\n"):
+                        extra = "\n" if cur.endswith("\n") else "\n\n"
+                        _set_output(cur + extra)
                 self._box_start_marker = len(output_buffer.text)
                 self._raw_response = ""
             self._raw_response += filtered
             boxed = render_response_box(self._raw_response, _app_width())
             with _append_lock:
-                new_text = output_buffer.text[: self._box_start_marker] + "\n" + boxed
-                output_buffer.set_document(
-                    Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                )
+                prefix = output_buffer.text[: self._box_start_marker]
+                new_text = prefix + boxed
+                _set_output(new_text)
             _invalidate()
 
         def end_assistant(self) -> None:
+            dur = (time.time() - self._turn_start_time) if self._turn_start_time else state.extra.get("last_latency_s", 0.0)
+            meta = f"{dur:.1f}s" if dur and dur > 0 else None
             if self._box_open:
                 leftover = self._md.flush()
                 self._raw_response += leftover
-                boxed = render_response_box(self._raw_response, _app_width(), meta=None)
+                boxed = render_response_box(self._raw_response, _app_width(), meta=meta)
+
+                reflection_lines: list[str] = []
+                if getattr(self, "_snapshot", None) is not None:
+                    try:
+                        from hund.learning.reflection import compute_reflections
+                        reflection_lines = compute_reflections(self._snapshot)
+                    except Exception:
+                        pass
+                    self._snapshot = None
+
+                refl_text = ""
+                if reflection_lines:
+                    refl_text = "\n" + "\n".join(reflection_lines)
+
                 with _append_lock:
-                    new_text = output_buffer.text[: self._box_start_marker] + "\n" + boxed + "\n\n"
-                    output_buffer.set_document(
-                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                    )
+                    prefix = output_buffer.text[: self._box_start_marker]
+                    new_text = prefix + boxed + refl_text + "\n\n"
+                    _set_output(new_text)
+
+                if reflection_lines and not input_buffer.text.strip():
+                    has_bar = any("XP" in ln and ("█" in ln or "░" in ln) for ln in reflection_lines)
+                    if has_bar:
+                        def _animate_glint(base_prefix: str, base_boxed: str, final_refl: list[str]) -> None:
+                            try:
+                                for glint_char in ("▒", "█"):
+                                    if input_buffer.text.strip():
+                                        break
+                                    time.sleep(0.06)
+                                    shimmered = [
+                                        ln.replace("█", glint_char, 3) if "XP" in ln else ln
+                                        for ln in final_refl
+                                    ]
+                                    with _append_lock:
+                                        _set_output(base_prefix + base_boxed + "\n" + "\n".join(shimmered) + "\n\n")
+                                    _invalidate()
+                                time.sleep(0.04)
+                                with _append_lock:
+                                    _set_output(base_prefix + base_boxed + "\n" + "\n".join(final_refl) + "\n\n")
+                                _invalidate()
+                            except Exception:
+                                pass
+
+                        threading.Thread(
+                            target=_animate_glint,
+                            args=(prefix, boxed, reflection_lines),
+                            daemon=True,
+                        ).start()
+
                 self._box_open = False
                 self._raw_response = ""
+                self._turn_start_time = 0.0
                 _invalidate()
             else:
                 append("\n\n")
+                self._turn_start_time = 0.0
 
         def error(self, markup: str) -> None:
             clean = strip_rich(strip_markdown(markup)).strip()
@@ -694,9 +1123,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 err_line = f"  ┊ ✗ error: {_trunc(clean, 50)}\n"
                 with _append_lock:
                     new_text = output_buffer.text[: self._tool_marker] + err_line
-                    output_buffer.set_document(
-                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                    )
+                    _set_output(new_text)
                 self._tool_marker = None
                 _invalidate()
             else:
@@ -712,10 +1139,16 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             _confirm["selected"] = 0
             _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = True
+            _MODAL_ACTIVE[0] = True
+            with _append_lock:
+                _set_output(output_buffer.text)
             _confirm["event"].clear()
             _invalidate()
             _confirm["event"].wait()
             _confirm["active"] = False
+            _MODAL_ACTIVE[0] = False
+            with _append_lock:
+                _set_output(output_buffer.text)
             _invalidate()
             return _confirm["answer"]
 
@@ -727,7 +1160,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                         (m.content for m in reversed(messages) if getattr(m, "role", "") == "user"),
                         "",
                     )
-                gerund, past = select_thinking_phrase(u_text, tool_name=name)
+                gerund, past = select_thinking_phrase(u_text)
                 _thinking["text"] = gerund
                 _thinking["past"] = past
                 _thinking["start_time"] = time.time()
@@ -751,13 +1184,34 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             dur = time.time() - self._tool_start_time
             dur_str = f"{dur:.1f}s"
             desc = _format_tool_desc(name, self._tool_args)
-            result_line = f"  ┊ ✓ {desc}  {dur_str}\n"
+            body = ""
+            if name == "write_file" and isinstance(self._tool_args, dict):
+                content = self._tool_args.get("content")
+                if isinstance(content, str) and content.strip():
+                    lines = content.rstrip("\n").splitlines()
+                    max_lines = 40
+                    visible = lines[:max_lines]
+                    body = "".join(f"      + {ln}\n" for ln in visible)
+                    if len(lines) > max_lines:
+                        body += f"      ... ({len(lines) - max_lines} more lines)\n"
+            elif name in ("edit_file", "patch", "apply_patch", "replace_file_content") and isinstance(self._tool_args, dict):
+                diff = self._tool_args.get("diff") or self._tool_args.get("patch")
+                if isinstance(diff, str) and diff.strip():
+                    diff_lines = diff.rstrip("\n").splitlines()
+                    body = "".join(f"      {ln}\n" for ln in diff_lines[:40])
+                else:
+                    target = self._tool_args.get("target_content")
+                    replacement = self._tool_args.get("replacement_content")
+                    if isinstance(target, str) and isinstance(replacement, str):
+                        t_lines = target.rstrip("\n").splitlines()
+                        r_lines = replacement.rstrip("\n").splitlines()
+                        body = "".join(f"      - {ln}\n" for ln in t_lines) + "".join(f"      + {ln}\n" for ln in r_lines)
+
+            result_line = f"  ┊ ✓ {desc}  {dur_str}\n" + body
             if self._tool_marker is not None:
                 with _append_lock:
                     new_text = output_buffer.text[: self._tool_marker] + result_line
-                    output_buffer.set_document(
-                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                    )
+                    _set_output(new_text)
                 self._tool_marker = None
                 _invalidate()
             else:
@@ -769,9 +1223,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             if self._tool_marker is not None:
                 with _append_lock:
                     new_text = output_buffer.text[: self._tool_marker] + blocked_line
-                    output_buffer.set_document(
-                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                    )
+                    _set_output(new_text)
                 self._tool_marker = None
                 _invalidate()
             else:
@@ -783,9 +1235,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             if self._tool_marker is not None:
                 with _append_lock:
                     new_text = output_buffer.text[: self._tool_marker] + declined_line
-                    output_buffer.set_document(
-                        Document(new_text, cursor_position=len(new_text)), bypass_readonly=True
-                    )
+                    _set_output(new_text)
                 self._tool_marker = None
                 _invalidate()
             else:
@@ -802,6 +1252,9 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         out = buf.getvalue()
         if out:
             append(out.rstrip("\n") + "\n\n")
+        refresh_stats(state)
+        _reflow_borders()
+        _invalidate()
 
     # ---- agent turn runner (background thread) ----
     def _spawn_turn(echo_user: str | None) -> None:
@@ -809,7 +1262,28 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         run_id = uuid.uuid4().hex
         user_text = echo_user
         if echo_user is not None:
-            append(theme.USER_PREFIX + " " + echo_user + "\n")
+            w = max(_app_width() - 4, 20)
+            wrapped_lines: list[str] = []
+            for raw_line in echo_user.splitlines():
+                if not raw_line.strip():
+                    wrapped_lines.append("")
+                else:
+                    wrapped_lines.extend(
+                        textwrap.wrap(
+                            raw_line,
+                            width=w,
+                            break_long_words=True,
+                            break_on_hyphens=False,
+                        )
+                        or [""]
+                    )
+            if not wrapped_lines:
+                wrapped_lines = [echo_user]
+
+            formatted_echo = theme.USER_PREFIX + " " + wrapped_lines[0]
+            if len(wrapped_lines) > 1:
+                formatted_echo += "\n" + "\n".join(f"  {ln}" if ln else "" for ln in wrapped_lines[1:])
+            append(formatted_echo + "\n\n")
             messages.append(Message(role="user", content=echo_user))
             _session_save(session_id, "user", echo_user, run_id=run_id)
         else:
@@ -819,6 +1293,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             )
 
         sink.set_user_input(user_text or "")
+        try:
+            from hund.learning.reflection import take_snapshot
+            sink.set_turn_snapshot(take_snapshot())
+        except Exception:
+            pass
 
         tokens_before = estimate_tokens(messages)
         comp = maybe_compress(messages, client=rt.client)
@@ -865,6 +1344,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 _restore_frozen_system_prompt(messages, frozen)
                 state.extra["tokens"] = estimate_tokens(messages)
                 refresh_stats(state)
+                _reflow_borders()
                 turn_running[0] = False
                 _invalidate()
 
@@ -987,32 +1467,42 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _enter(event):
         _confirm["answer"] = _CONFIRM_OPTIONS[_confirm["selected"]][0]
         _confirm["active"] = False
+        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
+        _invalidate()
 
     @kb.add("y", filter=confirm_active)
     def _y(event):
         _confirm["answer"] = ConfirmVerdict.APPROVE_ONCE
         _confirm["active"] = False
+        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
+        _invalidate()
 
     @kb.add("e", filter=confirm_active)
     def _e(event):
         _confirm["answer"] = ConfirmVerdict.EDIT
         _confirm["active"] = False
+        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
+        _invalidate()
 
     @kb.add("a", filter=confirm_active)
     def _a(event):
         _confirm["answer"] = ConfirmVerdict.ALLOW_SESSION
         _confirm["active"] = False
+        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
+        _invalidate()
 
     @kb.add("n", filter=confirm_active)
     @kb.add("escape", filter=confirm_active)
     def _n(event):
         _confirm["answer"] = ConfirmVerdict.DENY
         _confirm["active"] = False
+        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
+        _invalidate()
 
     @kb.add("escape", filter=~confirm_active)
     def _escape(event):
@@ -1026,7 +1516,9 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         if _confirm["active"]:
             _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = False
+            _MODAL_ACTIVE[0] = False
             _confirm["event"].set()
+            _invalidate()
         elif _copy_selection():
             pass  # copied
         else:
@@ -1052,7 +1544,6 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _enter_submit(event):
         input_buffer.validate_and_handle()
 
-    @kb.add("s-enter", filter=has_focus(input_window) & ~confirm_active)
     @kb.add("c-j", filter=has_focus(input_window) & ~confirm_active)
     def _newline_input(event):
         input_buffer.insert_text("\n")
@@ -1081,9 +1572,9 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     # Re-width box borders when the terminal is resized (polling is cheap).
     def _width_watcher() -> None:
-        last = _app_width()
+        last = -1
         while True:
-            time.sleep(0.25)
+            time.sleep(0.05)
             w = _app_width()
             if w != last:
                 last = w

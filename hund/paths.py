@@ -107,6 +107,11 @@ def memory_env_path() -> Path:
     return memory_dir() / "environment.md"
 
 
+def memory_db_path() -> Path:
+    """Canonical SQLite database for user and project memory."""
+    return memory_dir() / "memory.db"
+
+
 def connector_key_path() -> Path:
     """Path to connector HMAC secret key file."""
     return hund_home() / "connector" / "key.json"
@@ -135,3 +140,10 @@ def sessions_dir() -> Path:
 
 def sessions_db_path() -> Path:
     return sessions_dir() / "sessions.db"
+
+
+def workspace_id(path: Path | str | None = None) -> str:
+    """Return stable workspace ID for path (delegates to hund.workspace.workspace_id)."""
+    from .workspace import workspace_id as _get_workspace_id
+
+    return _get_workspace_id(path)

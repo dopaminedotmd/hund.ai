@@ -68,6 +68,11 @@ def add(domain: str, trigger: str, rule: str, source: str = "manual",
         "source": source,
     })
     _save(data, home)
+    try:
+        from hund.domains.xp import add_xp
+        add_xp(domain, 3)
+    except Exception:
+        pass
     return uid
 
 

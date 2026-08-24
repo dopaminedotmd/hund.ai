@@ -145,6 +145,35 @@ def _detect_ram_gb() -> float:
         return 0.0
 
 
+def _detect_cpu_name() -> str:
+    """Detect real human-friendly CPU model name across OSes."""
+    if os.name == "nt":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0") as key:
+                name, _ = winreg.QueryValueEx(key, "ProcessorNameString")
+                if name and name.strip():
+                    return name.strip()
+        except Exception:
+            pass
+    elif platform.system() == "Linux":
+        try:
+            with open("/proc/cpuinfo", "r", encoding="utf-8") as f:
+                for line in f:
+                    if "model name" in line:
+                        return line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+    elif platform.system() == "Darwin":
+        try:
+            out = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True, timeout=2)
+            if out.returncode == 0 and out.stdout.strip():
+                return out.stdout.strip()
+        except Exception:
+            pass
+    return platform.processor() or platform.machine()
+
+
 def _detect_hostname() -> str:
     """Maskinens hostname."""
     try:
@@ -165,7 +194,7 @@ def profile_environment(workspace: Path | None = None) -> EnvironmentProfile:
         os_caption=_detect_os_caption(),
         os_arch=_detect_os_arch(),
         machine=platform.machine(),
-        processor=platform.processor() or platform.machine(),
+        processor=_detect_cpu_name(),
         cpu_count=os.cpu_count(),
         hostname=_detect_hostname(),
         gpu_model=gpu_model,

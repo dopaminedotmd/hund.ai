@@ -68,9 +68,43 @@ def _parse(tc: dict) -> tuple[str, dict]:
         return name, {"_raw_arguments": raw}
 
 
-def _log_tool(tool: str, risk: str, outcome: str, success: int) -> None:
-    """Deprecated in favor of trace_events."""
-    pass
+TOOL_DOMAIN_MAP = {
+    "read_file": "files",
+    "write_file": "files",
+    "edit_file": "files",
+    "replace_file_content": "files",
+    "list_dir": "files",
+    "search_files": "files",
+    "grep_search": "files",
+    "terminal": "system",
+    "powershell": "system",
+    "bash": "system",
+    "cmd": "system",
+    "git": "git",
+    "web_search": "research",
+    "fetch_web_page": "research",
+    "read_url_content": "research",
+}
+
+_TURN_TOOL_XP: dict[tuple[str, str], int] = {}
+
+
+def _log_tool(tool: str, risk: str, outcome: str, success: int, run_id: str | None = None) -> None:
+    """Log tool usage and award XP (max +5 XP per turn per domain)."""
+    if success == 1:
+        domain = TOOL_DOMAIN_MAP.get(tool)
+        if domain:
+            rid = run_id or "_default"
+            count = _TURN_TOOL_XP.get((domain, rid), 0)
+            if count < 5:
+                _TURN_TOOL_XP[(domain, rid)] = count + 1
+                try:
+                    from hund.domains.xp import add_xp
+                    add_xp(domain, 1)
+                except Exception:
+                    pass
+                if len(_TURN_TOOL_XP) > 2000:
+                    _TURN_TOOL_XP.clear()
 
 
 def dispatch_tool_call(
@@ -193,6 +227,7 @@ def dispatch_tool_call(
     if len(result) > MAX_TOOL_OUTPUT:
         result = result[:MAX_TOOL_OUTPUT] + "\n[TRUNCATED — output oversteg 50KB]"
     success = 0 if result.startswith("[error]") else 1
+    _log_tool(name, decision.risk.value, result, success, run_id=run_id)
     if success:
         _emit("tool_call_completed", {"stdout_redacted_summary": result[:200]}, risk_level=decision.risk.value)
     else:

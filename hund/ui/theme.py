@@ -39,7 +39,7 @@ SKINS: dict[str, dict[str, Any]] = {
         "pygments": "one-dark",
         "tokens": {
             "primary": "#FFFFFF",
-            "secondary": "#6E7380",
+            "secondary": "#3E4451",
             "accent": "#4EBCD5",
             "user": "#50FA7B",
             "success": "#50FA7B",
@@ -48,8 +48,12 @@ SKINS: dict[str, dict[str, Any]] = {
             "tool": "#C792EA",
             "thinking": "#7DC8D8",
             "learning": "#E6C07B",
-            "add": "#50FA7B",
-            "del": "#FF5555",
+            "add": "#78B88A",
+            "del": "#C56D73",
+            "add_bg": "#1E3A2B",
+            "add_fg": "#A3D9B0",
+            "del_bg": "#3D1E24",
+            "del_fg": "#F4ACB7",
             "mascot": "#FFFFFF",
         },
         "ansi": {
@@ -72,7 +76,7 @@ SKINS: dict[str, dict[str, Any]] = {
         "name": "nord",
         "pygments": "nord",
         "tokens": {
-            "primary": "#ECEFF4",
+            "primary": "#D8DEE9",
             "secondary": "#4C566A",
             "accent": "#88C0D0",
             "user": "#A3BE8C",
@@ -82,9 +86,13 @@ SKINS: dict[str, dict[str, Any]] = {
             "tool": "#B48EAD",
             "thinking": "#81A1C1",
             "learning": "#EBCB8B",
-            "add": "#A3BE8C",
-            "del": "#BF616A",
-            "mascot": "#ECEFF4",
+            "add": "#8FB89E",
+            "del": "#C2767D",
+            "add_bg": "#263D36",
+            "add_fg": "#D8DEE9",
+            "del_bg": "#3D2328",
+            "del_fg": "#D8DEE9",
+            "mascot": "#D8DEE9",
         },
         "ansi": {
             "primary": "ansiwhite",
@@ -106,7 +114,7 @@ SKINS: dict[str, dict[str, Any]] = {
         "name": "synthwave",
         "pygments": "dracula",
         "tokens": {
-            "primary": "#FFFFFF",
+            "primary": "#E0DEF4",
             "secondary": "#6E6A86",
             "accent": "#8BE9FD",
             "user": "#A6E3A1",
@@ -116,9 +124,13 @@ SKINS: dict[str, dict[str, Any]] = {
             "tool": "#C4A7E7",
             "thinking": "#F5E0DC",
             "learning": "#F9E2AF",
-            "add": "#A6E3A1",
-            "del": "#F38BA8",
-            "mascot": "#FFFFFF",
+            "add": "#88C090",
+            "del": "#C87085",
+            "add_bg": "#1E3B33",
+            "add_fg": "#E0DEF4",
+            "del_bg": "#3B1E2E",
+            "del_fg": "#E0DEF4",
+            "mascot": "#E0DEF4",
         },
         "ansi": {
             "primary": "ansiwhite",
@@ -174,12 +186,15 @@ def make_pt_style(skin_name: str | None = None) -> Style:
     """Construct a prompt_toolkit Style object tailored for the specified skin."""
     skin = get_skin(skin_name)
     tokens = skin["tokens"]
-    return Style.from_dict(
+    add_style = f"bg:{tokens.get('add_bg', '#1E3A2B')} fg:{tokens.get('add_fg', '#A3D9B0')}"
+    del_style = f"bg:{tokens.get('del_bg', '#3D1E24')} fg:{tokens.get('del_fg', '#F4ACB7')}"
+    base_style = Style.from_dict(
         {
             "": tokens["primary"],
             "primary": tokens["primary"],
             "secondary": tokens["secondary"],
             "dim": tokens["secondary"],
+            "backdrop": "#3E4451",
             "accent": tokens["accent"],
             "success": tokens["success"],
             "danger": tokens["danger"],
@@ -187,9 +202,10 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "tool": tokens["tool"],
             "thinking": tokens["thinking"],
             "learning": tokens["learning"],
-            "add": tokens["add"],
-            "del": tokens["del"],
+            "add": add_style,
+            "del": del_style,
             "mascot": tokens["mascot"],
+            "logo": tokens.get("logo", "#E2E4E9"),
             "user": tokens["user"],
             "prompt": "bold " + tokens["user"],
             "status": tokens["secondary"],
@@ -208,11 +224,22 @@ def make_pt_style(skin_name: str | None = None) -> Style:
         }
     )
 
+    try:
+        from prompt_toolkit.styles import merge_styles
+        from prompt_toolkit.styles.pygments import style_from_pygments_cls
+        from pygments.styles import get_style_by_name
+
+        pyg_theme = get_pygments_theme(skin_name)
+        pyg_cls = get_style_by_name(pyg_theme)
+        return merge_styles([base_style, style_from_pygments_cls(pyg_cls)])
+    except Exception:
+        return base_style
+
 
 # -- Core Design Tokens (Hex + 16-ANSI fallback) ---------------------------
 COLOR_TOKENS: dict[str, dict[str, str]] = {
     "text":     {"hex": "#E3E3E4", "rich": "white",          "pt": "ansiwhite"},
-    "dim":      {"hex": "#6E7380", "rich": "bright_black",   "pt": "ansibrightblack"},
+    "dim":      {"hex": "#3E4451", "rich": "bright_black",   "pt": "ansibrightblack"},
     "cyan":     {"hex": "#4EBCD5", "rich": "cyan",           "pt": "ansicyan"},
     "green":    {"hex": "#50FA7B", "rich": "green",          "pt": "ansigreen"},
     "yellow":   {"hex": "#F1FA8C", "rich": "bright_yellow",   "pt": "ansibrightyellow"},
@@ -223,7 +250,7 @@ COLOR_TOKENS: dict[str, dict[str, str]] = {
 }
 
 HUND_TEXT = "#E3E3E4"    # Primary bone white text
-HUND_DIM = "#6E7380"     # Muted structural borders & metadata
+HUND_DIM = "#3E4451"     # Muted structural borders & metadata
 HUND_CYAN = "#4EBCD5"    # Accent / Hund identity
 HUND_GREEN = "#50FA7B"   # User prompt & positive confirmation
 HUND_YELLOW = "#F1FA8C"  # Master prestige / warnings

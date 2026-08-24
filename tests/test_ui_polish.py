@@ -58,7 +58,8 @@ def test_status_bar_contains_model_tokens_time_latency() -> None:
     assert "deepseek-v4-pro" in line
     assert "274K/1M" in line
     assert "4h 27m" in line
-    assert "⏱ 21.7s" in line
+    assert "21.7s" in line
+    assert "⏱" not in line
 
 
 def test_status_bar_excludes_stat_abbreviations_and_bars() -> None:
@@ -79,7 +80,8 @@ def test_status_bar_excludes_stat_abbreviations_and_bars() -> None:
 
     assert "deepseek-v4-pro" in combined_text
     assert "50K/1M" in combined_text
-    assert "⏱ 1.2s" in combined_text
+    assert "1.2s" in combined_text
+    assert "⏱" not in combined_text
 
 
 # -- slash autocomplete metadata tests -------------------------------------

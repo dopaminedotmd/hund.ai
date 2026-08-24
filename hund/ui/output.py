@@ -71,12 +71,50 @@ class StreamingMarkdownFilter:
     Transforms:
       - Line start '- ' or '* ' -> '• '
       - '### Heading' -> 'Heading' (suppressing raw #)
+      - Code fences ```...``` -> formatted code / diff blocks
       - Preserves '**bold**', '__bold__', and '`code`' for lexer styling.
     """
 
     def __init__(self):
         self._buf = ""
         self._at_line_start = True
+        self._in_fence = False
+        self._fence_info = ""
+        self._fence_lines: list[str] = []
+
+    def _render_fence(self) -> str:
+        from .render import format_code_block, format_diff_block
+
+        code_text = "\n".join(self._fence_lines)
+        info = self._fence_info.strip()
+        tokens = info.split()
+        lang = tokens[0].lower() if tokens else ""
+        filename = tokens[1] if len(tokens) > 1 else ""
+
+        # Extension-gated filename detection from first line comment if filename not in fence header
+        if not filename and self._fence_lines:
+            first_line = self._fence_lines[0].strip()
+            fn_match = re.match(r"^(?:#|//|/\*|--)\s*([\w\-./\\]+\.[a-zA-Z0-9]+)(?:\s*\*/)?$", first_line)
+            if fn_match:
+                filename = fn_match.group(1).split("/")[-1].split("\\")[-1]
+                self._fence_lines = self._fence_lines[1:]
+                code_text = "\n".join(self._fence_lines)
+
+        # Check if diff
+        is_diff = lang in ("diff", "patch")
+        if not is_diff:
+            for l in self._fence_lines:
+                if l.startswith("+") or l.startswith("-") or l.startswith("@@"):
+                    is_diff = True
+                    break
+
+        if is_diff:
+            fn = filename if filename else (tokens[0] if (tokens and "." in tokens[0] and lang != "diff") else "")
+            return "\n" + format_diff_block(code_text, filename=fn) + "\n"
+        else:
+            fn = filename if filename else (tokens[0] if (tokens and "." in tokens[0]) else "")
+            language = lang if not ("." in lang) else ""
+            return "\n" + format_code_block(code_text, language=language, filename=fn) + "\n"
 
     def feed(self, text: str) -> str:
         self._buf += text
@@ -88,8 +126,45 @@ class StreamingMarkdownFilter:
             rem = n - i
             ch = self._buf[i]
 
-            # Line-start formatting (bullets and headings)
+            if self._in_fence:
+                if self._at_line_start and self._buf[i : i + 3] == "```":
+                    nl_pos = self._buf.find("\n", i)
+                    if nl_pos == -1:
+                        # Wait for full closing line
+                        break
+                    self._in_fence = False
+                    out.append(self._render_fence())
+                    self._fence_lines = []
+                    self._fence_info = ""
+                    self._at_line_start = True
+                    i = nl_pos + 1
+                    continue
+                else:
+                    nl_pos = self._buf.find("\n", i)
+                    if nl_pos == -1:
+                        # Wait for newline
+                        break
+                    line = self._buf[i:nl_pos]
+                    self._fence_lines.append(line)
+                    self._at_line_start = True
+                    i = nl_pos + 1
+                    continue
+
+            # Line-start formatting (bullets, headings, and code fences)
             if self._at_line_start:
+                if self._buf[i : i + 3] == "```":
+                    nl_pos = self._buf.find("\n", i)
+                    if nl_pos == -1:
+                        # Wait for full fence header line
+                        break
+                    fence_header = self._buf[i + 3 : nl_pos].strip()
+                    self._in_fence = True
+                    self._fence_info = fence_header
+                    self._fence_lines = []
+                    self._at_line_start = True
+                    i = nl_pos + 1
+                    continue
+
                 if ch in (" ", "\t"):
                     out.append(ch)
                     i += 1
@@ -125,7 +200,16 @@ class StreamingMarkdownFilter:
 
     def flush(self) -> str:
         out: list[str] = []
-        if self._buf:
+        if self._in_fence:
+            if self._buf:
+                if self._buf.strip() != "```":
+                    self._fence_lines.append(self._buf.rstrip("\n"))
+                self._buf = ""
+            self._in_fence = False
+            out.append(self._render_fence())
+            self._fence_lines = []
+            self._fence_info = ""
+        elif self._buf:
             out.append(self._buf)
             self._buf = ""
         return "".join(out)
@@ -344,7 +428,7 @@ class StreamingSink:
         w = self._width()
         fill = max(w - 9, 2)  # "┌─ " (3) + "hund" (4) + " " (1) + "┐" (1)
         self.console.print(f"[dim]┌─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}┐[/dim]")
-        self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
+        # 1 top padding row per TUI_FACIT.md §2 and §15
         self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
         self._box_open = True
         self._at_line_start = True
@@ -357,8 +441,8 @@ class StreamingSink:
         self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
         if meta is not None and str(meta).strip():
             meta_str = str(meta).strip()
-            dashes = max(w - len(meta_str) - 4, 2)
-            self.console.print(f"[dim]└{'─' * dashes} {meta_str} ┘[/dim]")
+            dashes = max(w - len(meta_str) - 7, 2)
+            self.console.print(f"[dim]└{'─' * dashes} {meta_str} ───┘[/dim]")
         else:
             self.console.print(f"[dim]└{'─' * max(w - 2, 2)}┘[/dim]")
         self._box_open = False

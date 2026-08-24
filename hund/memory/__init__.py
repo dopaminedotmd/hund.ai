@@ -1,31 +1,49 @@
-"""Memory — persistent användarminne mellan sessioner.
+"""Memory package facade — persistent, evidence-weighted, context-gated user and project memory.
 
-Lagras som markdown under HundHome/memory/ (INTE under brain/):
-  - user.md        användarprofil (språk, preferenser, projekt) → injiceras i prompt
-  - environment.md hårdvarusnapshot från doctor → CLI-inspektion, ej dubbelinjicerad
-
-Injektion: user.md-bullets → systemprompt EFTER persona, FÖRE miljöprofil
-(se agent/prompt_builder.build_system_prompt). environment.md dubblerar den levande
-doctor-profilen som redan injiceras live → visas bara via `hund memory show`.
-
-`home`-param tillåter testisolation (tmp-HundHome) — samma mönster som knowledge.
+Canonical storage in memory.db (SQLite) with an atomic materialized view in user.md.
+Provides backward compatibility for existing callers (ensure_seed, inject, update_user, etc.).
 """
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from .doctor import EnvironmentProfile
-
-USER_SEED = """\
-# Användarprofil
-# hund läser rader som börjar med '- ' som minne. Redigera fritt.
-# kör: hund memory update user
-"""
+from ..doctor import EnvironmentProfile
+from .db import connect_memory
+from .engine import (
+    apply_correction,
+    forget_memory,
+    get_audit_history,
+    get_memory,
+    list_active_memories,
+    list_conflicts,
+    record_contradiction,
+    record_memory,
+    reinforce_memory,
+)
+from .gating import select_memory_bullets
+from .models import (
+    CATEGORY_BIOGRAPHICAL_FACT,
+    CATEGORY_CORE,
+    CATEGORY_PROJECT_STATE,
+    CATEGORY_STABLE_PREFERENCE,
+    CATEGORY_TEMPORARY_CONTEXT,
+    CATEGORY_WORKFLOW_HABIT,
+    CATEGORY_WORKING_PREFERENCE,
+    MemoryAuditEntry,
+    MemoryItem,
+    SCOPE_USER_GLOBAL,
+    STATUS_DRAFT,
+    STATUS_FLAGGED,
+    STATUS_FORGOTTEN,
+    STATUS_SUPERSEDED,
+    STATUS_VERIFIED,
+)
+from .view import USER_MD_SEED, render_user_md, sync_user_md
 
 
 def _home() -> Path:
-    from .paths import hund_home
+    from ..paths import hund_home
 
     return hund_home()
 
@@ -46,14 +64,14 @@ def env_path(home: Optional[Path] = None) -> Path:
 
 
 def ensure_seed(home: Optional[Path] = None) -> None:
-    """Skapa user.md om saknad. Idempotent — skriver ALDRIG över befintlig."""
+    """Create user.md if missing. Idempotent — never overwrites existing."""
     p = user_path(home)
     if not p.exists():
-        p.write_text(USER_SEED, encoding="utf-8")
+        p.write_text(USER_MD_SEED, encoding="utf-8")
 
 
 def _bullets(path: Path) -> list[str]:
-    """Radera '- '-rader (strippat prefix). Hoppar kommentarer (#) och tomma."""
+    """Read lines starting with '- ' (stripped prefix). Skips comments (#) and empty."""
     if not path.exists():
         return []
     out: list[str] = []
@@ -69,15 +87,35 @@ def user_bullets(home: Optional[Path] = None) -> list[str]:
 
 
 def inject(home: Optional[Path] = None) -> list[str]:
-    """Minnesrader att injicera i systemprompt (user.md-bullets). Tom = ingen sektion."""
-    return user_bullets(home)
+    """Memory lines to inject into system prompt (context-gated from memory.db or user.md)."""
+    return select_memory_bullets(home=home)
 
 
 def update_user(text: str, home: Optional[Path] = None) -> Path:
-    """Skriv user.md. Behåll header; text läggs till som bullets."""
+    """Write user.md and sync entries into canonical memory.db as verified items."""
     p = user_path(home)
-    header = USER_SEED.splitlines()[0] + "\n"
+    header = USER_MD_SEED.splitlines()[0] + "\n"
     p.write_text(header + text.rstrip() + "\n", encoding="utf-8")
+
+    # Sync parsed bullets into memory.db
+    db_file = _dir(home) / "memory.db"
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("- "):
+            stmt = s[2:].strip()
+            if stmt:
+                try:
+                    record_memory(
+                        statement=stmt,
+                        scope=SCOPE_USER_GLOBAL,
+                        category=CATEGORY_STABLE_PREFERENCE,
+                        source_type="user",
+                        is_core=False,
+                        db_path=db_file,
+                    )
+                except Exception:
+                    pass
+
     return p
 
 
@@ -87,7 +125,7 @@ def refresh_env(
     *,
     force: bool = False,
 ) -> Optional[Path]:
-    """Skriv environment.md från doctor-profil. Skippar om finns och ej force."""
+    """Write environment.md from doctor profile."""
     p = env_path(home)
     if p.exists() and not force:
         return None
@@ -112,7 +150,7 @@ def refresh_env(
 
 
 def show(home: Optional[Path] = None) -> str:
-    """Formaterad vy för CLI: innehåll i user.md + environment.md."""
+    """Formatted view for CLI: user.md + environment.md + active database memory summary."""
     parts: list[str] = []
     up = user_path(home)
     parts.append("[bold]user.md[/bold]")

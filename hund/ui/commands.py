@@ -534,10 +534,40 @@ def cmd_mascot(ctx: CommandContext, args: list[str]) -> None:
 
 
 def cmd_memory(ctx: CommandContext, args: list[str]) -> None:
-    """ /memory            view user.md + environment.md
-        /memory add <text>  append bullet to user.md
+    """ /memory                      view user.md + environment.md
+        /memory list                 view active verified memories
+        /memory show                 view raw user.md + environment.md
+        /memory add <text>           add verified preference
+        /memory core <text>          add immutable core memory
+        /memory why <id>             show provenance and audit trail
+        /memory forget <id>          forget a memory item
+        /memory conflicts            list flagged or contradicted items
     """
-    if args and args[0] == "add" and len(args) >= 2:
+    if not args or (args and args[0] == "add" and len(args) < 2) or (args and args[0] == "show"):
+        try:
+            ctx.console.print(memory.show())
+        except Exception as e:
+            ctx.console.print(f"[red]could not read memory: {e}[/red]")
+        return
+
+    sub = args[0].lower()
+
+    if sub == "list":
+        memories = memory.list_active_memories()
+        if not memories:
+            ctx.console.print("[dim](no active memories in database)[/dim]")
+            return
+
+        lines: list[str] = []
+        for m in memories:
+            tag = "[bold cyan][CORE][/bold cyan]" if m.is_core else f"[dim]{m.category}[/dim]"
+            lines.append(f"  • {tag} [bold]{m.memory_id}[/bold] (conf {m.confidence:.2f}): {m.statement}")
+
+        card = theme.boxify("PERSISTENT USER MEMORY", lines, width=72, border_style="cyan", title_style="bold cyan")
+        ctx.console.print(card)
+        return
+
+    if sub == "add" and len(args) >= 2:
         text = " ".join(args[1:])
         try:
             existing = memory.user_bullets()
@@ -548,10 +578,81 @@ def cmd_memory(ctx: CommandContext, args: list[str]) -> None:
             return
         ctx.console.print(f"[green][OK][/green] memory updated: {text}")
         return
-    try:
-        ctx.console.print(memory.show())
-    except Exception as e:
-        ctx.console.print(f"[red]could not read memory: {e}[/red]")
+
+    if sub == "core" and len(args) >= 2:
+        text = " ".join(args[1:])
+        try:
+            item = memory.record_memory(text, category="core", source_type="user", is_core=True)
+            memory.sync_user_md()
+            ctx.console.print(f"[green][OK][/green] core memory added ({item.memory_id}): {text}")
+        except Exception as e:
+            ctx.console.print(f"[red]could not add core memory: {e}[/red]")
+        return
+
+    if sub == "forget" and len(args) >= 2:
+        target_id = args[1]
+        try:
+            ok = memory.forget_memory(target_id)
+            if ok:
+                memory.sync_user_md()
+                ctx.console.print(f"[green][OK][/green] forgotten memory: {target_id}")
+            else:
+                ctx.console.print(f"[yellow]no memory item '{target_id}'[/yellow]")
+        except Exception as e:
+            ctx.console.print(f"[red]could not forget memory: {e}[/red]")
+        return
+
+    if sub == "why" and len(args) >= 2:
+        target_id = args[1]
+        item = memory.get_memory(target_id)
+        if not item:
+            ctx.console.print(f"[yellow]no memory item '{target_id}'[/yellow]")
+            return
+
+        lines = [
+            f"statement:     {item.statement}",
+            f"category:      {item.category}",
+            f"scope:         {item.scope}",
+            f"status:        {item.status}",
+            f"confidence:    {item.confidence:.2f}",
+            f"source_type:   {item.source_type}",
+            f"is_core:       {item.is_core}",
+            f"first_seen:    {item.first_seen}",
+            f"last_seen:     {item.last_seen}",
+            f"support_count: {item.support_count}",
+            f"contradictions:{item.contradiction_count}",
+        ]
+        if item.supersedes:
+            lines.append(f"supersedes:    {item.supersedes}")
+        if item.superseded_by:
+            lines.append(f"superseded_by: {item.superseded_by}")
+        if item.evidence_ids:
+            lines.append(f"evidence_ids:  {', '.join(item.evidence_ids)}")
+
+        audits = memory.get_audit_history(target_id)
+        if audits:
+            lines.append("")
+            lines.append("Audit Trail:")
+            for a in audits:
+                lines.append(f"  • {a.timestamp[:19]} [{a.action}] {a.reason or ''}")
+
+        card = theme.boxify(f"MEMORY PROVENANCE: {target_id}", lines, width=72, border_style="cyan", title_style="bold cyan")
+        ctx.console.print(card)
+        return
+
+    if sub == "conflicts":
+        conflicts = memory.list_conflicts()
+        if not conflicts:
+            ctx.console.print("[dim](no memory conflicts found)[/dim]")
+            return
+        lines = []
+        for c in conflicts:
+            lines.append(f"  • [{c.status}] {c.memory_id} (conf {c.confidence:.2f}, contra {c.contradiction_count}): {c.statement}")
+        card = theme.boxify("MEMORY CONFLICTS", lines, width=72, border_style="yellow", title_style="bold yellow")
+        ctx.console.print(card)
+        return
+
+    ctx.console.print(f"[yellow]unknown memory action '{sub}'. usage: /memory [add|core|forget|why|conflicts|list|show][/yellow]")
 
 
 _ON_VALUES = {"on", "1", "true", "yes", "j", "ja"}
@@ -676,10 +777,20 @@ def cmd_undo(ctx: CommandContext, args: list[str]) -> None:
     ctx.console.print("  to restore uncommitted git changes: [bold]git restore <file>[/bold]")
 
 
+def cmd_reset(ctx: CommandContext, args: list[str]) -> None:
+    """ /reset             reset all learned progression & data """
+    from ..reset import reset_all_progress
+    results = reset_all_progress()
+    ctx.console.print("[bold cyan]hund reset complete:[/bold cyan]")
+    for r in results:
+        ctx.console.print(f"  • {r}")
+
+
 # -- dispatch ---------------------------------------------------------------
 
 COMMANDS = {
     "help": cmd_help,
+    "reset": cmd_reset,
     "stats": cmd_stats,
     "sheet": cmd_stats,
     "character": cmd_stats,
