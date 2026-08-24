@@ -58,7 +58,14 @@ def reset_all_progress(home: Optional[Path] = None) -> list[str]:
     cleared.extend(
         _clear_db_tables(
             db_file,
-            ["domain_xp", "domain_confidence", "gap_events", "knowledge_units", "forge_artifacts"],
+            [
+                "domain_xp",
+                "domain_xp_events",
+                "domain_confidence",
+                "gap_events",
+                "knowledge_units",
+                "forge_artifacts",
+            ],
         )
     )
 
@@ -101,7 +108,14 @@ def reset_all_progress(home: Optional[Path] = None) -> list[str]:
         except Exception:
             pass
 
-    if not cleared:
+    if cleared:
+        try:
+            from .stats.epochs import advance_epoch
+            advance_epoch(db_file)
+            cleared.append("Advanced telemetry stats epoch")
+        except Exception:
+            pass
+    else:
         cleared.append("Already clean — no progression or log data to remove")
 
     return cleared
