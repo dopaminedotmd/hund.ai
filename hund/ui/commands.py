@@ -91,6 +91,7 @@ def _print_velocity(console: Console) -> None:
 
 def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
     from ..skills.vault import SkillVault
+    from .skills_view import render_skill_detail, render_skills_panel
 
     # If rt.skills is explicitly empty list (e.g. test mock), render empty card
     explicit_skills = getattr(ctx.rt, "skills", None)
@@ -100,8 +101,16 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
         return
 
     vault = SkillVault()
-    subcmd = args[0].lower() if args else "active"
+    subcmd = args[0].lower() if args else "all"
 
+    if subcmd in ("info", "inspect", "show"):
+        if len(args) < 2:
+            ctx.console.print("[yellow]Usage: /skills info <skill_name>[/yellow]")
+            return
+        target = args[1]
+        detail_card = render_skill_detail(target, ctx.rt, vault=vault, width=80)
+        ctx.console.print(detail_card)
+        return
 
     if subcmd in ("core", "instincts", "builtins"):
         from ..skills.loader import _builtins_dir, _read_skill_file
@@ -182,34 +191,9 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
             ctx.console.print(f"[red]{msg}[/red]")
         return
 
-    # Default: show active skills
-    active = vault.get_active_skills()
-    lines = []
-    if not active:
-        lines.append("[dim](no active domain skills equipped)[/dim]")
-    else:
-        for s in active:
-            lines.append(
-                f"[bold]{s.name}[/bold] [dim]({s.domain})[/dim] [active] safety={s.safety_level}"
-            )
-            if s.when_to_use:
-                lines.append(f"  [dim]{s.when_to_use}[/dim]")
-
-    lines.append("")
-    core_count = len(vault.get_core_skills())
-    lines.append(f"[dim]• {core_count} core constitutional instincts active in background (/skills core)[/dim]")
-    vaulted_count = len(vault.list_vaulted())
-    if vaulted_count > 0:
-        lines.append(f"[dim]• {vaulted_count} additional skills available in vault (/skills vault)[/dim]")
-
-    card = theme.boxify(
-        f"EQUIPPED SKILLS [{len(active)}/{vault.max_active} active]",
-        lines,
-        width=70,
-        border_style="cyan",
-        title_style="bold cyan",
-    )
-    ctx.console.print(card)
+    # Default / all / active -> Render complete 2-layer fullscreen panel per TUI_FACIT.md §12
+    panel = render_skills_panel(ctx.rt, vault=vault, width=80)
+    ctx.console.print(panel)
 
 
 def cmd_lessons(ctx: CommandContext, args: list[str]) -> None:
