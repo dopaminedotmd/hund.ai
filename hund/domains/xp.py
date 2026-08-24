@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 from typing import Any, Optional
 import uuid
 
@@ -32,6 +33,7 @@ XP_AMOUNTS: dict[str, int] = {
 
 def _ensure_table(db_path=None) -> None:
     conn = connect(db_path)
+    conn.execute("BEGIN IMMEDIATE")
     conn.execute(
         f"""CREATE TABLE IF NOT EXISTS {XP_TABLE} (
             domain TEXT PRIMARY KEY,
@@ -50,12 +52,16 @@ def _ensure_table(db_path=None) -> None:
             event_type TEXT NOT NULL,
             task_id TEXT,
             session_id TEXT,
+            evidence_id TEXT,
             xp_algorithm TEXT NOT NULL,
             timestamp TEXT NOT NULL
         )"""
     )
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_xp_events_domain ON {XP_EVENTS_TABLE}(domain)")
     conn.execute(f"CREATE INDEX IF NOT EXISTS idx_xp_events_unit ON {XP_EVENTS_TABLE}(unit_id)")
+    columns = {row[1] for row in conn.execute(f"PRAGMA table_info({XP_EVENTS_TABLE})")}
+    if "evidence_id" not in columns:
+        conn.execute(f"ALTER TABLE {XP_EVENTS_TABLE} ADD COLUMN evidence_id TEXT")
 
     conn.commit()
     conn.close()
@@ -229,6 +235,8 @@ def award_xp(
     unit_id: Optional[str] = None,
     session_id: Optional[str] = None,
     task_id: Optional[str] = None,
+    evidence_id: Optional[str] = None,
+    event_id: Optional[str] = None,
     xp_algorithm: str = CURRENT_XP_ALGORITHM,
     db_path=None,
 ) -> tuple[int, str, bool, int]:
@@ -243,9 +251,25 @@ def award_xp(
 
     _ensure_table(db_path)
     now = datetime.now(timezone.utc).isoformat()
-    event_id = f"xpevt_{uuid.uuid4().hex[:12]}"
+    if event_id is None and evidence_id:
+        fingerprint = "\x1f".join(
+            [event_type, domain, unit_id or "", evidence_id or "", task_id or "", session_id or ""]
+        )
+        event_id = f"xpevt_{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:20]}"
+    elif event_id is None:
+        # Legacy callers without evidence represent distinct lifecycle events.
+        event_id = f"xpevt_{uuid.uuid4().hex[:12]}"
 
     conn = connect(db_path)
+
+    existing = conn.execute(
+        f"SELECT 1 FROM {XP_EVENTS_TABLE} WHERE event_id = ?", (event_id,)
+    ).fetchone()
+    if existing:
+        conn.rollback()
+        conn.close()
+        current = get_xp(domain, db_path)
+        return current["level"], current["tier"], False, 0
 
     # 1. Update Domain XP
     row = conn.execute(f"SELECT xp, level FROM {XP_TABLE} WHERE domain=?", (domain,)).fetchone()
@@ -266,8 +290,8 @@ def award_xp(
     conn.execute(
         f"""INSERT INTO {XP_EVENTS_TABLE} (
             event_id, domain, unit_id, xp_amount, event_type,
-            task_id, session_id, xp_algorithm, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            task_id, session_id, evidence_id, xp_algorithm, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
             event_id,
             domain,
@@ -276,6 +300,7 @@ def award_xp(
             event_type,
             task_id,
             session_id,
+            evidence_id,
             xp_algorithm,
             now,
         ),
@@ -297,7 +322,7 @@ def list_xp_events(
     conn = connect(db_path)
 
     query = f"""SELECT event_id, domain, unit_id, xp_amount, event_type,
-                       task_id, session_id, xp_algorithm, timestamp
+                       task_id, session_id, evidence_id, xp_algorithm, timestamp
                 FROM {XP_EVENTS_TABLE} WHERE 1=1"""
     params: list[Any] = []
 
@@ -321,8 +346,9 @@ def list_xp_events(
             "event_type": r[4],
             "task_id": r[5],
             "session_id": r[6],
-            "xp_algorithm": r[7],
-            "timestamp": r[8],
+            "evidence_id": r[7],
+            "xp_algorithm": r[8],
+            "timestamp": r[9],
         }
         for r in rows
     ]

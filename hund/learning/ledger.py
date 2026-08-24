@@ -86,7 +86,7 @@ def append_event(
 
     conn = connect(Path(db_path) if db_path else None)
     conn.execute(
-        """INSERT INTO evidence_ledger (
+        """INSERT OR IGNORE INTO evidence_ledger (
             event_id, session_id, turn_id, timestamp, event_type,
             source_type, source_ref, workspace_id, candidate_domains,
             content_hash, payload

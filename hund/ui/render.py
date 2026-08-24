@@ -68,12 +68,9 @@ def separator(console: Console) -> None:
 
 
 def _mascot() -> str:
-    return (
-        "  ▐▛██▜▌\n"
-        "  ▐▌  ▐▌\n"
-        "  ▐▌▄▄▐▌\n"
-        "   ▀  ▀"
-    )
+    from .mascot import MascotMachine
+
+    return MascotMachine().frame()[1]
 
 
 def mascot() -> str:
@@ -89,7 +86,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
     from ..stats import compute_all
     from ..skills.vault import SkillVault
 
-    W = max(width, 40)
+    W = max(int(width), 24)
     
     profile = getattr(rt, "profile", None)
     if profile is None:
@@ -162,7 +159,6 @@ def build_startup_banner(rt, width: int = 80) -> str:
     except Exception:
         stats = {}
 
-    top = "╔" + "═" * (W - 2) + "╗"
     bottom = "╚" + "═" * (W - 2) + "╝"
     empty = "║" + " " * (W - 2) + "║"
 
@@ -171,12 +167,20 @@ def build_startup_banner(rt, width: int = 80) -> str:
         return "║  " + c.ljust(W - 6) + "  ║"
 
     LOGO_LINES = [
-        "▄▄                   ▄▄    ",
-        "██                   ██    ",
-        "████▄ ██ ██ ████▄ ▄████    ",
-        "██ ██ ██ ██ ██ ██ ██ ██    ",
-        "██ ██ ▀██▀█ ██ ██ ▀████ ██ ",
+        "▄▄                   ▄▄",
+        "██                   ██",
+        "████▄ ██ ██ ████▄ ▄████",
+        "██ ██ ██ ██ ██ ██ ██ ██",
+        "██ ██ ▀██▀█ ██ ██ ▀████ ██",
     ]
+
+    if W >= 34:
+        logo_0 = LOGO_LINES[0]
+        top = "╔═ " + logo_0 + " " + "═" * (W - 5 - len(logo_0)) + "╗"
+        logo_rest = LOGO_LINES[1:]
+    else:
+        top = "╔" + "═" * (W - 2) + "╗"
+        logo_rest = LOGO_LINES
 
     # Attribute data
     attr_meta = [
@@ -210,15 +214,14 @@ def build_startup_banner(rt, width: int = 80) -> str:
             skill_data.append((s_name, "Novice", 0))
 
     total_display_skills = len(active_domain_skills)
-    skills_header = f"── SKILLS ({total_display_skills}/{max_slots}) ──"
+    skills_header = f"── SPECIALIZATIONS ({total_display_skills}/{max_slots}) ──"
 
     commands_text = "commands: /skills · /stats · /theme · /model · /clear · /exit"
 
     lines = [
         top,
-        empty,
     ]
-    for l_line in LOGO_LINES:
+    for l_line in logo_rest:
         lines.append(row(l_line))
     lines.extend([
         empty,
@@ -231,15 +234,17 @@ def build_startup_banner(rt, width: int = 80) -> str:
         empty,
     ])
 
-    # Two column if W >= 72, else single column stacked responsive layout
-    if W >= 72:
+    # Keep the modern two-column identity at ordinary compact terminal widths.
+    if W >= 60:
         col_left = (W - 6 - 4) // 2
         col_right = (W - 6 - 4) - col_left
 
         def split_row(l: str, r: str) -> str:
             return "║  " + l[:col_left].ljust(col_left) + " │  " + r[:col_right].ljust(col_right) + "  ║"
 
-        lines.append(split_row("── BASE ATTRIBUTES ──", skills_header))
+        left_hdr = "── BASE STATS " + "─" * max(2, col_left - 14)
+        right_hdr = f"── SPECIALIZATIONS ({total_display_skills}/{max_slots}) " + "─" * max(2, col_right - len(f"── SPECIALIZATIONS ({total_display_skills}/{max_slots}) "))
+        lines.append(split_row(left_hdr, right_hdr))
         bar_w = 8 if W < 80 else 10
         max_rows = max(len(attr_data), len(skill_data) if skill_data else 2)
         for i in range(max_rows):
@@ -255,13 +260,14 @@ def build_startup_banner(rt, width: int = 80) -> str:
                 r_str = f"{sname:<17} {bar} {pct}%"
             elif not skill_data:
                 if i == 0:
-                    r_str = "(no custom skills equipped)"
+                    r_str = "(no custom specializations)"
                 elif i == 1:
                     r_str = "(use /skills to equip)"
             lines.append(split_row(l_str, r_str))
     else:
-        bar_w = max(4, min(8, (W - 28) // 2))
-        lines.append(row("── BASE ATTRIBUTES ──"))
+        # Preserve the wide view's ten-cell XP geometry whenever it fits.
+        bar_w = max(4, min(10, W - 27))
+        lines.append(row("── BASE STATS ──"))
         for abbr, name, pct in attr_data:
             bar = _bar(pct, width=bar_w)
             lines.append(row(f"{abbr} {name:<9} {bar} {pct}%"))
@@ -272,7 +278,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
                 bar = _bar(pct, width=bar_w)
                 lines.append(row(f"{sname:<16} {bar} {pct}%"))
         else:
-            lines.append(row("(no custom skills equipped)"))
+            lines.append(row("(no custom specializations equipped)"))
             lines.append(row("(use /skills to equip)"))
 
     lines.extend([
@@ -552,25 +558,23 @@ import textwrap
 def wrap_content(text: str, content_width: int) -> list[str]:
     """Deterministically word-wrap text to content_width using stdlib textwrap.
 
-    Consecutive empty lines are collapsed to at most one empty line.
-    Long unbreakable words overflow that single line only (break_long_words=False).
+    Empty lines are semantic content and are therefore preserved exactly.
+    Long unbreakable words are hard-wrapped so the right box rail stays intact.
     """
     if not text:
         return []
     cw = max(content_width, 1)
     wrapped: list[str] = []
-    prev_empty = False
     for raw_line in text.split("\n"):
         if not raw_line.strip():
-            if not prev_empty and wrapped:
-                wrapped.append("")
-                prev_empty = True
+            wrapped.append("")
         else:
-            prev_empty = False
             lines = textwrap.wrap(
                 raw_line,
                 width=cw,
-                break_long_words=False,
+                # Long rulers, URLs and generated identifiers must never cross the
+                # right rail of the response box.
+                break_long_words=True,
                 break_on_hyphens=False,
             )
             if not lines:
@@ -580,20 +584,30 @@ def wrap_content(text: str, content_width: int) -> list[str]:
     return wrapped
 
 
+def response_padding(width: int) -> int:
+    """Return the shared horizontal inset for a response at ``width``."""
+    if width >= 72:
+        return 3
+    if width >= 48:
+        return 2
+    return 1
+
+
 def box_top(width: int = 80) -> str:
-    """Render top border for assistant response box."""
+    """Render the rounded top border for an assistant response."""
     w = max(width, 12)
-    return f"┌─ hund {'─' * max(w - 9, 2)}┐"
+    return f"╭─ hund {'─' * max(w - 9, 2)}╮"
 
 
 def box_bottom(width: int = 80, meta: str | None = None) -> str:
-    """Render bottom border for assistant response box with optional right-aligned meta."""
+    """Render the rounded bottom border with optional right-aligned meta."""
     w = max(width, 12)
     if meta is None or not str(meta).strip():
-        return f"└{'─' * max(w - 2, 2)}┘"
+        return f"╰{'─' * max(w - 2, 2)}╯"
     meta_str = str(meta).strip()
-    dashes = max(w - len(meta_str) - 7, 2)
-    return f"└{'─' * dashes} {meta_str} ───┘"
+    trailing = min(4, max(w - len(meta_str) - 4, 1))
+    leading = max(w - len(meta_str) - trailing - 4, 1)
+    return f"╰{'─' * leading} {meta_str} {'─' * trailing}╯"
 
 
 def render_response_box(
@@ -605,15 +619,15 @@ def render_response_box(
 
     - Always spans the full terminal width (fullscreen).
     - 1 top and 1 bottom padding row inside the box.
-    - 2-space horizontal padding on both sides (│  content  │).
-    - Hard word-wrapped at content_width = terminal_width - 6.
-    - Meta is rendered right-aligned in the bottom border (e.g. '└── 2.3s ───┘').
+    - Responsive horizontal padding: 3 spaces wide, 2 medium, 1 compact.
+    - Hard word-wrapped inside the selected padding.
+    - Meta is rendered right-aligned in the rounded bottom border.
     """
     box_w = max(terminal_width, 24)
-    cw = max(box_w - 6, 1)
+    padding = response_padding(box_w)
+    cw = max(box_w - 2 - 2 * padding, 1)
 
-    clean_text = text.strip("\n")
-    wrapped = wrap_content(clean_text, cw)
+    wrapped = wrap_content(text, cw)
 
     if not wrapped:
         return f"{box_top(box_w)}\n{box_bottom(box_w, meta)}"
@@ -625,9 +639,9 @@ def render_response_box(
     # Content rows
     for line in wrapped:
         if len(line) <= cw:
-            lines.append(f"│  {line:<{cw}}  │")
+            lines.append(f"│{' ' * padding}{line:<{cw}}{' ' * padding}│")
         else:
-            lines.append(f"│  {line}  │")
+            lines.append(f"│{' ' * padding}{line}{' ' * padding}│")
 
     # Bottom padding row (1 row)
     lines.append(f"│{' ' * (box_w - 2)}│")

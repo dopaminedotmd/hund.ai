@@ -137,9 +137,10 @@ def doctor() -> None:
 
 @app.command()
 def setup() -> None:
-    """Konfigurera provider och visa instruktioner för HUND_API_KEY."""
+    """Konfigurera provider och spara API-nyckel i Windows Credential Manager."""
     from .config import HundConfig
-    from .secrets import load_api_key
+    from .secrets import load_api_key, save_api_key
+    from .providers.catalog import active_option
 
     console.print("[bold]hund setup[/bold]")
     cfg = HundConfig.load()
@@ -151,19 +152,52 @@ def setup() -> None:
     )
     cfg.provider.base_url = base
     cfg.provider.model = model
+    option = active_option(cfg)
+    cfg.provider.provider_id = option.provider_id
+    cfg.provider.credential_id = option.credential_id
+    cfg.provider.api_key_env = option.env_name or "HUND_API_KEY"
+    cfg.provider.context_window = option.context_window
     cfg.save()
     console.print(f"[green]sparat:[/green] {base} · {model}")
 
     key = console.input("API-nyckel (Enter = behåll): ").strip()
     if key:
-        console.print(
-            "[yellow]Sätt API-nyckeln i din miljövariabel: HUND_API_KEY[/yellow]"
-        )
+        saved = save_api_key(key, option.credential_id)
+        if saved:
+            console.print(
+                "[green]API-nyckel sparad säkert i Windows Credential Manager.[/green]"
+            )
+        else:
+            console.print(
+                f"[yellow]Sätt API-nyckeln i din miljövariabel: setx {cfg.provider.api_key_env} \"{key}\"[/yellow]"
+            )
     else:
+        existing = load_api_key(cfg.provider.api_key_env, option.credential_id)
         console.print(
-            f"nuvarande nyckel i HUND_API_KEY: {'finns' if load_api_key() else '[red]saknas[/red]'}"
+            f"nuvarande nyckel: {'[green]finns[/green]' if existing else '[red]saknas[/red]'}"
         )
     console.print("klart. kör [bold]hund[/bold].")
+
+
+@app.command("setup-font")
+def setup_font(
+    remove: bool = typer.Option(False, "--remove", help="Remove Hund's font and terminal profile."),
+) -> None:
+    """Install or remove Hund's optional Windows Terminal font profile."""
+    from .font_setup import install_terminal_font_profile, remove_terminal_font_profile
+
+    try:
+        changed = remove_terminal_font_profile() if remove else install_terminal_font_profile()
+    except (OSError, RuntimeError) as exc:
+        console.print(f"[red]Font setup failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    if remove:
+        console.print(f"[green]Removed Hund font profile.[/green] {len(changed)} item(s) removed.")
+    else:
+        console.print("[green]Installed DejaVuSansM Nerd Font Mono.[/green]")
+        console.print("Open the new [bold]Hund[/bold] profile in Windows Terminal.")
+        console.print("Your existing terminal profiles were not modified.")
 
 
 @app.command()
@@ -1639,6 +1673,5 @@ app.add_typer(research_app, name="research")
 
 if __name__ == "__main__":
     app()
-
 
 

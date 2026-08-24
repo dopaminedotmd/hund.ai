@@ -1,19 +1,129 @@
-"""Deterministic context-gating selector for prompt memory injection."""
+"""Fail-closed read-side gate for untrusted personal memory."""
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+import re
+from typing import Iterable, Optional
 
 from .db import connect_memory
-from .engine import list_active_memories
 from .models import (
+    CATEGORY_BEHAVIORAL,
+    CATEGORY_BIOGRAPHICAL_FACT,
+    CATEGORY_CONTEXTUAL,
     CATEGORY_CORE,
+    CATEGORY_PROJECT_STATE,
+    CATEGORY_SENSITIVE,
+    CATEGORY_STABLE_PREFERENCE,
+    CATEGORY_TEMPORARY_CONTEXT,
+    CATEGORY_WORKFLOW_HABIT,
+    CATEGORY_WORKING_PREFERENCE,
     SCOPE_DOMAIN_PREFIX,
     SCOPE_PROJECT_PREFIX,
     SCOPE_USER_GLOBAL,
-    STATUS_VERIFIED,
     MemoryItem,
 )
+
+_POLICY_INJECTION = re.compile(
+    r"\b(ignore|bypass|override|disable|skip|kringgå|ignorera)\b.{0,48}"
+    r"\b(safety|policy|confirmation|permission|git|säkerhet|bekräftelse|behörighet)\b",
+    re.IGNORECASE,
+)
+_SENSITIVE = re.compile(
+    r"\b(health|diagnosis|religion|ethnicity|sexual|politic|medical|"
+    r"hälsa|diagnos|religion|etnicitet|sexuell|politisk)\w*\b",
+    re.IGNORECASE,
+)
+_WORDS = re.compile(r"[a-zA-ZÅÄÖåäö0-9_+#.-]{3,}")
+_STYLE_TERMS = {
+    "language", "swedish", "english", "svenska", "engelska", "concise",
+    "kort", "format", "style", "stil", "pytest", "unittest", "code", "kod",
+}
+
+
+def _category(item: MemoryItem) -> str:
+    if item.is_core or item.category == CATEGORY_CORE:
+        return CATEGORY_CORE
+    if item.category in {
+        CATEGORY_BEHAVIORAL, CATEGORY_STABLE_PREFERENCE,
+        CATEGORY_WORKING_PREFERENCE, CATEGORY_WORKFLOW_HABIT,
+    }:
+        return CATEGORY_BEHAVIORAL
+    if item.category == CATEGORY_SENSITIVE or _SENSITIVE.search(item.statement):
+        return CATEGORY_SENSITIVE
+    if item.category in {
+        CATEGORY_CONTEXTUAL, CATEGORY_BIOGRAPHICAL_FACT,
+        CATEGORY_PROJECT_STATE, CATEGORY_TEMPORARY_CONTEXT,
+    }:
+        return CATEGORY_CONTEXTUAL
+    return CATEGORY_CONTEXTUAL
+
+
+def _explicitly_relevant(statement: str, query: str) -> bool:
+    if not query.strip():
+        return True  # compatibility for direct administrative memory views
+    query_words = {word.casefold() for word in _WORDS.findall(query)}
+    memory_words = {word.casefold() for word in _WORDS.findall(statement)}
+    return bool(query_words & memory_words)
+
+
+class MemoryApplicationGate:
+    """Classify and filter memory as data, never executable policy."""
+
+    def should_apply(
+        self,
+        item: MemoryItem,
+        *,
+        user_query: str,
+        workspace_facts: Iterable[str] = (),
+    ) -> bool:
+        statement = item.statement.strip()
+        if not statement or _POLICY_INJECTION.search(statement):
+            return False
+        category = _category(item)
+        if category == CATEGORY_SENSITIVE:
+            return _explicitly_relevant(statement, user_query) and bool(user_query.strip())
+        if category == CATEGORY_CONTEXTUAL:
+            return _explicitly_relevant(statement, user_query)
+        if category == CATEGORY_BEHAVIORAL:
+            words = {word.casefold() for word in _WORDS.findall(statement)}
+            relevant = not user_query.strip() or bool(words & _STYLE_TERMS)
+            relevant = relevant or _explicitly_relevant(statement, user_query)
+            if not relevant:
+                return False
+        facts = {fact.casefold() for fact in workspace_facts}
+        lower = statement.casefold()
+        if "unittest" in lower and any("pytest" in fact for fact in facts):
+            return False
+        if "pytest" in lower and any("unittest" in fact for fact in facts):
+            return False
+        return True
+
+    def filter(
+        self,
+        items: Iterable[MemoryItem],
+        *,
+        user_query: str,
+        workspace_facts: Iterable[str] = (),
+        max_chars: int = 4000,
+    ) -> list[str]:
+        selected: list[str] = []
+        seen: set[str] = set()
+        used = 0
+        for item in items:
+            if not self.should_apply(
+                item, user_query=user_query, workspace_facts=workspace_facts
+            ):
+                continue
+            statement = item.statement.strip()
+            if statement in seen:
+                continue
+            cost = len(statement) + 4
+            if used + cost > max_chars:
+                break
+            selected.append(statement)
+            seen.add(statement)
+            used += cost
+        return selected
 
 
 def select_memory_bullets(
@@ -22,116 +132,49 @@ def select_memory_bullets(
     workspace_id: str | None = None,
     active_domains: list[str] | None = None,
     max_chars: int = 4000,
+    user_query: str = "",
+    workspace_facts: Iterable[str] = (),
 ) -> list[str]:
-    """Select prioritized memory bullets for system prompt within character budget.
-
-    Priority order:
-    1. #core items (immutable security/language invariants)
-    2. Global verified user preferences
-    3. Project-specific verified memories for current workspace
-    4. Domain-specific verified memories for active domains
-
-    Falls back to legacy user.md bullets if no database entries exist.
-    """
-    if db_path is None and home is not None:
-        actual_db_path = home / "memory" / "memory.db"
-    elif db_path is not None:
-        actual_db_path = Path(db_path)
-    else:
-        from ..paths import memory_db_path
-
-        actual_db_path = memory_db_path()
-
-    selected_bullets: list[str] = []
-    current_char_count = 0
-    seen_statements: set[str] = set()
-
-    def _try_add(statement: str) -> bool:
-        nonlocal current_char_count
-        clean = statement.strip()
-        if not clean or clean in seen_statements:
-            return True
-        # Bullet overhead: "- " + statement + "\n"
-        added_len = len(clean) + 4
-        if current_char_count + added_len > max_chars and selected_bullets:
-            return False
-        selected_bullets.append(clean)
-        seen_statements.add(clean)
-        current_char_count += added_len
-        return True
-
-    # 1. Fetch from memory.db if database file exists
-    if actual_db_path.exists():
-        conn = connect_memory(actual_db_path)
-
-        # 1a. Core items (highest priority)
-        core_rows = conn.execute(
-            """SELECT * FROM memory
-               WHERE status = 'verified' AND (is_core = 1 OR category = 'core')
-               ORDER BY confidence DESC, first_seen ASC, rowid ASC"""
-        ).fetchall()
-        for r in core_rows:
-            item = MemoryItem.from_row(r)
-            _try_add(item.statement)
-
-        # 1b. Global verified preferences
-        global_rows = conn.execute(
-            """SELECT * FROM memory
-               WHERE status = 'verified' AND scope = 'user_global' AND is_core = 0 AND category != 'core'
-               ORDER BY confidence DESC, first_seen ASC, rowid ASC"""
-        ).fetchall()
-        for r in global_rows:
-            item = MemoryItem.from_row(r)
-            if not _try_add(item.statement):
-                break
-
-        # 1c. Project-specific memories
+    """Load verified memory and apply the gate; any failure yields zero memories."""
+    try:
+        if db_path is None and home is not None:
+            actual_db_path = home / "memory" / "memory.db"
+        elif db_path is not None:
+            actual_db_path = Path(db_path)
+        else:
+            from ..paths import memory_db_path
+            actual_db_path = memory_db_path()
+        if not actual_db_path.exists():
+            return []
+        scopes = [SCOPE_USER_GLOBAL]
         if workspace_id:
-            project_scope = f"{SCOPE_PROJECT_PREFIX}{workspace_id}"
-            proj_rows = conn.execute(
-                """SELECT * FROM memory
-                   WHERE status = 'verified' AND scope = ?
-                   ORDER BY confidence DESC, first_seen ASC, rowid ASC""",
-                (project_scope,),
+            scopes.append(f"{SCOPE_PROJECT_PREFIX}{workspace_id}")
+        scopes.extend(
+            f"{SCOPE_DOMAIN_PREFIX}{domain}" for domain in (active_domains or [])
+        )
+        placeholders = ",".join("?" for _ in scopes)
+        conn = connect_memory(actual_db_path)
+        try:
+            rows = conn.execute(
+                f"""SELECT * FROM memory
+                    WHERE status='verified'
+                      AND (is_core=1 OR category='core' OR scope IN ({placeholders}))
+                    ORDER BY
+                      CASE WHEN is_core=1 OR category='core' THEN 0
+                           WHEN scope='user_global' THEN 1
+                           WHEN scope LIKE 'project:%' THEN 2 ELSE 3 END,
+                      confidence DESC, first_seen ASC, rowid ASC
+                    LIMIT 256""",
+                scopes,
             ).fetchall()
-            for r in proj_rows:
-                item = MemoryItem.from_row(r)
-                if not _try_add(item.statement):
-                    break
-
-        # 1d. Domain-specific memories
-        if active_domains:
-            for domain in active_domains:
-                domain_scope = f"{SCOPE_DOMAIN_PREFIX}{domain}"
-                dom_rows = conn.execute(
-                    """SELECT * FROM memory
-                       WHERE status = 'verified' AND scope = ?
-                       ORDER BY confidence DESC, first_seen ASC, rowid ASC""",
-                    (domain_scope,),
-                ).fetchall()
-                for r in dom_rows:
-                    item = MemoryItem.from_row(r)
-                    if not _try_add(item.statement):
-                        break
-
-        conn.close()
-
-    # 2. If nothing selected from DB, fall back to legacy user.md file
-    if not selected_bullets:
-        from .view import USER_MD_SEED
-
-        user_md_path = (home / "memory" / "user.md") if home else None
-        if user_md_path is None:
-            from ..paths import memory_user_path
-
-            user_md_path = memory_user_path()
-
-        if user_md_path.exists():
-            for line in user_md_path.read_text(encoding="utf-8", errors="replace").splitlines():
-                s = line.strip()
-                if s.startswith("- "):
-                    stmt = s[2:].strip()
-                    if not _try_add(stmt):
-                        break
-
-    return selected_bullets
+        finally:
+            conn.close()
+        items = [MemoryItem.from_row(row) for row in rows]
+        return MemoryApplicationGate().filter(
+            items,
+            user_query=user_query,
+            workspace_facts=workspace_facts,
+            max_chars=max_chars,
+        )
+    except Exception:
+        return []

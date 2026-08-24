@@ -93,7 +93,7 @@ def validate_skill_schema(skill_data: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(version, str):
         return False, "skill 'version' must be a string"
 
-    tools = skill_data.get("tools", [])
+    tools = skill_data.get("required_tools", skill_data.get("tools", []))
     if not isinstance(tools, list):
         return False, "skill 'tools' must be a list of tool names"
 
@@ -123,8 +123,7 @@ def run_skill_sandbox_test(
         except Exception as e:
             return False, f"sandbox dry-run crashed with exception: {e}"
 
-    # Default static sandbox validation
-    return True, "sandbox static tool dry-run passed"
+    return False, "tool-access skill requires an executing dry-run executor"
 
 
 def can_transition_skill(

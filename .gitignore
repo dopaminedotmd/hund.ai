@@ -51,6 +51,9 @@ dev-dashboard/
 dashboard/
 tui/
 scripts/
+!scripts/
+scripts/*
+!scripts/build_mascot_frames.py
 hund/agent/archive/
 AGENTS.md
 CLAUDE.md

@@ -17,16 +17,17 @@
     "hur skapar du skills",
     "how do you create skills"
   ],
-  "when_to_use": "When authoring, creating, explaining, or inspecting declarative domain skills (brain/skills/<name>.json).",
+  "when_to_use": "When authoring, creating, explaining, or inspecting declarative domain skills in Hund's canonical local skill vault.",
   "steps": [
     "Phase 1 — Specification: Define kebab-case name, target domain, triggers, when_to_use, required tools, and verification checks.",
     "Phase 2 — Implementation: Draft declarative schema adhering strictly to schema_version 1 with structured steps (Inspection -> Implementation -> Verification) and forbidden_actions (all banned actions included).",
-    "Phase 3 — Persistence & Verification: Save valid JSON directly to 'brain/skills/<name>.json' and verify syntax without elevating permissions or modifying builtins.",
+    "Phase 3 — Persistence & Verification: Submit the complete specification through create_skill. Never persist a skill with write_file or claim a draft is active.",
+    "Language Rule: Use English for canonical identifiers, operational instructions, and verification. Include localized trigger aliases when useful.",
     "Output Rule: When asked how skills are created, reply in 1-3 concise plain-text lines in third person without dumping raw JSON schemas or decorative boxes."
   ],
   "required_tools": [
     "read_file",
-    "write_file",
+    "create_skill",
     "search_files"
   ],
   "forbidden_actions": [
@@ -38,7 +39,7 @@
   ],
   "safety_level": "confirm_for_write",
   "verification": [
-    "read_file confirms brain/skills/<name>.json is valid JSON with schema_version 1",
+    "create_skill confirms that the schema was validated and persisted as a draft",
     "response to creation inquiries is 1-3 concise plain-text lines in third person"
   ],
   "examples": []

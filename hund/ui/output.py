@@ -30,7 +30,10 @@ from rich.markdown import Markdown
 
 from . import theme
 from .phrases import select_thinking_phrase
+from .activity import describe_tool
+from .render import box_bottom, box_top, response_padding
 from ..agent.types import ConfirmRequest, ConfirmVerdict
+from .confirmation import confirmation_options, prompt_edits
 
 _APPROVE_ONCE = {"y", "yes", "j", "ja", "approve"}
 _APPROVE_ALL = {"a", "all", "alla", "session"}
@@ -269,17 +272,39 @@ def _confirm_detail(request: ConfirmRequest) -> str:
     return s if len(s) <= 55 else s[:52] + "..."
 
 
-_CONFIRM_MENU_OPTIONS = [
-    (ConfirmVerdict.APPROVE_ONCE, "Run once", "ansigreen"),
-    (ConfirmVerdict.EDIT, "Edit command", "ansicyan"),
-    (ConfirmVerdict.ALLOW_SESSION, "Allow for this session", "ansiyellow"),
-    (ConfirmVerdict.DENY, "Deny", "ansired"),
-]
+_CONFIRM_COLORS = {
+    ConfirmVerdict.APPROVE_ONCE: "ansigreen",
+    ConfirmVerdict.EDIT: "ansicyan",
+    ConfirmVerdict.ALLOW_SESSION: "ansiyellow",
+    ConfirmVerdict.DENY: "ansired",
+}
+
+
+def tool_thinking_phrase(name: str, args: dict | None = None) -> tuple[str, str]:
+    """Map observed tool starts to live/past status text."""
+    if name in {"read_file"}:
+        return "hund is reading", "hund read the relevant files."
+    if name in {"search_files"}:
+        return "hund is inspecting", "hund inspected the workspace."
+    if name in {"write_file", "edit_file", "patch", "apply_patch", "replace_file_content"}:
+        return "hund is editing", "hund edited the workspace."
+    if name in {"web_search", "web_open", "web_extract", "fetch_web_page", "read_url_content"}:
+        return "hund is researching", "hund researched external sources."
+    if name == "terminal":
+        try:
+            from ..agent.verification import VerificationKind, classify_verification
+
+            if classify_verification(str((args or {}).get("command", ""))) is not VerificationKind.NONE:
+                return "hund is verifying", "hund verified the result."
+        except Exception:
+            pass
+        return "hund is executing", "hund executed the command."
+    return "hund is working", f"hund used {name}."
 
 
 def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
     """Render interactive arrow-key selection menu for tool confirmation."""
-    options = _CONFIRM_MENU_OPTIONS
+    options = [(v, label, _CONFIRM_COLORS[v]) for v, label in confirmation_options(request.tool_name)]
     selected = [0]
     width = 72
     inner_width = width - 4
@@ -288,7 +313,7 @@ def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
 
     def get_formatted_text():
         lines = []
-        header = f"┌─ {title} {'─' * max(0, inner_width - len(title) - 2)}┐"
+        header = f"╭─ {title} {'─' * max(0, inner_width - len(title) - 2)}╮"
         lines.append(("class:border fg:ansiyellow bold", header + "\n"))
 
         lines.append(("class:border fg:ansiyellow", "│ "))
@@ -313,7 +338,7 @@ def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
                 lines.append(("fg:ansibrightblack", f"{opt_str:<{inner_width}}"))
             lines.append(("class:border fg:ansiyellow", " │\n"))
 
-        bottom = f"└{'─' * (width - 2)}┘"
+        bottom = f"╰{'─' * (width - 2)}╯"
         lines.append(("class:border fg:ansiyellow bold", bottom + "\n"))
         lines.append(("fg:ansibrightblack dim", " ↑↓ select · Enter confirm · Esc deny"))
         return lines
@@ -342,12 +367,22 @@ def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
     @kb.add("e")
     @kb.add("E")
     def _e(event):
-        event.app.exit(result=ConfirmVerdict.EDIT)
+        verdicts = {item[0] for item in options}
+        event.app.exit(
+            result=ConfirmVerdict.EDIT if ConfirmVerdict.EDIT in verdicts else ConfirmVerdict.DENY
+        )
 
     @kb.add("a")
     @kb.add("A")
     def _a(event):
-        event.app.exit(result=ConfirmVerdict.ALLOW_SESSION)
+        verdicts = {item[0] for item in options}
+        event.app.exit(
+            result=(
+                ConfirmVerdict.ALLOW_SESSION
+                if ConfirmVerdict.ALLOW_SESSION in verdicts
+                else ConfirmVerdict.DENY
+            )
+        )
 
     @kb.add("n")
     @kb.add("N")
@@ -379,6 +414,7 @@ class StreamingSink:
         self._box_open = False
         self._at_line_start = True
         self._line_len = 0
+        self._turn_start_time = 0.0
         if stream_delay_s is None:
             raw_delay = os.environ.get("HUND_STREAM_DELAY_S", "")
             try:
@@ -390,10 +426,13 @@ class StreamingSink:
     def set_user_input(self, text: str) -> None:
         self._user_input = text or ""
         self._tool_switched = False
+        self._turn_start_time = time.time()
 
     # -- streaming protocol ----------------------------------------------
 
     def thinking(self, msg: str | None = None) -> None:
+        if not self._turn_start_time:
+            self._turn_start_time = time.time()
         self._thinking_active = True
         self._tool_switched = False
         text = msg.rstrip(".…") if msg else "hund is reading"
@@ -426,8 +465,10 @@ class StreamingSink:
         if self._box_open:
             return
         w = self._width()
-        fill = max(w - 9, 2)  # "┌─ " (3) + "hund" (4) + " " (1) + "┐" (1)
-        self.console.print(f"[dim]┌─ [/dim][cyan bold]hund[/cyan bold][dim] {'─' * fill}┐[/dim]")
+        top = box_top(w)
+        self.console.print(
+            f"[dim]{top[:3]}[/dim][cyan bold]hund[/cyan bold][dim]{top[7:]}[/dim]"
+        )
         # 1 top padding row per TUI_FACIT.md §2 and §15
         self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
         self._box_open = True
@@ -440,11 +481,9 @@ class StreamingSink:
         w = self._width()
         self.console.print(f"[dim]│{' ' * max(w - 2, 2)}│[/dim]")
         if meta is not None and str(meta).strip():
-            meta_str = str(meta).strip()
-            dashes = max(w - len(meta_str) - 7, 2)
-            self.console.print(f"[dim]└{'─' * dashes} {meta_str} ───┘[/dim]")
+            self.console.print(f"[dim]{box_bottom(w, str(meta).strip())}[/dim]")
         else:
-            self.console.print(f"[dim]└{'─' * max(w - 2, 2)}┘[/dim]")
+            self.console.print(f"[dim]{box_bottom(w)}[/dim]")
         self._box_open = False
         self._at_line_start = True
         self._line_len = 0
@@ -456,20 +495,21 @@ class StreamingSink:
             return
         if not self._box_open:
             self._open_box()
-        cw = max(self._width() - 6, 1)
+        inset = response_padding(self._width())
+        cw = max(self._width() - 2 - 2 * inset, 1)
         for ch in filtered:
             if self._at_line_start:
-                self.console.print("[dim]│  [/dim]", end="", markup=True, highlight=False)
+                self.console.print(f"[dim]│{' ' * inset}[/dim]", end="", markup=True, highlight=False)
                 self._at_line_start = False
                 self._line_len = 0
             if ch == "\n":
                 padding = max(cw - self._line_len, 0)
-                self.console.print(" " * padding + "[dim]  │[/dim]\n", end="", markup=True, highlight=False)
+                self.console.print(" " * padding + f"[dim]{' ' * inset}│[/dim]\n", end="", markup=True, highlight=False)
                 self._at_line_start = True
                 self._line_len = 0
             else:
                 if self._line_len >= cw:
-                    self.console.print("[dim]  │[/dim]\n[dim]│  [/dim]", end="", markup=True, highlight=False)
+                    self.console.print(f"[dim]{' ' * inset}│[/dim]\n[dim]│{' ' * inset}[/dim]", end="", markup=True, highlight=False)
                     self._line_len = 0
                 self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
                 self._line_len += 1
@@ -486,32 +526,47 @@ class StreamingSink:
         if leftover:
             if not self._box_open:
                 self._open_box()
-            cw = max(self._width() - 6, 1)
+            inset = response_padding(self._width())
+            cw = max(self._width() - 2 - 2 * inset, 1)
             for ch in leftover:
                 if self._at_line_start:
-                    self.console.print("[dim]│  [/dim]", end="", markup=True, highlight=False)
+                    self.console.print(f"[dim]│{' ' * inset}[/dim]", end="", markup=True, highlight=False)
                     self._at_line_start = False
                     self._line_len = 0
                 if ch == "\n":
                     padding = max(cw - self._line_len, 0)
-                    self.console.print(" " * padding + "[dim]  │[/dim]\n", end="", markup=True, highlight=False)
+                    self.console.print(" " * padding + f"[dim]{' ' * inset}│[/dim]\n", end="", markup=True, highlight=False)
                     self._at_line_start = True
                     self._line_len = 0
                 else:
                     if self._line_len >= cw:
-                        self.console.print("[dim]  │[/dim]\n[dim]│  [/dim]", end="", markup=True, highlight=False)
+                        self.console.print(f"[dim]{' ' * inset}│[/dim]\n[dim]│{' ' * inset}[/dim]", end="", markup=True, highlight=False)
                         self._line_len = 0
                     self.console.print(ch, end="", style=theme.HUND_FG, markup=False, highlight=False)
                     self._line_len += 1
         if self._box_open and not self._at_line_start:
-            cw = max(self._width() - 6, 1)
+            inset = response_padding(self._width())
+            cw = max(self._width() - 2 - 2 * inset, 1)
             padding = max(cw - self._line_len, 0)
-            self.console.print(" " * padding + "[dim]  │[/dim]\n", end="", markup=True, highlight=False)
+            self.console.print(" " * padding + f"[dim]{' ' * inset}│[/dim]\n", end="", markup=True, highlight=False)
             self._at_line_start = True
             self._line_len = 0
-        self._close_box()
+        duration = time.time() - self._turn_start_time if self._turn_start_time else 0.0
+        self._close_box(f"{duration:.1f}s" if duration > 0 else None)
+        self._turn_start_time = 0.0
         self._stream_filter = StreamingMarkdownFilter()
         self.console.print()
+
+    def learning_pending(self, job_id: str) -> None:
+        self.console.print("[dim]  · evaluating evidence...[/dim]")
+
+    def learning_receipt(self, receipt) -> None:
+        from hund.learning.runtime import format_receipt_bundle
+
+        if receipt.kind == "no_change":
+            return
+        for line in format_receipt_bundle(receipt):
+            self.console.print(f"[dim]{line}[/dim]")
 
     def error(self, markup: str) -> None:
         self.clear_thinking()
@@ -519,6 +574,9 @@ class StreamingSink:
         self.console.print(markup)
 
     # -- tool-hook contract ------------------------------------------------
+
+    def edit(self, request: ConfirmRequest) -> dict | None:
+        return prompt_edits(request)
 
     def confirm(self, request: ConfirmRequest) -> ConfirmVerdict:
         self.clear_thinking()
@@ -532,15 +590,23 @@ class StreamingSink:
             # Fallback for non-interactive / piped environments
             title = _confirm_title(request)
             detail = _confirm_detail(request)
+            policy_options = confirmation_options(request.tool_name)
+            shortcut = {
+                ConfirmVerdict.APPROVE_ONCE: "y",
+                ConfirmVerdict.EDIT: "e",
+                ConfirmVerdict.ALLOW_SESSION: "a",
+                ConfirmVerdict.DENY: "n",
+            }
+            option_lines = [
+                f"  [{_CONFIRM_COLORS[verdict]}][{shortcut[verdict]}][/{_CONFIRM_COLORS[verdict]}] {label}"
+                for verdict, label in policy_options
+            ]
             options = [
                 f"[bold white]{title}[/bold white]",
                 f"  [bold cyan]{detail}[/bold cyan]",
                 "",
                 "Options:",
-                "  [bold green][y][/bold green] Run once",
-                "  [bold cyan][e][/bold cyan] Edit command",
-                "  [bold yellow][a][/bold yellow] Allow for this session",
-                "  [bold red][n][/bold red] Deny",
+                *option_lines,
             ]
             card = theme.boxify(
                 title,
@@ -556,6 +622,8 @@ class StreamingSink:
             except (EOFError, KeyboardInterrupt):
                 ans = "n"
             verdict = parse_confirm_input(ans)
+            if verdict not in {item[0] for item in policy_options}:
+                verdict = ConfirmVerdict.DENY
 
         return verdict
 
@@ -567,59 +635,40 @@ class StreamingSink:
                 f.flush()
             except Exception:
                 pass
-            gerund, past = select_thinking_phrase(self._user_input)
+            gerund, past = tool_thinking_phrase(name, args if isinstance(args, dict) else None)
             self._thinking_text = gerund + "..."
             self._thinking_past = past
             self._tool_switched = True
-            self.console.print(f"[dim]{theme.HUND_INDENT}{self._thinking_text}[/dim]")
+            self.console.print(f"[dim]{theme.HUND_INDENT}{past}[/dim]")
+            self._thinking_active = False
+            self._thinking_past = None
         elif not self._thinking_active:
             pass
 
         self._close_box()
-        card = theme.boxify(
-            f"TOOL: {name}",
-            [f"args: {_short_args(args)}", "status: executing..."],
-            width=68,
-            border_style="dim",
-            title_style="bold cyan",
-        )
-        self.console.print(card)
+        self._tool_started_at = time.time()
+        self._tool_description = describe_tool(name, args if isinstance(args, dict) else None)
+        self.console.print(f"[dim]  ┊ [/dim][cyan]⟳[/cyan] [magenta]{self._tool_description}[/magenta]", end="")
 
     def tool_result(self, name: str, shown: str) -> None:
-        self.clear_thinking()
-        self._close_box()
-        card = theme.boxify(
-            f"TOOL RESULT: {name}",
-            [f"output: {shown}"],
-            width=68,
-            border_style="dim",
-            title_style="bold green",
+        duration = time.time() - getattr(self, "_tool_started_at", time.time())
+        desc = getattr(self, "_tool_description", describe_tool(name))
+        self.console.print(
+            f"\r{' ' * min(self._width(), 160)}\r[dim]  ┊ [/dim][green]✓[/green] "
+            f"[magenta]{desc}[/magenta] [dim]{duration:.1f}s[/dim]"
         )
-        self.console.print(card)
 
     def blocked(self, name: str, reason: str) -> None:
-        self.clear_thinking()
-        self._close_box()
-        card = theme.boxify(
-            f"BLOCKED: {name}",
-            [f"reason: {reason}"],
-            width=68,
-            border_style="red",
-            title_style="bold red",
+        desc = getattr(self, "_tool_description", describe_tool(name))
+        self.console.print(
+            f"\r{' ' * min(self._width(), 160)}\r[dim]  ┊ [/dim][red]✗ {desc} — {reason}[/red]"
         )
-        self.console.print(card)
 
     def declined(self, name: str, reason: str) -> None:
-        self.clear_thinking()
-        self._close_box()
-        card = theme.boxify(
-            f"DECLINED: {name}",
-            [f"reason: {reason}"],
-            width=68,
-            border_style="dim",
-            title_style="dim yellow",
+        desc = getattr(self, "_tool_description", describe_tool(name))
+        self.console.print(
+            f"\r{' ' * min(self._width(), 160)}\r[dim]  ┊ [/dim][yellow]✗ {desc} — {reason}[/yellow]"
         )
-        self.console.print(card)
 
 
 def render_markdown(console: Console, text: str) -> None:

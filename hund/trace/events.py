@@ -28,6 +28,7 @@ EVENT_TYPES = {
     "turn_completed",
     "plan_snapshot",
     "tool_call_requested",
+    "tool_call_edited",
     "tool_call_classified",
     "tool_call_approved",
     "tool_call_declined",

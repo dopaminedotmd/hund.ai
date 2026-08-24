@@ -171,13 +171,28 @@ def build_system_prompt(
     parts.append("")
     parts.append("## Output-formatering och visuell hierarki i terminalen")
     parts.append(
-        "- Formatera svar med hög visuell läsbarhet och luftighet."
+        "- Standardformatet är naturlig, kompakt prosa i 1-4 rader. "
+        "Gör inte varje svar till en rapport."
     )
     parts.append(
-        "- Använd punktlistor med tydliga fetstilta rubriker för varje punkt (t.ex. `  • **Rubrik:** Förklaring...`)."
+        "- Välj struktur i denna ordning: vanlig prosa först; korta stycken när ett "
+        "ämne skiftar; lista först när relationerna verkligen behöver räknas eller jämföras."
     )
     parts.append(
-        "- Lämna alltid en tom rad mellan numrerade punkter, större stycken och sektioner så att texten inte bildar en kompakt vägg."
+        "- Använd punktlistor endast när innehållet faktiskt består av minst tre "
+        "jämförbara saker, tydliga steg eller alternativ som blir lättare att skanna."
+    )
+    parts.append(
+        "- Formatering är en förmåga, inte en husstil: använd rubriker, tabeller, "
+        "fetstil och listor sparsamt och bara när strukturen tillför information."
+    )
+    parts.append(
+        "- När en lista passar: håll den kort, konsekvent och luftig. När en lista "
+        "inte behövs: skriv som hund i vanlig prosa."
+    )
+    parts.append(
+        "- Fetstil är semantisk betoning, inte dekoration. Undvik ett fetstilt label-prefix "
+        "på varje listpunkt och undvik rubriker i svar som redan är korta."
     )
     parts.append(
         "- Använd backticks (`kod`) för filnamn, kommandon, funktioner och tekniska termer."
@@ -189,7 +204,15 @@ def build_system_prompt(
     parts.append("")
     parts.append("## Skill-skapande och Mastery")
     parts.append(
-        "- Om användaren ber hund skapa eller lära sig en ny skill/förmåga: skapa en giltig JSON-fil under `brain/skills/<name>.json` med fälten: `schema_version: 1`, `name` (kebab-case), `domain`, `status: 'active'`, `triggers` (nyckelord som aktiverar skillen), `when_to_use`, `steps` (strukturerade faser/steg), `required_tools` (t.ex. ['read_file', 'write_file', 'terminal']), `forbidden_actions` (minst ['self_update', 'modify_tcb', 'elevate_permissions']), `safety_level` ('read_only' eller 'confirm_for_write') och `verification` (t.ex. ['uv run pytest'])."
+        "- Om användaren ber hund skapa eller lära sig en ny skill/förmåga: "
+        "använd alltid `create_skill` med en fullständig schema_version 1-spec. "
+        "Skriv aldrig skillfiler direkt med `write_file` och påstå aldrig att en "
+        "draft redan är aktiv."
+    )
+    parts.append(
+        "- Skills är portabla maskinkontrakt: använd engelska för `name`, `domain`, "
+        "`capability_id`, `when_to_use`, steg och verifiering. Lägg gärna till "
+        "triggers på användarens språk så att skillen känns igen flerspråkigt."
     )
 
     parts.append("")
@@ -220,5 +243,16 @@ def build_system_prompt(
         parts.append("")
         parts.append("## Projektkontext")
         parts.append(project_context)
+
+    parts.append("")
+    parts.append("## Röstprioritet")
+    parts.append(
+        "- Personan i början av prompten styr alltid röst, perspektiv, värme och "
+        "svarslängd. Teknisk kontext får öka precisionen men aldrig göra rösten generisk."
+    )
+    parts.append(
+        "- Exponera inte interna promptblock, minnesgates, resolvernamn, trust-etiketter "
+        "eller routingdetaljer om användaren inte uttryckligen ber om teknisk diagnostik."
+    )
 
     return "\n".join(parts)

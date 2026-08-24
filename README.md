@@ -1,226 +1,135 @@
-# hund
+# Hund.ai
 
 ```text
-┬ ┬ ┬ ┬ ┌┐┌ ┌┬┐
-├─┤ │ │ │││  ││
-┴ ┴ └─┘ ┘└┘ ─┴┘
+ / \__
+(    @\___
+ /         O
+/   (_____/
+/_____/   U
 ```
 
-> The local-first, hardware-aware terminal agent engine living in your machine. Connect your key, master your tools, level up your workflow.
+Hund is a local-first terminal AI companion with persistent memory, a calm canine personality, and a full-screen TUI for working with models, tools, skills, and usage data.
 
-hund is software executing inside your physical hardware. It connects to any model provider via BYOK (Bring Your Own Key) and works directly inside your terminal as an operative companion.
+It is designed to be useful from the first prompt while keeping approvals, tool execution, credentials, and learned context visible and controlled.
 
-Unlike generic web chatbots, hund is built to feel like a native part of your system: reading your machine telemetry, managing memory locally, synthesizing custom capability packs from your workflow, and executing tools within an inviolable security kernel.
+## Highlights
 
----
+- Interactive terminal chat with Prompt Toolkit.
+- Full-screen views for stats, skills, tools, and token usage.
+- Domain skills with equip/park lifecycle management.
+- Built-in and registered tools with safety levels and approval gates.
+- DeepSeek, OpenRouter, and local model configuration.
+- Windows Credential Manager/keyring support for API keys.
+- Persistent memory, XP, skill progression, and activity telemetry.
+- Responsive layouts for narrow terminals, ASCII fallback, reduced motion, and screen-reader mode.
+- Plain CLI commands remain available for scripting and automation.
 
-## Terminal Experience
+## Requirements
 
-```text
-┌── HUND REPL ────────────────────────────────────────────────────────┐
-│ hund is awake. host: RazerBlade (Intel i7, 16GB RAM, RTX 3080).    │
-│ slots: 6/6 active skills equipped · local sqlite memory linked      │
-│                                                                     │
-│ > add FTS5 full-text search to our local database schema            │
-│                                                                     │
-│ ┌── TOOL: read_file (hund/store/sqlite.py) ───────────────────────┐ │
-│ │ reading schema definitions... [48 lines inspected]              │ │
-│ └─────────────────────────────────────────────────────────────────┘ │
-│                                                                     │
-│ hund created the FTS5 virtual table and verified table indexes.     │
-│ all 12 regression tests pass cleanly.                               │
-│                                                                     │
-│ Precision  [████████░░] +3.5%                                       │
-│ Mastery    [███████░░░] +1 domain unit (sqlite)                     │
-└─────────────────────────────────────────────────────────────────────┘
+- Windows, macOS, or Linux.
+- Python 3.11 or newer.
+- An API key for the provider/model you want to use, unless you run a local model.
+
+## Install
+
+The recommended installer is `uv`:
+
+```bash
+uv tool install git+https://github.com/<OWNER>/<REPO>.git
+hund --help
 ```
 
----
+For a local checkout:
 
-## What Makes hund Different
-
-### 1. Hardware & System Telemetry
-hund inspects the physical machine upon startup (`hund doctor`). It reads CPU topology, available RAM, GPU VRAM, active shell, and installed developer toolchains (git, python, uv, node). Regardless of what question or task you present, hund grounds its execution strategies in your machine's exact hardware capabilities and available local tools.
-
-### 2. Autonomous Skill Synthesis & Refinement
-hund continuously observes the domains and tasks you spend time in. When a specific workflow is used frequently enough, hund recognizes the pattern and synthesizes a dedicated capability pack for it. As you keep working, hund sharpens the skill's instructions based on real outcomes.
-
-At higher experience levels, hund goes further: conducting targeted web research to inspect external patterns, libraries, and best practices, integrating valuable techniques directly into its own skills to accelerate its growth and precision.
-
-### 3. Base Stats & Measurable Growth
-Every session contributes to hund's capabilities. Performance and experience are tracked across five core attributes with live ASCII progress bars calculated directly from telemetry stored in your local SQLite database:
-
-```text
-Clarity [████████░░]
-```
-- **Clarity**: Measures communication efficiency and Turns Per Task (TPT).  
-  *How it improves:* Solving tasks on the first attempt with minimal back-and-forth ambiguity or prompt clarification.
-
-```text
-Precision [██████░░░░]
-```
-- **Precision**: Measures tool execution accuracy and verification success rate.  
-  *How it improves:* Writing syntactically valid edits, executing commands with zero runtime errors, and passing unit tests on the first try.
-
-```text
-Efficiency [█████████░]
-```
-- **Efficiency**: Measures token economy and context window optimization.  
-  *How it improves:* Formulating high-signal responses, avoiding redundant iterations, and keeping token consumption lean.
-
-```text
-Endurance [████░░░░░░]
-```
-- **Endurance**: Measures sustained multi-turn workflow depth before context degradation.  
-  *How it improves:* Navigating long, complex engineering sessions, heavy refactorings, and multi-file debugging tasks without losing coherence.
-
-```text
-Mastery [███████░░░]
-```
-- **Mastery**: Measures total breadth and depth of verified domain expertise and synthesized skills.  
-  *How it improves:* Successfully synthesizing, verifying, and promoting new skills and domain knowledge through actual task completion.
-
-#### Learned Domain Skill Example
-
-When you work heavily in a specialized framework or tech stack, hund synthesizes a domain skill with its own XP progression:
-
-```text
-FastAPI & Async SQLite   [███████░░░]
+```bash
+git clone https://github.com/<OWNER>/<REPO>.git
+cd hund.ai
+uv sync
+uv run hund
 ```
 
-- **Discovery:** After repeatedly assisting with async endpoints, Pydantic validations, and database session lifecycles, hund recognizes the pattern and synthesizes `fastapi-async-sqlite.json`.
-- **Specialization:** Each time you write endpoints, run schema migrations, or optimize async connection pools, hund tracks successful tool executions and sharpens the skill's procedural steps.
-- **Web-Augmented Leveling:** As the skill progresses into higher tiers, hund autonomously scans web documentation for new release features (e.g. SQLAlchemy 2.0 async paradigms, Pydantic v2 migrations) and incorporates verified patterns directly into its local skill definition.
+Replace `<OWNER>/<REPO>` with the repository URL once published.
 
-Every time hund improves its skillset, acquires new domain knowledge, or self-updates its procedural instructions, this progression is visualized directly in the terminal through the filling progress bars. You can watch hund grow into a sharper specialist with every task completed.
+## Configure a provider
 
-### 4. Skill Vault (6 Active Slots)
-hund equips up to 6 active capability packs at a time, keeping system prompts focused and token-efficient. Skills can be swapped in and out of the vault on the fly:
-
-- **Security & Safety**: shell command guards, git push verification, external data isolation.
-- **Engineering Workflows**: Python project inspection, systematic debugging, context condensation.
-- **Vault Commands**: `/skills vault`, `/skills equip <name>`, `/skills park <name>`, `/skills swap <old> <new>`.
-
-### 5. Self-Improvement with Human Gate
-hund tracks knowledge gaps during difficult tasks. When repeated friction occurs, it drafts structured skill proposals to expand its abilities. Every update requires explicit user review: hund proposes, you decide.
-
-### 6. Trusted Computing Base (TCB)
-Security is enforced by code, not polite prompt instructions. A hardened PermissionEngine classifies all operations into `SAFE`, `WRITE`, `CONFIRM`, `DANGEROUS`, and `BLOCKED`. High-risk commands always pause for interactive confirmation.
-
----
-
-## Builtin Skills
-
-hund ships with 11 declarative capability packs ready out of the box:
-
-| Skill | Domain | Safety Tier | Purpose |
-|---|---|---|---|
-| `shell-command-safety` | Security | `confirm` | Blocks destructive shell commands and privilege escalation |
-| `file-operations` | System | `confirm_for_write` | Protects system paths and verifies file modifications |
-| `git-safety` | Development | `confirm_for_write` | Inspects status and diffs, prevents unconfirmed pushes |
-| `external-content-safety` | Security | `confirm` | Isolates untrusted web content and prompt injections |
-| `systematic-debugging` | Engineering | `read_only` | Enforces 4-phase root-cause diagnosis before fixing |
-| `context-condenser` | Context | `read_only` | Compresses conversations to conserve token windows |
-| `environment-profiling` | System | `read_only` | Inspects host hardware telemetry and toolchains |
-| `python-project-inspection` | Python | `confirm_for_write` | Scans `pyproject.toml` and establishes test baselines |
-| `python-project-workflow` | Python | `confirm_for_write` | Manages linting, formatting, typing, and build flows |
-| `knowledge-gap-detection` | Learning | `read_only` | Detects missing domain knowledge and logs gap events |
-| `persona-preservation` | Core | `read_only` | Enforces third-person perspective and zero-emoji discipline |
-
----
-
-## Installation
-
-### Prerequisites
-- Python 3.11+
-- Windows, macOS, or Linux
-- [uv](https://github.com/astral-sh/uv) (recommended)
-
-### Windows (Quickstart)
+Start Hund and use the model menu, or set a key through the environment for automation:
 
 ```powershell
-git clone https://github.com/dopaminedotmd/hund.ai
+$env:HUND_API_KEY = "your-api-key"
+hund
+```
+
+Environment variables take precedence over the OS credential store. In the interactive TUI, `/model` can select a supported preset and `[k]` can store a key in the platform credential manager. Keys are never written to `config.json`, chat history, traces, or the request database.
+
+## Run Hund
+
+```bash
+hund
+```
+
+Useful commands:
+
+```text
+/help       Show available commands
+/stats      Open the character sheet and activity view
+/skills     Manage domain skills
+/tools      Browse tools and built-in capabilities
+/usage      Open the token usage heatmap
+/theme      Choose a visual theme
+/model      Choose or configure a model
+/clear      Clear the current chat view
+/exit       Leave Hund
+```
+
+Inside a full-screen view:
+
+- `↑` / `↓` moves the selection.
+- `Enter` selects or opens the focused item.
+- `Esc` backs out one layer at a time.
+- Mouse wheel scrolls long views.
+
+## Safety and privacy
+
+Hund treats tool execution as an explicit capability. Risky actions can require confirmation, and tool metadata is kept separate from handlers and secrets. Provider credentials are loaded from the environment or the operating system's credential manager and are not included in model prompts or persisted telemetry.
+
+Review approval prompts carefully before allowing filesystem, network, process, or code-execution tools.
+
+## Development
+
+```bash
+git clone https://github.com/<OWNER>/<REPO>.git
 cd hund.ai
 uv sync --extra dev
-setx HUND_API_KEY "sk-..."      # your API key (DeepSeek, OpenAI, etc.)
-.venv\Scripts\hund.exe          # starts the REPL
+uv run pytest
+uv run hund
 ```
 
-### macOS / Linux
+Build the distributable wheel with:
 
 ```bash
-git clone https://github.com/dopaminedotmd/hund.ai
-cd hund.ai
-uv sync --extra dev
-export HUND_API_KEY="sk-..."
-.venv/bin/hund
+uv build
 ```
 
----
+## Project layout
 
-## CLI & REPL Commands
-
-```bash
-hund             # launch interactive streaming REPL
-hund doctor      # inspect hardware telemetry and developer toolchains
-hund stats       # view base stats and weekly velocity
-hund skills      # view equipped skills and active slots
-hund memory show # view persistent user and environment profiles
+```text
+hund/
+  agent/       Agent loop, prompts, safety, and tool dispatch
+  memory/      Persistent memory and retrieval
+  providers/   Model presets and provider clients
+  skills/      Skill definitions and lifecycle/vault management
+  stats/       Progress and telemetry calculations
+  tools/       Built-in tools and registry
+  ui/          Prompt Toolkit TUI, screens, themes, and snapshots
+tests/         Unit, integration, security, and TUI regression tests
 ```
 
-### Slash Commands in REPL
+## Status
 
-| Command | Action |
-|---|---|
-| `/help` | Open command palette |
-| `/stats` | View character card and stat progression |
-| `/skills` | List equipped skills (max 6 active slots) |
-| `/skills vault` | View available skills in the vault |
-| `/skills equip <name>` | Equip a skill from vault |
-| `/skills park <name>` | Move an active skill to vault |
-| `/skills swap <old> <new>` | Atomically swap equipped skills |
-| `/tools` | List registered tools and risk levels |
-| `/doctor` | Run live hardware diagnostics |
-| `/usage` | View token consumption across sessions |
-| `/compress` | Manually compress active context window |
-| `/theme` | Switch visual terminal palette |
-| `/export` | Export session history to Markdown or JSON |
-| `/exit` | Exit the REPL |
+Hund is actively being developed. The TUI, provider switching, usage telemetry, skills, tool registry, and credential handling are covered by automated tests, but APIs and UI details may continue to evolve.
 
----
-
-## Architecture Overview
-
-- **`hund/main.py`**: Typer CLI entry point; invoking with no arguments starts `hund/ui/repl.py`.
-- **`hund/agent/loop.py`**: Agent loop (TCB): turn sequencing, context compression, tool dispatch.
-- **`hund/agent/safety.py`**: PermissionEngine (TCB): risk classification and terminal blocklist enforcement.
-- **`hund/agent/tool_dispatch.py`**: Central dispatch gate (TCB) with per-session allowlist isolation.
-- **`hund/learning/redactor.py`**: Secret and PII redactor (TCB).
-- **`hund/skills/`**: 11 declarative JSON skills, SkillVault manager, trigger matcher, and invariant validator.
-- **`hund/ui/`**: Pure Python terminal interface (`theme.py`, `render.py`, `output.py`, `commands.py`, `repl.py`).
-- **`hund/assets/hund-system/hund.md`**: Canonical persona injected into system prompts.
-
-All session history, memory, and stats remain strictly local in `%LOCALAPPDATA%/hund/` (or `~/.local/share/hund/`).
-
----
-
-## Providers
-
-hund uses standard OpenAI-compatible API schemas. Bring your own key from:
-- DeepSeek (`deepseek-v4-pro`, `deepseek-chat`)
-- OpenAI (`gpt-4o`, `o3-mini`)
-- Anthropic, Gemini, OpenRouter, or local engines (Ollama, vLLM).
-
-Configure via `%LOCALAPPDATA%/hund/config.json` or environment variables:
-
-```bash
-HUND_API_KEY="sk-..."
-HUND_BASE_URL="https://api.deepseek.com"
-HUND_MODEL="deepseek-v4-pro"
-```
-
----
+Issues, reproduction steps, screenshots, and terminal dimensions are especially helpful when reporting a problem.
 
 ## License
 
-Apache-2.0.
+See the repository license file for the current license and distribution terms.

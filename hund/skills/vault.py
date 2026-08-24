@@ -69,6 +69,9 @@ class SkillVault:
     def _sync_state(self) -> None:
         domain_skills = load_domain_skills(self.home)
         domain_names = [s.name for s in domain_skills]
+        equippable = {
+            s.name for s in domain_skills if s.lifecycle_state in {"active", "proven"}
+        }
         raw = self._load_raw_state()
 
         # Clean legacy builtins from state file if present
@@ -78,7 +81,7 @@ class SkillVault:
         # Categorize any newly added domain skills
         for name in domain_names:
             if name not in active and name not in vaulted:
-                if len(active) < self.max_active:
+                if name in equippable and len(active) < self.max_active:
                     active.append(name)
                 else:
                     vaulted.append(name)
@@ -105,9 +108,9 @@ class SkillVault:
         result = []
         for s in domain_skills:
             if s.name in active_set:
-                result.append(replace(s, status="active"))
+                result.append(replace(s, vault_state="equipped"))
             else:
-                result.append(replace(s, status="vaulted"))
+                result.append(replace(s, vault_state="vaulted"))
         return result
 
     def get_all_skills(self) -> list[Skill]:
@@ -116,11 +119,11 @@ class SkillVault:
 
     def get_active_skills(self) -> list[Skill]:
         """Return active domain skills (0/6 on fresh install)."""
-        return [s for s in self.get_domain_skills() if s.status == "active"]
+        return [s for s in self.get_domain_skills() if s.vault_state == "equipped"]
 
     def list_vaulted(self) -> list[Skill]:
         """Return vaulted domain skills."""
-        return [s for s in self.get_domain_skills() if s.status == "vaulted"]
+        return [s for s in self.get_domain_skills() if s.vault_state == "vaulted"]
 
     def equip(self, name: str) -> tuple[bool, str]:
         raw = self._load_raw_state()
@@ -133,6 +136,10 @@ class SkillVault:
 
         if name in active:
             return False, f"Domain skill '{name}' is already equipped ({len(active)}/{self.max_active} active)."
+
+        skill = next((s for s in load_domain_skills(self.home) if s.name == name), None)
+        if skill is None or skill.lifecycle_state not in {"active", "proven"}:
+            return False, f"Domain skill '{name}' is not active/proven and cannot be equipped."
 
         if len(active) >= self.max_active:
             return False, f"Active skill capacity reached ({len(active)}/{self.max_active}). Park or swap a skill first."
@@ -175,6 +182,9 @@ class SkillVault:
             if new_name in active:
                 return False, f"Domain skill '{new_name}' is already equipped."
             return False, f"Domain skill '{new_name}' not found in vault."
+        skill = next((s for s in load_domain_skills(self.home) if s.name == new_name), None)
+        if skill is None or skill.lifecycle_state not in {"active", "proven"}:
+            return False, f"Domain skill '{new_name}' is not active/proven and cannot be equipped."
 
         active.remove(old_name)
         vaulted.remove(new_name)
@@ -184,4 +194,3 @@ class SkillVault:
 
         self._save_raw_state({"active": active, "vaulted": vaulted})
         return True, f"Swapped '{old_name}' for '{new_name}'."
-

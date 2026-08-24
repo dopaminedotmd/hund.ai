@@ -157,7 +157,7 @@ def test_migrate_confidence_to_xp(tmp_path: Path) -> None:
     assert migrated_again == 0
 
 
-def test_tool_xp_cap_per_turn() -> None:
+def test_tool_use_never_awards_xp() -> None:
     from hund.agent.tool_dispatch import _TURN_TOOL_XP, _log_tool
 
     _TURN_TOOL_XP.clear()
@@ -166,5 +166,4 @@ def test_tool_xp_cap_per_turn() -> None:
     for _ in range(7):
         _log_tool("read_file", "safe", "content", success=1, run_id=turn_id)
 
-    # Capped at 5 XP for this turn
-    assert _TURN_TOOL_XP.get(("files", turn_id)) == 5
+    assert _TURN_TOOL_XP == {}

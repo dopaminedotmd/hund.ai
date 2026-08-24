@@ -64,9 +64,8 @@ def test_cmd_skills_dispatch_and_inspection(skills_home: Path) -> None:
     # Test /skills overview
     cmd_skills(ctx, [])
     output = buf.getvalue()
-    assert "SKILLS" in output
-    assert "MOTOR SKILLS" in output
-    assert "DOMAIN SKILLS" in output
+    assert "SPECIALIZATIONS" in output
+    assert "MOTOR SKILLS" not in output
 
     # Test /skills info <name>
     buf.seek(0)

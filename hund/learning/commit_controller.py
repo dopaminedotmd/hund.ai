@@ -10,11 +10,13 @@ Enforces:
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
 from typing import Any, Optional
 import uuid
+from dataclasses import replace
 
 from ..domains.registry import get_registry
 from ..knowledge import db as kdb
@@ -34,6 +36,9 @@ from ..knowledge.models import (
 from ..paths import brain_knowledge_dir, hund_home
 from .evaluator import CandidateProposal
 from .verifiers import verify_candidate_unit
+from ..skills.lifecycle import run_skill_sandbox_test
+from ..skills.model import Skill
+from ..skills.validator import validate as validate_skill
 
 
 def sync_domain_json(
@@ -100,6 +105,76 @@ class CommitController:
         self.db_path = db_path
         self.home = home
 
+    def _skills_dir(self) -> Path:
+        base = self.home if self.home is not None else hund_home()
+        return base / "brain" / "skills"
+
+    def _write_skill(self, skill: Skill) -> Path:
+        directory = self._skills_dir()
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"{skill.name}.json"
+        temporary = target.with_suffix(f".tmp.{os.getpid()}_{uuid.uuid4().hex[:6]}")
+        try:
+            content = json.dumps(skill.to_dict(), ensure_ascii=False, indent=2)
+            with open(temporary, "w", encoding="utf-8") as handle:
+                handle.write(content)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            if temporary.exists():
+                temporary.unlink(missing_ok=True)
+        return target
+
+    def commit_skill_draft(
+        self,
+        skill: Skill,
+        *,
+        dry_run_executor=None,
+    ) -> tuple[bool, str]:
+        """Validate and persist a draft; only this controller may materialize it."""
+        errors = validate_skill(skill)
+        if errors:
+            return False, "; ".join(errors)
+        committed = replace(skill, lifecycle_state="draft", status="draft", vault_state="vaulted")
+        if committed.required_tools and dry_run_executor is not None:
+            ok, message = run_skill_sandbox_test(
+                committed.to_dict(), dry_run_executor=dry_run_executor
+            )
+            if not ok:
+                return False, message
+            committed = replace(
+                committed, lifecycle_state="sandbox_tested",
+                status="sandbox_tested",
+            )
+        self._write_skill(committed)
+        if committed.required_tools and dry_run_executor is None:
+            return True, "stored as draft; executing sandbox required before activation"
+        return True, f"stored as {committed.lifecycle_state}"
+
+    def _invalidate_skills_for_knowledge(self, unit_id: str) -> None:
+        directory = self._skills_dir()
+        if not directory.exists():
+            return
+        for path in directory.glob("*.json"):
+            try:
+                skill = Skill.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                continue
+            if unit_id not in {ref.knowledge_id for ref in skill.source_knowledge_refs}:
+                continue
+            if skill.lifecycle_state in {"active", "proven"}:
+                invalid = replace(
+                    skill, lifecycle_state="quarantined", status="quarantined",
+                    vault_state="vaulted", revalidation_required=True,
+                )
+            else:
+                invalid = replace(
+                    skill, lifecycle_state="draft", status="draft",
+                    vault_state="vaulted", revalidation_required=True,
+                )
+            self._write_skill(invalid)
+
     def commit_candidate(
         self,
         proposal: CandidateProposal,
@@ -120,7 +195,21 @@ class CommitController:
         dom = reg.canonicalize(raw_dom) or "general"
 
         # 3. Create Unit (Starts as STATUS_CANDIDATE — never directly validated!)
-        unit_id = f"know_{uuid.uuid4().hex[:10]}"
+        fingerprint = json.dumps(
+            {
+                "proposition": proposal.proposition,
+                "scope": proposal.scope,
+                "kind": proposal.kind,
+                "evidence_ids": sorted(proposal.evidence_ids),
+                "deps": proposal.deps,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        unit_id = f"know_{hashlib.sha256(fingerprint.encode('utf-8')).hexdigest()[:20]}"
+        if kdb.get_unit(unit_id, db_path=self.db_path):
+            return unit_id, "candidate already stored"
         now = datetime.now(timezone.utc).isoformat()
         unit = KnowledgeUnit(
             id=unit_id,
@@ -146,10 +235,19 @@ class CommitController:
         # 4. Award Discovery XP (+1)
         try:
             from ..domains.xp import award_xp, EVENT_DISCOVERY
+            from .ledger import get_event
+
+            evidence = (
+                get_event(proposal.evidence_ids[0], db_path=self.db_path)
+                if proposal.evidence_ids else None
+            )
             award_xp(
                 domain=dom,
                 event_type=EVENT_DISCOVERY,
                 unit_id=unit_id,
+                evidence_id=proposal.evidence_ids[0] if proposal.evidence_ids else None,
+                session_id=evidence.get("session_id") if evidence else None,
+                task_id=evidence.get("turn_id") if evidence else None,
                 db_path=self.db_path,
             )
         except Exception:
@@ -165,6 +263,7 @@ class CommitController:
         success: bool,
         evidence_id: Optional[str] = None,
         session_id: Optional[str] = None,
+        task_id: Optional[str] = None,
         is_cross_session: bool = False,
     ) -> None:
         """Record real-world usage of a rule and apply promotion/demotion policy + deterministic XP awards."""
@@ -223,7 +322,9 @@ class CommitController:
                     domain=unit.domain,
                     event_type=reuse_event,
                     unit_id=unit.id,
+                    evidence_id=evidence_id,
                     session_id=session_id,
+                    task_id=task_id,
                     db_path=self.db_path,
                 )
                 # 2. Validation Promotion Bonus (+8)
@@ -232,7 +333,9 @@ class CommitController:
                         domain=unit.domain,
                         event_type=EVENT_VALIDATION_PROMOTION,
                         unit_id=unit.id,
+                        evidence_id=evidence_id,
                         session_id=session_id,
+                        task_id=task_id,
                         db_path=self.db_path,
                     )
             except Exception:
@@ -280,4 +383,5 @@ class CommitController:
         )
         if ok:
             sync_domain_json(unit.domain, home=self.home, db_path=self.db_path)
+            self._invalidate_skills_for_knowledge(unit_id)
         return ok

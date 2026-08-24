@@ -1,7 +1,7 @@
 """Design tokens and visual styling for hund.ui.
 
 Unified token architecture: Truecolor (hex) with 16-ANSI fallback for standard
-terminals. Standardized single-line box-drawing (┌─┐, │, └─┘), block progress bars,
+terminals. Rounded response/modal drawing (╭─╮, │, ╰─╯), block progress bars,
 and strict zero-emoji invariants.
 """
 from __future__ import annotations
@@ -31,16 +31,18 @@ def supports_truecolor() -> bool:
     return False
 
 
-# -- 3 Named Skins (Bone / Nord / Synthwave) -------------------------------
+# -- 3 Named Skins (Marshmallow / Nord / Synthwave) ------------------------
 
 SKINS: dict[str, dict[str, Any]] = {
-    "bone": {
-        "name": "bone",
+    "marshmallow": {
+        "name": "marshmallow",
         "pygments": "one-dark",
         "tokens": {
             "primary": "#FFFFFF",
             "secondary": "#3E4451",
             "accent": "#4EBCD5",
+            "meta_accent": "#785a7c",
+            "logo": "#FFFFFF",
             "user": "#50FA7B",
             "success": "#50FA7B",
             "warning": "#F1FA8C",
@@ -55,11 +57,14 @@ SKINS: dict[str, dict[str, Any]] = {
             "del_bg": "#3D1E24",
             "del_fg": "#F4ACB7",
             "mascot": "#FFFFFF",
+            "mascot_status": "#737985",
         },
         "ansi": {
             "primary": "ansiwhite",
             "secondary": "ansibrightblack",
             "accent": "ansicyan",
+            "meta_accent": "ansibrightmagenta",
+            "logo": "ansiwhite",
             "user": "ansigreen",
             "success": "ansigreen",
             "warning": "ansibrightyellow",
@@ -79,6 +84,8 @@ SKINS: dict[str, dict[str, Any]] = {
             "primary": "#D8DEE9",
             "secondary": "#4C566A",
             "accent": "#88C0D0",
+            "meta_accent": "#5E81AC",
+            "logo": "#D8DEE9",
             "user": "#A3BE8C",
             "success": "#A3BE8C",
             "warning": "#EBCB8B",
@@ -93,11 +100,14 @@ SKINS: dict[str, dict[str, Any]] = {
             "del_bg": "#3D2328",
             "del_fg": "#D8DEE9",
             "mascot": "#D8DEE9",
+            "mascot_status": "#68758B",
         },
         "ansi": {
             "primary": "ansiwhite",
             "secondary": "ansibrightblack",
             "accent": "ansicyan",
+            "meta_accent": "ansiblue",
+            "logo": "ansiwhite",
             "user": "ansigreen",
             "success": "ansigreen",
             "warning": "ansiyellow",
@@ -117,6 +127,8 @@ SKINS: dict[str, dict[str, Any]] = {
             "primary": "#E0DEF4",
             "secondary": "#6E6A86",
             "accent": "#8BE9FD",
+            "meta_accent": "#C4A7E7",
+            "logo": "#E0DEF4",
             "user": "#A6E3A1",
             "success": "#A6E3A1",
             "warning": "#F9E2AF",
@@ -131,11 +143,14 @@ SKINS: dict[str, dict[str, Any]] = {
             "del_bg": "#3B1E2E",
             "del_fg": "#E0DEF4",
             "mascot": "#E0DEF4",
+            "mascot_status": "#817A96",
         },
         "ansi": {
             "primary": "ansiwhite",
             "secondary": "ansibrightblack",
             "accent": "ansibrightcyan",
+            "meta_accent": "ansibrightmagenta",
+            "logo": "ansiwhite",
             "user": "ansibrightgreen",
             "success": "ansibrightgreen",
             "warning": "ansiyellow",
@@ -150,11 +165,15 @@ SKINS: dict[str, dict[str, Any]] = {
     },
 }
 
-DEFAULT_SKIN = "bone"
+DEFAULT_SKIN = "marshmallow"
 DEFAULT_THEME = DEFAULT_SKIN
 THEMES = SKINS  # Alias for backward compatibility
 
+# Code-level compatibility only. User-facing selectors use canonical names.
+SKINS["bone"] = SKINS["marshmallow"]
+
 PYGMENTS_THEMES: dict[str, str] = {
+    "marshmallow": "one-dark",
     "bone": "one-dark",
     "nord": "nord",
     "synthwave": "dracula",
@@ -169,6 +188,8 @@ def get_pygments_theme(skin_name: str | None = None) -> str:
 def get_skin(name: str | None = None) -> dict[str, Any]:
     """Retrieve skin definition by name with fallback to DEFAULT_SKIN."""
     key = (name or DEFAULT_SKIN).lower().strip()
+    if key == "bone":
+        key = "marshmallow"
     return SKINS.get(key, SKINS[DEFAULT_SKIN])
 
 
@@ -179,7 +200,7 @@ def get_theme(name: str | None = None) -> dict[str, Any]:
 
 def theme_names() -> list[str]:
     """List all available skin names."""
-    return list(SKINS)
+    return ["marshmallow", "nord", "synthwave"]
 
 
 def make_pt_style(skin_name: str | None = None) -> Style:
@@ -196,6 +217,8 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "dim": tokens["secondary"],
             "backdrop": "#3E4451",
             "accent": tokens["accent"],
+            "meta_accent": "bold " + tokens["meta_accent"],
+            "meta-accent": "bold " + tokens["meta_accent"],
             "success": tokens["success"],
             "danger": tokens["danger"],
             "warning": tokens["warning"],
@@ -205,20 +228,20 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "add": add_style,
             "del": del_style,
             "mascot": tokens["mascot"],
-            "logo": tokens.get("logo", "#E2E4E9"),
+            "logo": "bold " + tokens.get("logo", "#FFFFFF"),
             "user": tokens["user"],
             "prompt": "bold " + tokens["user"],
             "status": tokens["secondary"],
             "header": "bold " + tokens["accent"],
-            "number": "bold " + tokens["accent"],
+            "number": "bold " + tokens["meta_accent"],
             "bullet": "bold " + tokens["accent"],
-            "label": "bold " + tokens["primary"],
+            "label": "bold " + tokens["meta_accent"],
             "code": tokens["tool"],
-            "completion-menu": "bg:ansiblack fg:" + tokens["primary"],
-            "completion-menu.completion": "bg:ansiblack fg:" + tokens["accent"],
-            "completion-menu.completion.current": "bold bg:ansibrightblack fg:" + tokens["accent"],
-            "completion-menu.meta.completion": "bg:ansiblack fg:" + tokens["secondary"],
-            "completion-menu.meta.completion.current": "bg:ansibrightblack fg:" + tokens["primary"],
+            "completion-menu": "noinherit bg:default noreverse fg:" + tokens["primary"],
+            "completion-menu.completion": "noinherit bg:default noreverse fg:" + tokens["accent"],
+            "completion-menu.completion.current": "noinherit bg:default noreverse bold fg:" + tokens["accent"],
+            "completion-menu.meta.completion": "noinherit bg:default noreverse fg:" + tokens["secondary"],
+            "completion-menu.meta.completion.current": "noinherit bg:default noreverse fg:" + tokens["primary"],
             "scrollbar.background": "bg:ansiblack",
             "scrollbar.button": "bg:" + tokens["secondary"],
         }

@@ -7,6 +7,7 @@ Inga emojis (CLAUDE.md). Inga lador/paneler for konversation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from typing import Any
 
 from rich.console import Console
@@ -54,20 +55,66 @@ def cmd_help(ctx: CommandContext, args: list[str]) -> None:
         ctx.console.print(line)
 
 
+def cmd_trace(ctx: CommandContext, args: list[str]) -> None:
+    """Show a compact redacted trace for the latest run in this session."""
+    if args and args[0].lower() != "last":
+        ctx.console.print("[dim]usage: /trace last[/dim]")
+        return
+    from ..trace.events import list_events_by_session
+
+    session_id = getattr(ctx.rt, "session_id", None) or getattr(ctx.state, "session_id", None)
+    if not session_id:
+        ctx.console.print("[dim](no active session trace)[/dim]")
+        return
+    try:
+        events = list_events_by_session(str(session_id))
+    except Exception as exc:
+        ctx.console.print(f"[red]could not read trace: {exc}[/red]")
+        return
+    if not events:
+        ctx.console.print("[dim](no trace events for this session)[/dim]")
+        return
+    run_id = events[-1].run_id
+    run_events = [event for event in events if event.run_id == run_id]
+    ctx.console.print(f"[bold cyan]trace[/bold cyan] [dim]{run_id[:12]}[/dim]")
+    for event in run_events:
+        tool = f" · {event.tool_name}" if event.tool_name else ""
+        payload = json.dumps(event.payload_redacted, ensure_ascii=False, sort_keys=True)
+        detail = f" · {payload[:160]}" if payload and payload != "{}" else ""
+        ctx.console.print(f"  {event.event_type}{tool}{detail}")
+
+
 
 def cmd_stats(ctx: CommandContext, args: list[str]) -> None:
+    if args and args[0] == "velocity":
+        _print_velocity(ctx.console)
+        return
     try:
         stats = compute_all()
     except Exception as e:
         ctx.console.print(f"[red]could not read stats: {e}[/red]")
         return
-    if args and args[0] == "velocity":
-        _print_velocity(ctx.console)
-        return
     if args and args[0] in ("compact", "min", "short"):
         render_character_card(ctx.console, ctx.rt, stats, compact=True)
         return
-    render_character_card(ctx.console, ctx.rt, stats)
+    try:
+        from .screen_render import render_stats
+        from .snapshots import collect_stats
+
+        snapshot = collect_stats()
+        ctx.console.print("CHARACTER SHEET", markup=False, highlight=False)
+        ctx.console.print(
+            render_stats(
+                snapshot,
+                width=getattr(ctx.console, "width", 80),
+                height=24,
+            ),
+            markup=False,
+            highlight=False,
+        )
+    except Exception:
+        # Plain terminals keep a useful representation if optional telemetry is broken.
+        render_character_card(ctx.console, ctx.rt, stats)
 
 
 def _print_velocity(console: Console) -> None:
@@ -192,10 +239,15 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
             ctx.console.print(f"[red]{msg}[/red]")
         return
 
-    # Default / all / active -> Render complete 2-layer fullscreen panel per TUI_FACIT.md §12
-    width = getattr(ctx.console, "width", None)
-    panel = render_skills_panel(ctx.rt, vault=vault, width=width)
-    ctx.console.print(panel)
+    # Default view contains domain skills only. Constitutional skills live in /tools.
+    from .screen_render import render_skills
+    from .snapshots import collect_skills
+
+    panel = render_skills(
+        collect_skills(), width=getattr(ctx.console, "width", 80),
+        height=24,
+    )
+    ctx.console.print(panel, markup=False, highlight=False)
 
 
 def cmd_lessons(ctx: CommandContext, args: list[str]) -> None:
@@ -227,6 +279,32 @@ def cmd_lessons(ctx: CommandContext, args: list[str]) -> None:
     card = theme.boxify(f"LEARNED LESSONS ({len(lessons)} active)", lines, width=70, border_style="cyan", title_style="bold cyan")
     ctx.console.print(card)
 
+def cmd_learning(ctx: CommandContext, args: list[str]) -> None:
+    """ /learning [receipt-id]    inspect durable learning receipts """
+    try:
+        from ..learning.runtime import format_receipt_bundle, list_receipts, receipt_detail_lines
+
+        receipts = list_receipts(limit=100 if args else 20)
+    except Exception as exc:
+        ctx.console.print(f"[red]could not read learning history: {exc}[/red]")
+        return
+    if args:
+        prefix = args[0]
+        receipts = [item for item in receipts if item.receipt_id.startswith(prefix)]
+    if not receipts:
+        ctx.console.print("[dim](no learning receipts)[/dim]")
+        return
+    lines: list[str] = []
+    for receipt in receipts:
+        lines.append(f"[bold cyan]{receipt.receipt_id}[/bold cyan]  [dim]{receipt.status}[/dim]")
+        lines.extend(format_receipt_bundle(receipt))
+        if args:
+            lines.extend(f"  {line}" for line in receipt_detail_lines(receipt))
+        lines.append("")
+    card = theme.boxify("LEARNING HISTORY", lines, width=76, border_style="cyan", title_style="bold cyan")
+    ctx.console.print(card)
+
+
 
 def cmd_profile(ctx: CommandContext, args: list[str]) -> None:
     profile = getattr(ctx.rt, "profile", None)
@@ -239,17 +317,18 @@ def cmd_profile(ctx: CommandContext, args: list[str]) -> None:
 
 def cmd_tools(ctx: CommandContext, args: list[str]) -> None:
     try:
-        tools = registry.all_tools()
+        from .screen_render import render_tools
+        from .snapshots import collect_tools
+
+        snapshot = collect_tools()
     except Exception as e:
         ctx.console.print(f"[red]could not read tools: {e}[/red]")
         return
-    if not tools:
-        ctx.console.print("[dim](no tools available)[/dim]")
-        return
-    for tool in tools:
-        name = getattr(tool, "name", "?")
-        risk = getattr(tool, "base_risk", "?")
-        ctx.console.print(f"  [bold]{name}[/bold] [dim]risk={risk}[/dim]")
+    ctx.console.print(
+        render_tools(snapshot, width=getattr(ctx.console, "width", 80), height=24),
+        markup=False,
+        highlight=False,
+    )
 
 
 def cmd_clear(ctx: CommandContext, args: list[str]) -> None:
@@ -451,6 +530,8 @@ def cmd_config(ctx: CommandContext, args: list[str]) -> None:
 def cmd_theme(ctx: CommandContext, args: list[str]) -> None:
     if args:
         name = args[0].lower().strip()
+        if name == "bone":
+            name = "marshmallow"
         if name in theme.SKINS:
             ctx.state.theme_name = name
             # Persist skin selection to HundConfig
@@ -658,43 +739,64 @@ def cmd_model(ctx: CommandContext, args: list[str]) -> None:
     cfg = getattr(ctx.rt, "cfg", None) or HundConfig.load()
     if args:
         new_model = args[0]
+        client = getattr(ctx.rt, "client", None)
+        if client is not None:
+            from ..providers.catalog import (
+                MODEL_OPTIONS,
+                activate_model,
+                custom_model,
+            )
+
+            option = next((item for item in MODEL_OPTIONS if item.model_id == new_model), None)
+            if option is None:
+                option = custom_model(
+                    getattr(cfg.provider, "provider_id", "custom"),
+                    cfg.provider.base_url,
+                    new_model,
+                    getattr(cfg.provider, "context_window", 64_000),
+                    credential_id=getattr(cfg.provider, "credential_id", "custom"),
+                )
+            ok, message = activate_model(ctx.rt, option)
+            if not ok:
+                ctx.console.print(f"[red]{message}[/red]")
+                return
+            ctx.state.extra["model"] = option.model_id
+            ctx.state.extra["token_limit"] = option.context_window
+            ctx.console.print(f"[green][OK][/green] active model: [bold]{new_model}[/bold]")
+            return
         cfg.provider.model = new_model
         try:
             cfg.save()
         except Exception as e:
             ctx.console.print(f"[red]could not save model: {e}[/red]")
             return
-        client = getattr(ctx.rt, "client", None)
-        if client and hasattr(client, "model"):
-            client.model = new_model
         ctx.console.print(f"[green][OK][/green] active model: [bold]{new_model}[/bold]")
         return
     ctx.console.print(f"  model:      [bold]{cfg.provider.model}[/bold]")
     ctx.console.print(f"  base_url:   {cfg.provider.base_url}")
-    ctx.console.print(f"  available:  [dim]{', '.join(KNOWN_MODELS)}[/dim]")
+    from ..providers.catalog import MODEL_OPTIONS
+    ctx.console.print(
+        f"  available:  [dim]{', '.join(item.model_id for item in MODEL_OPTIONS)}[/dim]"
+    )
     ctx.console.print("  switch:     /model deepseek-v4-flash   (flash = cheaper)")
 
 
 def cmd_usage(ctx: CommandContext, args: list[str]) -> None:
     """ /usage             view session and global token usage """
-    global_tok = _global_tokens()
     sid = getattr(ctx.state, "session_id", None)
-    msg_count = 0
-    if sid:
-        info = S.info(sid)
-        if info:
-            msg_count = info.get("message_count", 0)
+    try:
+        from .screen_render import render_usage
+        from .snapshots import collect_usage
 
-    lines: list[str] = []
-    if sid:
-        lines.append(f"active session:  #{sid[:8]}")
-        lines.append(f"messages:        {msg_count}")
-    if global_tok is not None:
-        lines.append(f"global tokens:   {global_tok:,}")
-    else:
-        lines.append("global tokens:   (unavailable)")
-    card = theme.boxify("[Usage] Resource Consumption", lines, width=68, border_style="cyan", title_style="bold cyan")
-    ctx.console.print(card)
+        snapshot = collect_usage(session_id=sid)
+        card = render_usage(
+            snapshot, width=getattr(ctx.console, "width", 80), height=24,
+        )
+    except Exception as exc:
+        ctx.console.print(f"[red]could not read usage: {exc}[/red]")
+        return
+    ctx.console.print("Usage · tokens by local calendar", markup=False, highlight=False)
+    ctx.console.print(card, markup=False, highlight=False)
 
 
 def cmd_doctor(ctx: CommandContext, args: list[str]) -> None:
@@ -801,6 +903,8 @@ COMMANDS = {
     "mascot": cmd_mascot,
     "memory": cmd_memory,
     "lessons": cmd_lessons,
+    "learning": cmd_learning,
+    "trace": cmd_trace,
     "feedback": cmd_lessons,
     "notifications": cmd_notifications,
     "clear": cmd_clear,
@@ -818,6 +922,8 @@ HELP_ROWS = [
     ("/undo", "file backup & restore information"),
     ("/skills [vault|core|equip|swap]", "inspect & manage equipped skills"),
     ("/lessons", "view learned lessons & feedback"),
+    ("/learning [receipt-id]", "inspect durable learning receipts"),
+    ("/trace last", "inspect the last run's redacted tool trace"),
     ("/profile", "user profile + environment"),
     ("/tools", "available tools + risk levels"),
     ("/history [search <q> | <id>]", "session messages / search"),

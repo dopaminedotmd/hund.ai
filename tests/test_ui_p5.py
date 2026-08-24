@@ -5,7 +5,7 @@ from io import StringIO
 from rich.console import Console
 
 from hund.ui.output import StreamingSink
-from hund.ui.render import box_bottom, box_top, render_response_box, wrap_content
+from hund.ui.render import box_bottom, box_top, render_response_box, response_padding, wrap_content
 
 
 def test_wrap_content_deterministic_line_lengths() -> None:
@@ -35,8 +35,15 @@ def test_wrap_content_preserves_empty_lines() -> None:
 def test_wrap_content_unbreakable_long_word() -> None:
     long_url = "https://example.com/very/deep/nested/directory/structure/and/unbreakable/token/identifier/file.json"
     wrapped = wrap_content(long_url, 30)
-    assert len(wrapped) == 1
-    assert wrapped[0] == long_url
+    assert len(wrapped) > 1
+    assert "".join(wrapped) == long_url
+    assert all(len(line) <= 30 for line in wrapped)
+
+
+def test_long_horizontal_rule_never_crosses_right_rail() -> None:
+    box = render_response_box("─" * 200, terminal_width=48)
+    assert all(len(line) == 48 for line in box.splitlines())
+    assert all(not line.startswith("│") or line.endswith("│") for line in box.splitlines())
 
 
 def test_render_response_box_fullscreen_and_padding() -> None:
@@ -45,14 +52,14 @@ def test_render_response_box_fullscreen_and_padding() -> None:
     lines = box.split("\n")
     # Top border, 1 top padding row, content, bottom padding row, bottom border = 5 lines per TUI_FACIT.md §2
     assert len(lines) == 5
-    assert lines[0].startswith("┌─ hund ")
-    assert lines[0].endswith("┐")
+    assert lines[0].startswith("╭─ hund ")
+    assert lines[0].endswith("╮")
     assert lines[1].startswith("│") and lines[1].endswith("│") and not lines[1].strip("│ ")
-    assert lines[2].startswith("│  hund är vaken.")
-    assert lines[2].endswith("  │")
+    assert lines[2].startswith("│   hund är vaken.")
+    assert lines[2].endswith("   │")
     assert lines[3].startswith("│") and lines[3].endswith("│") and not lines[3].strip("│ ")
-    assert lines[4].startswith("└")
-    assert lines[4].endswith("┘")
+    assert lines[4].startswith("╰")
+    assert lines[4].endswith("╯")
 
     # Assert all lines span the full terminal width (80)
     for line in lines:
@@ -72,23 +79,31 @@ def test_render_response_box_long_full_width() -> None:
     for line in lines:
         assert len(line) == term_width
         if line.startswith("│") and line.strip("│ "):
-            assert line.startswith("│  ")
-            assert line.endswith("  │")
+            assert line.startswith("│   ")
+            assert line.endswith("   │")
+
+
+def test_response_padding_is_responsive_and_stable() -> None:
+    assert response_padding(100) == 3
+    assert response_padding(72) == 3
+    assert response_padding(71) == 2
+    assert response_padding(48) == 2
+    assert response_padding(47) == 1
 
 
 def test_box_bottom_meta_render() -> None:
     bottom_plain = box_bottom(80, meta=None)
-    assert bottom_plain.startswith("└")
-    assert bottom_plain.endswith("┘")
+    assert bottom_plain.startswith("╰")
+    assert bottom_plain.endswith("╯")
     assert len(bottom_plain) == 80
 
     bottom_meta = box_bottom(80, meta="2.3s")
-    assert "2.3s ───┘" in bottom_meta
+    assert "2.3s ────╯" in bottom_meta
     assert len(bottom_meta) == 80
 
     # Short box
     bottom_short = box_bottom(12, meta="2.3s")
-    assert "2.3s ───┘" in bottom_short
+    assert "2.3s ────╯" in bottom_short
 
 
 def test_streaming_sink_renders_rails_and_meta() -> None:
@@ -100,11 +115,11 @@ def test_streaming_sink_renders_rails_and_meta() -> None:
     sink.end_assistant()
 
     captured = out.getvalue()
-    assert "┌─ hund " in captured
-    assert "│  hund svarar med sidolinjer." in captured
+    assert "╭─ hund " in captured
+    assert "│   hund svarar med sidolinjer." in captured
     assert "│" in captured
-    assert "└" in captured
-    assert "┘" in captured
+    assert "╰" in captured
+    assert "╯" in captured
 
 
 def test_output_lexer_box_and_thinking_styles() -> None:
@@ -113,15 +128,15 @@ def test_output_lexer_box_and_thinking_styles() -> None:
 
     doc = Document(
         "  hund planned.\n"
-        "┌─ hund ──────────────────────────────────────────────┐\n"
+        "╭─ hund ──────────────────────────────────────────────╮\n"
         "│                                                      │\n"
         "│                                                      │\n"
-        "│  hund skapar skills som deklarativa JSON-filer       │\n"
-        "│  Hur hund går tillväga:                              │\n"
-        "│  - 1. Trigger: användaren ber hund skapa             │\n"
-        "│  detta är **fetstil** och `inline_kod` här.          │\n"
+        "│   hund skapar skills som deklarativa JSON-filer      │\n"
+        "│   Hur hund går tillväga:                             │\n"
+        "│   - 1. Trigger: användaren ber hund skapa            │\n"
+        "│   detta är **fetstil** och `inline_kod` här.         │\n"
         "│                                                      │\n"
-        "└──────────────────────────────────────────────────────┘\n"
+        "╰──────────────────────────────────────────────────────╯\n"
     )
     lexer_fn = _OUTPUT_LEXER.lex_document(doc)
 
@@ -163,3 +178,14 @@ def test_output_lexer_box_and_thinking_styles() -> None:
     assert not any("**" in text for style, text in t7)
     assert any(style == "class:code" and text == "inline_kod" for style, text in t7)
     assert not any("`" in text for style, text in t7)
+
+
+def test_rounded_response_bottom_is_never_user_or_success_green() -> None:
+    from prompt_toolkit.document import Document
+    from hund.ui.fullscreen import _OUTPUT_LEXER
+
+    doc = Document("╰────────────────────────────────── 0.4s ────╯")
+    tokens = _OUTPUT_LEXER.lex_document(doc)(0)
+    assert any("class:accent" in style and text == "0.4s" for style, text in tokens)
+    assert all("class:user" not in style for style, _text in tokens)
+    assert all("class:success" not in style for style, _text in tokens)

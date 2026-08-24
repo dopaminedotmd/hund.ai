@@ -116,6 +116,43 @@ CREATE TABLE IF NOT EXISTS forge_evaluations (
     response_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS lifecycle_states (
+    scope TEXT PRIMARY KEY,
+    phase TEXT NOT NULL,
+    onboarding_complete INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_task_events (
+    scope TEXT NOT NULL,
+    task_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    completed_at TEXT NOT NULL,
+    PRIMARY KEY (scope, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_sessions (
+    scope TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    PRIMARY KEY (scope, session_id)
+);
+
+CREATE TABLE IF NOT EXISTS lifecycle_audit (
+    audit_id TEXT PRIMARY KEY,
+    scope TEXT NOT NULL,
+    action TEXT NOT NULL,
+    old_phase TEXT,
+    new_phase TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    timestamp TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lifecycle_tasks_scope
+ON lifecycle_task_events(scope);
+CREATE INDEX IF NOT EXISTS idx_lifecycle_sessions_scope
+ON lifecycle_sessions(scope);
 """
 
 REQUESTS_SCHEMA = """

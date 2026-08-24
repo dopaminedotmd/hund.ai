@@ -206,9 +206,14 @@ def evaluate_heuristic_candidates(
     proposals: list[CandidateProposal] = []
 
     for evt in filtered_events:
-        payload = getattr(evt, "payload", str(evt))
-        ev_id = getattr(evt, "event_id", "evt_local")
-        src_type = getattr(evt, "source_type", SOURCE_USER)
+        if isinstance(evt, dict):
+            payload = evt.get("payload", "")
+            ev_id = evt.get("event_id", "evt_local")
+            src_type = evt.get("source_type", SOURCE_USER)
+        else:
+            payload = getattr(evt, "payload", str(evt))
+            ev_id = getattr(evt, "event_id", "evt_local")
+            src_type = getattr(evt, "source_type", SOURCE_USER)
 
         # Redact secrets
         clean_text = redact_text_v2(payload).text.strip()

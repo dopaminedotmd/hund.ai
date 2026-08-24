@@ -154,6 +154,15 @@ def test_sink_thinking_then_clear_erases_line() -> None:
     assert "\r" in console.file.getvalue()
 
 
+def test_web_open_uses_research_thinking_phrase() -> None:
+    from hund.ui.output import tool_thinking_phrase
+
+    assert tool_thinking_phrase("web_open", {"url": "https://example.com"}) == (
+        "hund is researching",
+        "hund researched external sources.",
+    )
+
+
 def test_sink_error_renders_markup() -> None:
     console = Console(force_terminal=False, width=120)
     sink = StreamingSink(console)

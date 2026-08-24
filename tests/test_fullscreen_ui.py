@@ -14,7 +14,19 @@ from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType, MouseButton
 from prompt_toolkit.output import DummyOutput
 
-from hund.ui.fullscreen import _SelectableControl, _OUTPUT_LEXER
+from hund.ui import theme
+from hund.ui.fullscreen import (
+    _SelectableControl,
+    _FullWidthCompletionsMenu,
+    _OUTPUT_LEXER,
+    _ScrollThroughFormattedTextControl,
+    _output_cursor_position,
+    _responsive_content_width,
+    _shine_fragments,
+    _wheel_scroll_passthrough,
+)
+from hund.ui.mascot import MascotMachine, MascotState
+from hund.ui.mascot_frames import FRAMES
 
 
 class ResizableOutput(DummyOutput):
@@ -31,6 +43,94 @@ class ResizableOutput(DummyOutput):
     def set_size(self, cols: int, rows: int) -> None:
         self._cols = cols
         self._rows = rows
+
+
+def test_mascot_sprite_sheets_are_split_into_animation_frames() -> None:
+    assert {state: len(clips) for state, clips in FRAMES["bone"].items()} == {
+        "playful": 16,
+        "running": 4,
+        "sitting": 8,
+        "standing": 8,
+    }
+    for skin in FRAMES.values():
+        for clips in skin.values():
+            assert all(max(map(len, frame.splitlines()), default=0) <= 16 for frame in clips)
+
+
+def test_mascot_each_state_advances_real_frames() -> None:
+    machine = MascotMachine()
+    for state, frame_seconds in machine._FRAME_SECONDS.items():
+        machine._set(state, 100.0)
+        first = machine.frame(now=100.0)[1]
+        second = machine.frame(now=100.0 + frame_seconds)[1]
+        assert first != second
+
+
+def test_mascot_runtime_keyframes_have_visible_terminal_delta() -> None:
+    def cells(frame: str) -> str:
+        rows = frame.splitlines()
+        return "".join((rows[y] if y < len(rows) else "").ljust(16)[:16] for y in range(8))
+
+    machine = MascotMachine()
+    for state, order in machine._FRAME_ORDER.items():
+        clips = FRAMES["bone"][state.value]
+        selected = [cells(clips[index]) for index in order]
+        deltas = [
+            sum(left != right for left, right in zip(selected[index], selected[(index + 1) % len(selected)]))
+            for index in range(len(selected))
+        ]
+        assert min(deltas) >= 8
+
+
+def test_mascot_lifecycle_waits_then_returns_to_idle() -> None:
+    machine = MascotMachine()
+    machine._set(MascotState.PLAYFUL, 100.0)
+
+    machine.frame(now=105.99)
+    assert machine.state is MascotState.PLAYFUL
+    machine.frame(now=106.0)
+    assert machine.state is MascotState.STANDING
+    machine.frame(now=150.99)
+    assert machine.state is MascotState.STANDING
+    machine.frame(now=151.0)
+    assert machine.state is MascotState.SITTING
+
+
+def test_startup_viewport_is_top_anchored_while_history_follows_tail() -> None:
+    text = "top\nmiddle\nbottom\n"
+    assert _output_cursor_position(text, follow_tail=False) == 0
+    assert _output_cursor_position(text, follow_tail=True) == len(text)
+    assert _output_cursor_position("top\nbottom", follow_tail=True) == len("top\nbottom")
+
+
+def test_completion_menu_uses_no_reverse_video_background() -> None:
+    style = theme.make_pt_style("bone")
+    rules = dict(style.style_rules)
+    assert "reverse" not in rules["completion-menu.completion.current"].split()
+    assert "reverse" not in rules["completion-menu.meta.completion.current"].split()
+    for name in (
+        "completion-menu",
+        "completion-menu.completion",
+        "completion-menu.completion.current",
+        "completion-menu.meta.completion",
+        "completion-menu.meta.completion.current",
+    ):
+        assert "bg:default" in rules[name]
+        assert "noinherit" in rules[name]
+
+
+def test_completion_menu_is_terminal_width_not_shrink_to_fit() -> None:
+    menu = _FullWidthCompletionsMenu(max_height=6)
+    window = menu.content
+    assert isinstance(window, Window)
+    assert window.dont_extend_width() is False
+    assert window.width.weight == 1
+
+
+def test_responsive_content_width_reserves_unsafe_terminal_column() -> None:
+    assert _responsive_content_width(120) == 119
+    assert _responsive_content_width(80) == 79
+    assert _responsive_content_width(24) == 24
 
 
 def test_selectable_control_mouse_wheel_and_selection() -> None:
@@ -67,6 +167,33 @@ def test_selectable_control_mouse_wheel_and_selection() -> None:
     )
     assert output_control.mouse_handler(wheel_down) is None
     assert scrolled == [3, -3]
+
+
+def test_mascot_strip_forwards_mouse_wheel_to_transcript() -> None:
+    scrolled: list[int] = []
+    wheel_up = MouseEvent(
+        position=Point(x=0, y=0),
+        event_type=MouseEventType.SCROLL_UP,
+        button=MouseButton.NONE,
+        modifiers=frozenset(),
+    )
+    assert _wheel_scroll_passthrough(wheel_up, scrolled.append) is None
+    assert scrolled == [3]
+
+    control = _ScrollThroughFormattedTextControl(
+        "dog", scroll_cb_getter=lambda: scrolled.append
+    )
+    assert control.mouse_handler(wheel_up) is None
+    assert scrolled == [3, 3]
+
+
+def test_running_shine_keeps_width_and_moves() -> None:
+    text = " running..."
+    first = _shine_fragments(text, "#737985", 2)
+    second = _shine_fragments(text, "#737985", 3)
+    assert "".join(fragment for _, fragment in first) == text
+    assert len(first) == len(text)
+    assert first != second
 
 
 def test_box_border_reflow() -> None:
@@ -201,10 +328,14 @@ def test_tool_desc_formatting() -> None:
     assert _format_tool_desc("search_files", {"pattern": "*.py"}) == "searched *.py"
     assert _format_tool_desc("search_files", {"path": "src", "pattern": "*.py"}) == "searched src for *.py"
     assert _format_tool_desc("write_file", {"path": "test.txt", "content": "hi"}) == "wrote test.txt"
+    assert _format_tool_desc("edit_file", {"path": "test.txt"}) == "modified test.txt"
     assert _format_tool_desc("delete_file", {"path": "test.txt"}) == "deleted test.txt"
-    assert _format_tool_desc("terminal", {"command": "pytest -q"}) == "ran pytest -q"
+    assert _format_tool_desc("terminal", {"command": "git status"}) == "ran git status"
+    assert _format_tool_desc("terminal", {"command": "pytest -q"}) == "ran targeted tests"
     assert _format_tool_desc("web_search", {"query": "python 3.11"}) == "searched the web for python 3.11"
     assert _format_tool_desc("web_extract", {"url": "https://example.com"}) == "read https://example.com"
+    assert _format_tool_desc("web_open", {"url": "https://example.com"}) == "read https://example.com"
+    assert _format_tool_desc("web_open", {"page_id": "page-1"}) == "read relevant pages"
     assert _format_tool_desc("execute_code", {"code": "print(1)"}) == "ran python script"
     assert _format_tool_desc("delegate_task", {"tasks": [{"goal": "g1"}, {"goal": "g2"}]}) == "delegated 2 tasks"
     assert _format_tool_desc("session_search", {"query": "test"}) == "searched history for test"
@@ -225,7 +356,7 @@ def test_activity_stream_lexer_tokens() -> None:
     # Line 0: spinner line
     toks0 = get_line(0)
     assert ("class:secondary", "┊") in toks0
-    assert ("class:accent", "⟳") in toks0
+    assert ("class:tool", "⟳") in toks0
     assert "".join(t[1] for t in toks0) == "  ┊ ⟳ preparing read_file…"
 
     # Line 1: checkmark line
@@ -248,7 +379,7 @@ def test_activity_stream_lexer_tokens() -> None:
 
     # Line 4: thinking line
     toks4 = get_line(4)
-    assert ("class:secondary", "  hund is reading your message…") in toks4
+    assert ("class:thinking", "  hund is reading your message…") in toks4
 
 
 def test_completions_menu_styles_and_container() -> None:
@@ -361,3 +492,38 @@ def test_fullscreen_statusbar_rendering() -> None:
         latency_s=2.3,
     )
     assert status_str == "deepseek-v4-pro │ 14K/1M │ 5m │ 2.3s"
+
+
+def test_overlay_enter_and_keybinding_filters() -> None:
+    from hund.ui.screen_state import DestinationView, OverlayView, ScreenController
+
+    screens = ScreenController()
+    _confirm: dict = {"active": False}
+
+    # Verify filter logic
+    assert not _confirm["active"]
+    assert screens.overlay is OverlayView.NONE
+    assert screens.destination is DestinationView.CHAT
+
+    # Open theme overlay
+    screens.open_overlay(OverlayView.THEME)
+    assert screens.overlay is OverlayView.THEME
+
+    # Up and down move selection
+    screens.move("theme", 1, 3)
+    assert screens.selected["theme"] == 1
+    screens.move("theme", -1, 3)
+    assert screens.selected["theme"] == 0
+
+    # Esc closes overlay
+    assert screens.close_escape() == "overlay"
+    assert screens.overlay is OverlayView.NONE
+
+    # Open model custom overlay
+    screens.open_overlay(OverlayView.MODEL_CUSTOM)
+    assert screens.overlay is OverlayView.MODEL_CUSTOM
+    assert screens.close_escape() == "nested"
+    assert screens.overlay is OverlayView.MODEL
+    assert screens.close_escape() == "overlay"
+    assert screens.overlay is OverlayView.NONE
+

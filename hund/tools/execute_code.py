@@ -24,7 +24,10 @@ def call_tool(tool, args=None):
     return resp.get("result", "")
 '''
 
-BLOCKED_TOOLS = {"execute_code", "delegate_task", "memory", "self_update", "apply_update", "modify_tcb"}
+BLOCKED_TOOLS = {
+    "execute_code", "delegate_task", "memory", "self_update", "apply_update",
+    "modify_tcb", "web_open", "web_extract", "web_search",
+}
 
 def run_code(args: dict) -> str:
     """Kor Python-script i subprocess med RPC-access till Hunds tools."""

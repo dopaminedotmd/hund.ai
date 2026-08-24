@@ -149,3 +149,59 @@ def test_thinking_called_once_across_multiple_tool_rounds() -> None:
     # sink.thinking() must be called exactly once
     assert sink.thinking.call_count == 1
 
+
+def test_last_round_is_reserved_for_final_synthesis() -> None:
+    console = MagicMock()
+    sink = MagicMock()
+    cfg = HundConfig.load()
+    engine = MagicMock()
+    engine.workspace_root = "."
+    client = MagicMock()
+    seen_tools = []
+
+    def fake_stream(messages, tools=None):
+        seen_tools.append(tools)
+        if tools:
+            client.last_result = CompletionResult(
+                text="",
+                tool_calls=[{
+                    "id": f"call_{len(seen_tools)}",
+                    "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path": "foo.py"}'},
+                }],
+                finish_reason="tool_calls",
+                prompt_tokens=10,
+                completion_tokens=10,
+                total_tokens=20,
+                latency_ms=1,
+            )
+            return
+        client.last_result = CompletionResult(
+            text="hund har tillräcklig evidens.",
+            tool_calls=None,
+            finish_reason="stop",
+            prompt_tokens=10,
+            completion_tokens=10,
+            total_tokens=20,
+            latency_ms=1,
+        )
+        yield "hund har tillräcklig evidens."
+
+    client.stream = fake_stream
+    messages = [Message(role="user", content="inspect")]
+    with (
+        patch("hund.agent.loop.dispatch_tool_call", return_value="ok"),
+        patch("hund.agent.loop._session_save"),
+        patch("hund.agent.loop._feedback_hook"),
+        patch("hund.agent.loop._runtime_learning_hook"),
+    ):
+        _agent_turn(
+            console, client, messages, schemas=[{"name": "read_file"}],
+            engine=engine, cfg=cfg, session_id="test-session", sink=sink,
+        )
+
+    assert len(seen_tools) == 8
+    assert all(tools for tools in seen_tools[:-1])
+    assert seen_tools[-1] == []
+    assert messages[-1].role == "assistant"
+    assert messages[-1].content == "hund har tillräcklig evidens."

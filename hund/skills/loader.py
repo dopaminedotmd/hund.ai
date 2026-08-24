@@ -47,21 +47,13 @@ def load_builtins() -> list[Skill]:
 
 
 def load_domain_skills(home: Path | None = None) -> list[Skill]:
-    """Ladda användarens skapade/installerade domän-skills från HundHome/brain/skills/ och workspace."""
+    """Load user-created domain skills only from canonical HundHome storage."""
     by_name: dict[str, Skill] = {}
 
     # 1. Globala skills i HundHome/brain/skills/
     udir = skills_dir(home)
     if udir.exists():
         for f in sorted(udir.glob("*.json")):
-            sk = _read_skill_file(f)
-            if sk:
-                by_name[sk.name] = sk
-
-    # 2. Lokala skills i aktuellt workspace/brain/skills/ (om annat än home)
-    ws_dir = Path.cwd() / "brain" / "skills"
-    if ws_dir.exists() and ws_dir.resolve() != udir.resolve():
-        for f in sorted(ws_dir.glob("*.json")):
             sk = _read_skill_file(f)
             if sk:
                 by_name[sk.name] = sk

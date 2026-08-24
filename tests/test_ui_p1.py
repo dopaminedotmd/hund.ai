@@ -56,6 +56,28 @@ def test_help_lists_commands() -> None:
     assert "/stats" in out
     assert "/skills" in out
     assert "/exit" in out
+    assert "/trace last" in out
+
+
+def test_trace_last_shows_only_latest_run(monkeypatch) -> None:
+    older = types.SimpleNamespace(
+        run_id="old-run", event_type="tool_call_completed", tool_name="read_file", payload_redacted={}
+    )
+    latest = types.SimpleNamespace(
+        run_id="latest-run-123456",
+        event_type="tool_call_completed",
+        tool_name="web_search",
+        payload_redacted={"query": "safe"},
+    )
+    monkeypatch.setattr(
+        "hund.trace.events.list_events_by_session", lambda _session_id: [older, latest]
+    )
+    ctx = _ctx(session_id="session-1")
+    dispatch_command("/trace last", ctx)
+    out = ctx.console.file.getvalue()
+    assert "latest-run-1" in out
+    assert "web_search" in out
+    assert "old-run" not in out
 
 
 def test_help_has_no_emojis() -> None:
@@ -187,4 +209,3 @@ def test_undo_command() -> None:
     out = ctx.console.file.getvalue()
     assert "Undo" in out
     assert "backups" in out or "git restore" in out
-

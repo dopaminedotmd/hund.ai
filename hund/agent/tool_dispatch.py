@@ -16,8 +16,9 @@ from datetime import datetime, timezone
 from rich.console import Console
 
 from ..tools import registry
+from ..tools.types import ToolCallContext, ToolStatus
 from .safety import PermissionEngine, RiskLevel, Decision
-from .types import ConfirmRequest, ConfirmVerdict
+from .types import ConfirmRequest, ConfirmResponse, ConfirmVerdict, normalize_confirm_response
 from ..trace.events import create_event, write_event
 
 class SessionAllowlist:
@@ -90,21 +91,8 @@ _TURN_TOOL_XP: dict[tuple[str, str], int] = {}
 
 
 def _log_tool(tool: str, risk: str, outcome: str, success: int, run_id: str | None = None) -> None:
-    """Log tool usage and award XP (max +5 XP per turn per domain)."""
-    if success == 1:
-        domain = TOOL_DOMAIN_MAP.get(tool)
-        if domain:
-            rid = run_id or "_default"
-            count = _TURN_TOOL_XP.get((domain, rid), 0)
-            if count < 5:
-                _TURN_TOOL_XP[(domain, rid)] = count + 1
-                try:
-                    from hund.domains.xp import add_xp
-                    add_xp(domain, 1)
-                except Exception:
-                    pass
-                if len(_TURN_TOOL_XP) > 2000:
-                    _TURN_TOOL_XP.clear()
+    """Compatibility telemetry hook. Tool use never awards domain XP."""
+    return None
 
 
 def dispatch_tool_call(
@@ -117,6 +105,8 @@ def dispatch_tool_call(
     hooks=None,
     run_id: str | None = None,
     session_id: str | None = None,
+    turn_id: str | None = None,
+    tool_context: ToolCallContext | None = None,
 ) -> str:
     """Kör ett tool-anrop genom säkerhetscirkeln. Returnerar tool-resultatsträng.
 
@@ -156,7 +146,11 @@ def dispatch_tool_call(
     }, risk_level=decision.risk.value)
 
     # Session-allowlist: hoppa over confirm for tidigare tillatna tools
-    if decision.risk == RiskLevel.CONFIRM and _SESSION_ALLOWLIST.is_allowed(session_id, name):
+    if (
+        name == "terminal"
+        and decision.risk == RiskLevel.CONFIRM
+        and _SESSION_ALLOWLIST.is_allowed(session_id, name)
+    ):
         decision = Decision(RiskLevel.SAFE, allowed=True, reason="session-allowlisted")
 
     if decision.risk is RiskLevel.BLOCKED:
@@ -181,7 +175,7 @@ def dispatch_tool_call(
         request = ConfirmRequest(tool_name=name, args=args, risk=decision.risk.value)
 
         if hooks is not None:
-            verdict = hooks.confirm(request)
+            response = normalize_confirm_response(hooks.confirm(request))
         else:
             preview = json.dumps(args, ensure_ascii=False)
             if len(preview) > 200:
@@ -192,9 +186,11 @@ def dispatch_tool_call(
             )
             ans = console.input(prompt + " ").strip().lower()
             if ans in {"y", "yes", "j", "ja"}:
-                verdict = ConfirmVerdict.APPROVE_ONCE
+                response = ConfirmResponse(ConfirmVerdict.APPROVE_ONCE)
             else:
-                verdict = ConfirmVerdict.DENY
+                response = ConfirmResponse(ConfirmVerdict.DENY)
+
+        verdict = response.verdict
 
         if verdict is ConfirmVerdict.DENY:
             _emit("tool_call_declined", {"reason": "user declined"}, risk_level=decision.risk.value, approval_id=approved_id)
@@ -205,33 +201,71 @@ def dispatch_tool_call(
             return "[declined by user]"
 
         if verdict is ConfirmVerdict.EDIT:
-            # TODO(edit): full edit-and-rerun flow is a separate task
-            _emit("tool_call_declined", {"reason": "edit requested"}, risk_level=decision.risk.value, approval_id=approved_id)
-            if hooks is not None:
-                hooks.declined(name, "edit requested (not yet implemented)")
-            else:
-                console.print("[dim]edit requested — declining for now[/dim]")
-            return "[declined: edit requested]"
+            edited_args = response.edited_args
+            if edited_args is None and hooks is not None and hasattr(hooks, "edit"):
+                try:
+                    edited_args = hooks.edit(request)
+                except Exception:
+                    edited_args = None
+            if not isinstance(edited_args, dict):
+                _emit("tool_call_declined", {"reason": "edit cancelled"}, risk_level=decision.risk.value, approval_id=approved_id)
+                if hooks is not None:
+                    hooks.declined(name, "edit cancelled")
+                return "[declined: edit cancelled]"
+            _emit(
+                "tool_call_edited",
+                {"original_args": args, "edited_args": edited_args},
+                risk_level=decision.risk.value,
+                approval_id=approved_id,
+            )
+            edited_call = {
+                "function": {
+                    "name": name,
+                    "arguments": json.dumps(dict(edited_args), ensure_ascii=False),
+                }
+            }
+            return dispatch_tool_call(
+                edited_call, engine, console,
+                auto_approve_safe=auto_approve_safe,
+                noninteractive=noninteractive, hooks=hooks,
+                run_id=run_id, session_id=session_id, turn_id=turn_id,
+                tool_context=tool_context,
+            )
 
         _emit("tool_call_approved", {}, risk_level=decision.risk.value, approval_id=approved_id)
 
-        if verdict is ConfirmVerdict.ALLOW_SESSION and decision.risk == RiskLevel.CONFIRM:
+        if (
+            verdict is ConfirmVerdict.ALLOW_SESSION
+            and name == "terminal"
+            and decision.risk == RiskLevel.CONFIRM
+        ):
             _SESSION_ALLOWLIST.allow(session_id, name)
 
     _emit("tool_call_started", args, risk_level=decision.risk.value)
     if hooks is not None:
         hooks.tool_start(name, args)
-    result = registry.call(name, args)
+    if tool_context is None:
+        tool_context = ToolCallContext(
+            session_id=session_id or "_default",
+            turn_id=turn_id,
+            workspace=engine.workspace_root,
+        )
+    typed_result = registry.call_typed(name, args, context=tool_context)
+    result = typed_result.to_llm_text()
     # Trunkera stora tool-resultat innan de hamnar i context window.
     MAX_TOOL_OUTPUT = 50_000  # ~12K tokens
     if len(result) > MAX_TOOL_OUTPUT:
         result = result[:MAX_TOOL_OUTPUT] + "\n[TRUNCATED — output oversteg 50KB]"
-    success = 0 if result.startswith("[error]") else 1
+    success = 1 if typed_result.status is ToolStatus.SUCCESS else 0
     _log_tool(name, decision.risk.value, result, success, run_id=run_id)
     if success:
         _emit("tool_call_completed", {"stdout_redacted_summary": result[:200]}, risk_level=decision.risk.value)
     else:
-        _emit("tool_call_failed", {"error": result}, risk_level=decision.risk.value)
+        _emit(
+            "tool_call_failed",
+            {"error": typed_result.audit_error or typed_result.public_error or typed_result.status.value},
+            risk_level=decision.risk.value,
+        )
     if run_id and session_id:
         try:
             from .injection_trace import scan_and_emit
@@ -266,5 +300,4 @@ def dispatch_tool_call(
     else:
         console.print(f"[dim]tool {name} -> {shown}[/dim]")
     return result
-
 

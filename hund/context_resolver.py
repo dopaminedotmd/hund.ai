@@ -12,6 +12,8 @@ from .learning.deps import check_dep_compatibility, extract_workspace_deps
 from .memory import list_active_memories, select_memory_bullets
 from .memory.models import MemoryItem, SCOPE_PROJECT_PREFIX, SCOPE_USER_GLOBAL
 from .paths import workspace_id as get_workspace_id
+from .learning.continuity import ContinuityPlan, ContinuityResolver
+from .learning.source_resolver import SourceDecision, SourceResolver
 
 
 @dataclass
@@ -24,6 +26,8 @@ class ResolvedContext:
     workspace_deps: dict[str, str] = field(default_factory=dict)
     prompt_bullets: list[str] = field(default_factory=list)
     char_count: int = 0
+    continuity_plan: ContinuityPlan | None = None
+    source_decision: SourceDecision | None = None
 
 
 def resolve_turn_context(
@@ -97,8 +101,23 @@ def resolve_turn_context(
         workspace_id=ws_id,
         active_domains=active_domains,
         max_chars=max_chars,
+        user_query=user_query,
+        workspace_facts=[
+            *ws_deps.keys(),
+            *(name for name in ("pytest.ini", "pyproject.toml", "setup.cfg")
+              if (ws_path / name).exists()),
+        ],
     )
     char_count = sum(len(b) + 4 for b in bullets)
+    workspace_state = [
+        str(path.relative_to(ws_path))
+        for path in ws_path.iterdir()
+        if path.is_file()
+    ] if ws_path.exists() else []
+    continuity_plan = ContinuityResolver().plan(
+        user_query, {"project": ws_path.name}
+    )
+    source_decision = SourceResolver().plan(user_query, workspace_state)
 
     return ResolvedContext(
         workspace_id=ws_id,
@@ -109,4 +128,6 @@ def resolve_turn_context(
         workspace_deps=ws_deps,
         prompt_bullets=bullets,
         char_count=char_count,
+        continuity_plan=continuity_plan,
+        source_decision=source_decision,
     )

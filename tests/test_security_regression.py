@@ -289,6 +289,13 @@ def test_web_search_classified_safe():
     assert dec.allowed is True
 
 
+def test_web_open_classified_safe():
+    engine = PermissionEngine()
+    dec = engine.classify("web_open", {"url": "https://example.com"})
+    assert dec.allowed is True
+    assert dec.risk == RiskLevel.SAFE
+
+
 def test_web_extract_classified_safe():
     """web_extract must be SAFE so it works in RPC (execute_code subprocess)."""
     engine = PermissionEngine()

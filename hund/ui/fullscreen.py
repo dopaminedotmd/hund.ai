@@ -9,6 +9,7 @@ exits when there is none). The agent turn runs in a background thread.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 from pathlib import Path
 import re
@@ -26,16 +27,17 @@ from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import Condition, has_focus
+from prompt_toolkit.filters import Condition, has_completions, has_focus, is_done
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.layout import HSplit, Layout, VSplit, Window
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.containers import ConditionalContainer, Float, FloatContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
-from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.layout.menus import CompletionsMenuControl
 from prompt_toolkit.lexers import Lexer
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
+from prompt_toolkit.output.color_depth import ColorDepth
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
@@ -49,25 +51,126 @@ from ..agent.loop import (
 )
 from ..providers.base import Message
 from . import theme
+from .activity import ActivityStatus, ActivityTimeline, activity_group
 from .commands import CommandContext, dispatch_command, is_slash
 from .input import (
     SLASH_COMMANDS,
     SLASH_COMMAND_METAS,
     PromptState,
     SlashCommandCompleter,
+    MAX_VISIBLE_COMPLETIONS,
     format_duration,
     format_status_bar,
     format_tokens_ratio,
 )
-from .output import parse_confirm_input, strip_markdown, strip_rich, StreamingMarkdownFilter, _confirm_title, _confirm_detail
+from .output import parse_confirm_input, strip_markdown, strip_rich, StreamingMarkdownFilter, _confirm_title, _confirm_detail, tool_thinking_phrase
 from .render import box_bottom as _r_box_bottom, box_top as _r_box_top, refresh_stats, render_response_box
 from ..agent.types import ConfirmRequest, ConfirmVerdict
+from .confirmation import confirmation_options, prompt_edits
+from .mascot import MascotMachine
+from .screen_state import DestinationView, OverlayView, ScreenController
+from .screen_render import (
+    fullscreen_frame,
+    render_model_custom_modal,
+    render_model_key_modal,
+    render_model_modal,
+    render_skills,
+    render_stats,
+    render_theme_modal,
+    render_tools,
+    render_usage,
+)
+from .snapshots import collect_skills, collect_stats, collect_tools, collect_usage
 
 from .phrases import select_thinking_phrase
 
 _S = theme.SEMANTIC
 
-_STYLE = theme.make_pt_style("bone")
+_STYLE = theme.make_pt_style("marshmallow")
+
+
+def _output_cursor_position(text: str, *, follow_tail: bool) -> int:
+    """Keep startup at the top while streamed history follows its tail."""
+    if not follow_tail:
+        return 0
+    return len(text)
+
+
+def _responsive_content_width(columns: int) -> int:
+    """Reserve the terminal's unsafe final column for every framed component."""
+    return max(int(columns) - 1, 24)
+
+
+class _StableCompletionsMenuControl(CompletionsMenuControl):
+    """Completion rows with a stable slash-command column and full-width meta."""
+
+    _SLASH_COLUMN_WIDTH = max(len(command) for command in SLASH_COMMANDS) + 3
+
+    def _get_menu_width(self, max_width, complete_state):
+        dynamic = super()._get_menu_width(max_width, complete_state)
+        return min(max_width, max(self._SLASH_COLUMN_WIDTH, dynamic))
+
+    def _get_menu_meta_width(self, max_width, complete_state):
+        return max_width if self._show_meta(complete_state) else 0
+
+
+class _FullWidthCompletionsMenu(ConditionalContainer):
+    """A terminal-wide completion list without Prompt Toolkit's shrink-to-fit."""
+
+    def __init__(self, max_height: int) -> None:
+        super().__init__(
+            content=Window(
+                content=_StableCompletionsMenuControl(),
+                width=Dimension(weight=1),
+                height=Dimension(min=1, max=max_height),
+                dont_extend_width=False,
+                style="class:completion-menu",
+                z_index=10**8,
+            ),
+            filter=has_completions & ~is_done,
+        )
+
+
+def _wheel_scroll_passthrough(mouse_event: MouseEvent, scroll_cb) -> Any:
+    """Let the mascot strip scroll the transcript underneath it."""
+    if mouse_event.event_type in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
+        if scroll_cb is not None:
+            scroll_cb(3 if mouse_event.event_type == MouseEventType.SCROLL_UP else -3)
+        return None
+    return NotImplemented
+
+
+def _shine_fragments(text: str, base_hex: str, phase: int) -> list[tuple[str, str]]:
+    """Render a restrained left-to-right highlight without changing text width."""
+    try:
+        raw = base_hex.lstrip("#")
+        base = tuple(int(raw[i : i + 2], 16) for i in (0, 2, 4))
+        if len(raw) != 6:
+            raise ValueError
+    except (TypeError, ValueError):
+        return [(f"fg:{base_hex}", text)]
+
+    center = phase % (len(text) + 5) - 2
+    fragments: list[tuple[str, str]] = []
+    for index, char in enumerate(text):
+        distance = abs(index - center)
+        strength = 0.62 if distance == 0 else 0.30 if distance == 1 else 0.0
+        rgb = tuple(round(channel + (255 - channel) * strength) for channel in base)
+        color = "#" + "".join(f"{channel:02X}" for channel in rgb)
+        fragments.append((f"fg:{color}", char))
+    return fragments
+
+
+class _ScrollThroughFormattedTextControl(FormattedTextControl):
+    """Static/animated text control whose wheel events scroll another view."""
+
+    def __init__(self, *args, scroll_cb_getter=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scroll_cb_getter = scroll_cb_getter
+
+    def mouse_handler(self, mouse_event: MouseEvent) -> Any:
+        callback = self._scroll_cb_getter() if self._scroll_cb_getter is not None else None
+        return _wheel_scroll_passthrough(mouse_event, callback)
 
 
 def _trunc(val: Any, max_len: int = 45) -> str:
@@ -80,7 +183,7 @@ def _trunc(val: Any, max_len: int = 45) -> str:
 def _format_tool_desc(name: str, args: dict | None) -> str:
     args = args or {}
     if name == "read_file":
-        path = _trunc(args.get("path", ""))
+        path = _trunc(args.get("path", "file"))
         return f"read {path}"
     elif name == "search_files":
         pattern = _trunc(args.get("pattern", "*"))
@@ -88,21 +191,27 @@ def _format_tool_desc(name: str, args: dict | None) -> str:
         if path and path != ".":
             return f"searched {_trunc(path)} for {pattern}"
         return f"searched {pattern}"
-    elif name == "write_file":
-        path = _trunc(args.get("path", ""))
-        return f"wrote {path}"
+    elif name in {"write_file", "edit_file", "patch", "apply_patch", "replace_file_content"}:
+        path = _trunc(args.get("path") or args.get("file_path") or args.get("target_file") or "workspace")
+        return f"modified {path}" if name != "write_file" else f"wrote {path}"
     elif name == "delete_file":
-        path = _trunc(args.get("path", ""))
+        path = _trunc(args.get("path", "file"))
         return f"deleted {path}"
     elif name == "terminal":
         cmd = _trunc(args.get("command", ""))
-        return f"ran {cmd}"
+        try:
+            from ..agent.verification import VerificationKind, classify_verification
+            if classify_verification(str(args.get("command", ""))) is not VerificationKind.NONE:
+                return "ran targeted tests"
+        except Exception:
+            pass
+        return f"ran {cmd}" if cmd else "ran command"
     elif name == "web_search":
         q = _trunc(args.get("query", ""))
-        return f"searched the web for {q}"
-    elif name == "web_extract":
+        return f"searched the web for {q}" if q else "searched official sources"
+    elif name in {"web_extract", "web_open"}:
         url = _trunc(args.get("url", ""))
-        return f"read {url}"
+        return f"read {url}" if url else "read relevant pages"
     elif name == "execute_code":
         return "ran python script"
     elif name == "delegate_task":
@@ -272,31 +381,117 @@ def _lex_pygments_code(cur: str, indent_str: str, lang: str) -> list[tuple[str, 
 
 
 def _lex_stat_or_skill_part(part: str) -> list[tuple[str, str]]:
-    m_stat = re.search(r"^(.*?\b)(CLR|PRC|EFF|END|MAS)(\s+\w+\s+)([█░]+)(\s+\d+%)(\s*)$", part)
-    if m_stat:
-        return [
-            ("", m_stat.group(1)),
-            ("class:accent bold", m_stat.group(2)),
-            ("class:primary", m_stat.group(3)),
-            ("class:learning", m_stat.group(4)),
-            ("class:secondary", m_stat.group(5)),
-            ("", m_stat.group(6)),
-        ]
-    m_skill = re.search(r"^(.*?\s+)([\w\-]+)(\s+)([█░]+)(\s+\d+%)(\s*)$", part)
-    if m_skill:
-        return [
-            ("", m_skill.group(1)),
-            ("class:primary", m_skill.group(2)),
-            ("", m_skill.group(3)),
-            ("class:learning", m_skill.group(4)),
-            ("class:secondary", m_skill.group(5)),
-            ("", m_skill.group(6)),
-        ]
-    return [("class:primary", part)]
+    # Style semantic spans independently. A narrow resize may truncate the
+    # percentage or part of the bar; complete-row regexes would then recolor
+    # the entire line. Independent spans keep the same colours at every width.
+    spans: list[tuple[int, int, str]] = []
+    stat = re.search(r"\b(CLR|PRC|EFF|END|MAS)\b", part)
+    if stat:
+        spans.append((stat.start(), stat.end(), "class:accent bold"))
+    bar = re.search(r"[█░]+", part)
+    if bar:
+        spans.append((bar.start(), bar.end(), "class:learning"))
+    percent = re.search(r"\d+%", part)
+    if percent:
+        spans.append((percent.start(), percent.end(), "class:secondary"))
+    if not spans:
+        return [("class:primary", part)]
+
+    tokens: list[tuple[str, str]] = []
+    cursor = 0
+    for start, end, style in sorted(spans):
+        if start > cursor:
+            tokens.append(("class:primary", part[cursor:start]))
+        tokens.append((style, part[start:end]))
+        cursor = end
+    if cursor < len(part):
+        tokens.append(("class:primary", part[cursor:]))
+    return tokens
+
+
+_SCREEN_TOKEN_RE = re.compile(
+    r"(?P<section>──[^│]+?─{2,})|"
+    r"(?P<stat>\b(?:CLR|PRC|EFF|END|MAS)\b)|"
+    r"(?P<filled>█+|[▒▓]+)|(?P<empty>░+|□+)|"
+    r"(?P<percent>\b\d+%)|(?P<select>❯)|"
+    r"(?P<good>\[(?:Key OK|Ready)\])|"
+    r"(?P<bad>\[(?:Key missing|Unavailable)\])|"
+    r"(?P<label>\b(?:Domain|Lifecycle|XP|Safety level|Triggers|Tools|Provenance|"
+    r"Category|Context mode|Dispatch|Prompt|Output|Requests|Active):)|"
+    r"(?P<meta_label>\b(?:OS|HOST|CPU|RAM|GPU|MODEL)\b)"
+)
+
+
+def _semantic_screen_fragments(text: str) -> list[tuple[str, str]]:
+    """Style generated screen text without letting styles own its geometry."""
+    fragments: list[tuple[str, str]] = []
+    lines = text.splitlines(keepends=True)
+    for raw in lines:
+        newline = "\n" if raw.endswith("\n") else ""
+        line = raw[:-1] if newline else raw
+        if line and line[0] in "╔╚╭╰+-" and line[-1:] in "╗╝╮╯+":
+            fragments.append(("class:accent", line))
+        else:
+            left = line[:1] if line[:1] in "║│|" else ""
+            right = line[-1:] if line[-1:] in "║│|" else ""
+            content = line[len(left): len(line) - len(right) if right else None]
+            if left:
+                fragments.append(("class:accent", left))
+            if content.lstrip().startswith(("[Esc]", "↑", "Less  ")):
+                fragments.append(("class:secondary", content))
+            elif "[■ ■ ■ ■ ■]" in content and any(
+                name in content for name in theme.theme_names()
+            ):
+                start = content.index("[")
+                end = content.index("]", start) + 1
+                name = next(name for name in theme.theme_names() if name in content)
+                tokens = theme.get_skin(name)["tokens"]
+                fragments.append(("class:primary", content[:start] + "["))
+                colors = ("primary", "accent", "user", "learning", "tool")
+                for index, color in enumerate(colors):
+                    if index:
+                        fragments.append(("class:primary", " "))
+                    fragments.append((f"fg:{tokens[color]}", "■"))
+                fragments.append(("class:primary", "]" + content[end:]))
+            else:
+                cursor = 0
+                for match in _SCREEN_TOKEN_RE.finditer(content):
+                    if match.start() > cursor:
+                        fragments.append(("class:primary", content[cursor:match.start()]))
+                    group = match.lastgroup
+                    style = {
+                        "section": "class:header",
+                        "stat": "class:accent bold",
+                        "filled": "class:learning",
+                        "empty": "class:secondary",
+                        "percent": "class:secondary",
+                        "select": "class:user bold",
+                        "good": "class:success",
+                        "bad": "class:danger",
+                        "label": "class:meta_accent",
+                        "meta_label": "class:meta_accent",
+                    }[group]
+                    fragments.append((style, match.group(0)))
+                    cursor = match.end()
+                if cursor < len(content):
+                    fragments.append(("class:primary", content[cursor:]))
+            if right:
+                fragments.append(("class:accent", right))
+        if newline:
+            fragments.append(("", newline))
+    return fragments
 
 
 def _lex_banner_line(line: str) -> list[tuple[str, str]]:
     if line.startswith("╔") and line.endswith("╗"):
+        if "▄▄" in line:
+            idx_start = line.find("▄▄")
+            idx_end = line.rfind("▄▄") + 2
+            return [
+                ("class:accent", line[:idx_start]),
+                ("class:logo", line[idx_start:idx_end]),
+                ("class:accent", line[idx_end:]),
+            ]
         return [("class:accent", line)]
     if line.startswith("╚") and line.endswith("╝"):
         return [("class:accent", line)]
@@ -306,7 +501,17 @@ def _lex_banner_line(line: str) -> list[tuple[str, str]]:
     content = line[1:-1]
     tokens: list[tuple[str, str]] = [("class:accent", "║")]
 
-    if any(c in content for c in ("▄▄", "▀██", "████▄")):
+    if any(
+        c in content
+        for c in (
+            "▄▄",
+            "██                   ██",
+            "████▄",
+            "██ ██ ██ ██",
+            "▀██▀█",
+            "▀████",
+        )
+    ):
         tokens.append(("class:logo", content))
     elif "commands:" in content:
         tokens.append(("class:secondary", content))
@@ -317,14 +522,17 @@ def _lex_banner_line(line: str) -> list[tuple[str, str]]:
             tokens.append(("", leading))
         tokens.append(("class:accent bold", "HUND AI"))
         tokens.append(("class:secondary", content[idx + 7 :]))
-    elif re.match(r"^\s+(OS|HOST|CPU|RAM|GPU|MODEL)\s+", content):
-        m = re.match(r"^(\s+)(OS|HOST|CPU|RAM|GPU|MODEL)(\s+)(.*)$", content)
+    elif re.match(r"^\s*(OS|HOST|CPU|RAM|GPU|MODEL)\s+", content):
+        m = re.match(r"^(\s*)(OS|HOST|CPU|RAM|GPU|MODEL)(\s+)(.*)$", content)
         if m:
-            tokens.append(("", m.group(1)))
-            tokens.append(("class:label", m.group(2)))
-            tokens.append(("", m.group(3)))
-            tokens.append(("class:primary", m.group(4)))
-    elif "── BASE ATTRIBUTES ──" in content or "── SKILLS" in content:
+            if m.group(1):
+                tokens.append(("", m.group(1)))
+            tokens.append(("class:meta_accent", m.group(2)))
+            if m.group(3):
+                tokens.append(("", m.group(3)))
+            if m.group(4):
+                tokens.append(("class:primary", m.group(4)))
+    elif any(k in content for k in ("── BASE STATS", "── BASE ATTRIBUTES", "── SPECIALIZATIONS", "── SKILLS")):
         if "│" in content:
             left, right = content.split("│", 1)
             tokens.append(("class:header", left))
@@ -338,7 +546,9 @@ def _lex_banner_line(line: str) -> list[tuple[str, str]]:
         tokens.append(("class:secondary", "│"))
         tokens.extend(_lex_stat_or_skill_part(right))
     else:
-        tokens.append(("class:primary", content))
+        # Compact (stacked) banner rows still carry the same semantic colours
+        # as their two-column counterparts.
+        tokens.extend(_lex_stat_or_skill_part(content))
 
     tokens.append(("class:accent", "║"))
     return tokens
@@ -433,16 +643,36 @@ class _OutputLexer(Lexer):
                     tokens.append(("class:secondary", " "))
                     rest = rest[1:]
                 if rest.startswith("⟳"):
-                    tokens.append(("class:accent", "⟳"))
-                    tokens.append(("class:tool", rest[1:]))
+                    tokens.append(("class:tool", "⟳"))
+                    rest = rest[1:]
                 elif rest.startswith("✓"):
                     tokens.append(("class:success", "✓"))
-                    tokens.append(("class:tool", rest[1:]))
+                    rest = rest[1:]
                 elif rest.startswith("✗") or rest.startswith("⊘"):
                     tokens.append(("class:danger", rest[0]))
-                    tokens.append(("class:danger", rest[1:]))
+                    rest = rest[1:]
+                
+                # Split metadata suffix (e.g. " · 0.6s", "  0.3s", " 4 files · 0.6s")
+                if " · " in rest:
+                    main_part, meta_part = rest.rsplit(" · ", 1)
+                    tokens.append(("class:primary", main_part))
+                    tokens.append(("class:secondary", " · " + meta_part))
                 else:
-                    tokens.append(("class:secondary", rest))
+                    tokens.append(("class:primary", rest))
+                return tokens
+            elif line.startswith("  ╰─ ") or (line.startswith("╰─ ") and not line.endswith("╯")):
+                idx = line.find("╰─")
+                leading = line[:idx]
+                tokens = [("", leading)] if leading else []
+                tokens.append(("class:secondary", "╰─"))
+                rest = line[idx + 2 :]
+                style = "class:danger" if "stopped" in rest else "class:success"
+                if " · " in rest:
+                    main_part, meta_part = rest.rsplit(" · ", 1)
+                    tokens.append((style, main_part))
+                    tokens.append(("class:secondary", " · " + meta_part))
+                else:
+                    tokens.append((style, rest))
                 return tokens
             elif line.startswith("  · ") or stripped.startswith("· "):
                 rest = line[4:] if line.startswith("  · ") else stripped[2:]
@@ -469,11 +699,12 @@ class _OutputLexer(Lexer):
                 tokens.append(("class:learning", rest))
                 return tokens
             elif (
-                line.startswith("  hund ")
-                or stripped.startswith("hund is ")
+                stripped.startswith("hund is ")
                 or stripped.startswith("hund was ")
-                or (stripped.startswith("hund ") and stripped.endswith("."))
+                or (stripped.startswith("hund ") and (stripped.endswith("…") or stripped.endswith("...")))
             ):
+                return [("class:thinking", line)]
+            elif stripped.startswith("hund ") and stripped.endswith("."):
                 return [("class:secondary", line)]
             elif "CONFIRMATION REQUIRED" in line:
                 return [("class:warning", line)]
@@ -497,7 +728,10 @@ class _OutputLexer(Lexer):
                     ("class:secondary", line[idx + 4 :]),
                 ]
             elif line.startswith("└") or line.startswith("╰"):
-                meta_match = re.search(r"^(.*?─\s+)([0-9.]+(?:s|ms|m|h)?|\w+)(\s+─+┘|─+┘|┘)$", line)
+                meta_match = re.search(
+                    r"^(.*?─\s+)([0-9.]+(?:s|ms|m|h)?|\w+)(\s+─+[┘╯]|─+[┘╯]|[┘╯])$",
+                    line,
+                )
                 if meta_match:
                     return [
                         ("class:secondary", meta_match.group(1)),
@@ -606,12 +840,16 @@ class _SelectableControl(BufferControl):
 
 _OUTPUT_LEXER = _OutputLexer()
 
-_CONFIRM_OPTIONS = [
-    (ConfirmVerdict.APPROVE_ONCE, "Run once", "class:success"),
-    (ConfirmVerdict.EDIT, "Edit command", "class:accent"),
-    (ConfirmVerdict.ALLOW_SESSION, "Allow for this session", "class:warning"),
-    (ConfirmVerdict.DENY, "Deny", "class:danger"),
-]
+_CONFIRM_COLORS = {
+    ConfirmVerdict.APPROVE_ONCE: "class:success",
+    ConfirmVerdict.EDIT: "class:accent",
+    ConfirmVerdict.ALLOW_SESSION: "class:warning",
+    ConfirmVerdict.DENY: "class:danger",
+}
+
+
+def _confirm_options(tool_name: str):
+    return [(v, label, _CONFIRM_COLORS[v]) for v, label in confirmation_options(tool_name)]
 
 
 def _discard_console(width: int = 100) -> Console:
@@ -628,6 +866,11 @@ def _term_width() -> int:
 
 async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     """Run the full-screen REPL application. Returns exit code."""
+    screens = ScreenController()
+    screen_snapshots: dict[str, Any] = {}
+    modal_input = [""]
+    model_options: list[Any] = []
+
     # ---- output buffer (read-only + focusable so the mouse can select) ----
     output_buffer = Buffer(name="output", multiline=True, read_only=True)
     output_control = _SelectableControl(buffer=output_buffer, lexer=_OUTPUT_LEXER)
@@ -640,7 +883,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     )
 
     # ---- input buffer + prompt ----
-    completer = SlashCommandCompleter()
+    completer = SlashCommandCompleter(rt.workspace)
     input_buffer = Buffer(
         name="input", multiline=True, completer=completer, complete_while_typing=True,
     )
@@ -668,17 +911,22 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         wrap_lines=True,
     )
     prompt_window = Window(
-        content=FormattedTextControl(lambda: [("class:prompt", "❯ ")]),
-        width=3,
+        content=FormattedTextControl(lambda: [("class:prompt", "  ❯ ")]),
+        width=4,
         dont_extend_width=True,
         height=_input_height,
         dont_extend_height=False,
     )
     input_row = VSplit([prompt_window, input_window])
+    completion_container = _FullWidthCompletionsMenu(
+        max_height=MAX_VISIBLE_COMPLETIONS
+    )
 
     output_control.fallback_focus = input_window
 
     # ---- status bar ----
+    turn_running = [False]
+
     def status_text() -> list[tuple[str, str]]:
         model = state.extra.get("model", "deepseek-v4-pro")
         tokens = state.extra.get("tokens", 0)
@@ -696,7 +944,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         duration_str = format_duration(dur)
 
         segments: list[tuple[str, str]] = [
-            ("class:header", " " + cleaned_model),
+            ("class:header", "  " + cleaned_model),
             ("class:status", f" │ {token_str} │ {duration_str}"),
         ]
         if lat is not None and lat > 0:
@@ -705,6 +953,52 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     status_window = Window(content=FormattedTextControl(status_text), height=1)
 
+    mascot_machine = MascotMachine()
+
+    def _mascot_text() -> list[tuple[str, str]]:
+        tint, art = mascot_machine.frame(getattr(state, "theme_name", "marshmallow"))
+        # Sprite sheets contain a shared blank top row. Dropping only that row
+        # reduces the chat/mascot boundary while preserving the feet baseline.
+        lines = [f"  {ln}" if ln else "" for ln in art.removeprefix("\n").splitlines()]
+        return [(f"class:mascot fg:{tint}", "\n".join(lines))]
+
+    mascot_window = Window(
+        content=_ScrollThroughFormattedTextControl(
+            _mascot_text, scroll_cb_getter=lambda: output_control.scroll_cb
+        ),
+        width=18,
+        height=7,
+        dont_extend_width=True,
+        dont_extend_height=True,
+        wrap_lines=False,
+    )
+
+    def _mascot_status_text() -> list[tuple[str, str]]:
+        if not turn_running[0]:
+            return []
+        skin = theme.get_skin(getattr(state, "theme_name", "marshmallow"))
+        color = skin["tokens"].get("mascot_status", skin["tokens"]["secondary"])
+        dot_count = (
+            3 if getattr(rt.cfg, "reduced_motion", False)
+            else int(time.monotonic() / 0.32) % 3 + 1
+        )
+        dots = ("." * dot_count).ljust(3)
+        phase = int(time.monotonic() / 0.10)
+        return [("", "\n" * 6)] + _shine_fragments(f" running{dots}", color, phase)
+
+    mascot_status_window = Window(
+        content=_ScrollThroughFormattedTextControl(
+            _mascot_status_text, scroll_cb_getter=lambda: output_control.scroll_cb
+        ),
+        height=7,
+        dont_extend_height=True,
+    )
+    mascot_row = VSplit([mascot_window, mascot_status_window], height=7)
+    mascot_container = ConditionalContainer(
+        mascot_row,
+        filter=Condition(lambda: _app_height() >= 27),
+    )
+
     # ---- confirmation modal (arrow-key select) ----
     _confirm = {
         "active": False,
@@ -712,13 +1006,14 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         "detail": "",
         "selected": 0,
         "answer": ConfirmVerdict.DENY,
+        "options": _confirm_options("terminal"),
         "event": threading.Event(),
     }
 
     def _confirm_text():
         if not _confirm["active"]:
             return []
-        W = 64
+        W = min(68, max(_content_width() - 4, 36))
         out: list[tuple[str, str]] = []
 
         def row(content: str, style: str = "class:primary") -> None:
@@ -728,21 +1023,21 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
         title = _confirm.get("title", "hund wants to run a command")
         title_dashes = max(W - len(title) - 5, 2)
-        out.append(("class:secondary", "┌─ "))
+        out.append(("class:secondary", "╭─ "))
         out.append(("class:warning bold", title))
-        out.append(("class:secondary", " " + "─" * title_dashes + "┐\n"))
+        out.append(("class:secondary", " " + "─" * title_dashes + "╮\n"))
 
         row("", "class:secondary")
         detail = _confirm.get("detail", "")
         row(f"  {detail}", "class:accent")
         row("", "class:secondary")
-        for i, (_code, label, color) in enumerate(_CONFIRM_OPTIONS):
+        for i, (_code, label, color) in enumerate(_confirm["options"]):
             if i == _confirm["selected"]:
                 row("  ❯ ● " + label, color + " bold")
             else:
                 row("    ○ " + label, "class:secondary")
         row("", "class:secondary")
-        out.append(("class:secondary", "└" + "─" * (W - 2) + "┘\n"))
+        out.append(("class:secondary", "╰" + "─" * (W - 2) + "╯\n"))
         out.append(("class:secondary", "   ↑↓ select · Enter confirm · Esc deny"))
         return out
 
@@ -750,28 +1045,135 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         "active": False,
         "text": "hund is reading",
         "past": None,
-        "dot_count": 1,
         "start_time": 0.0,
     }
-
-    def _thinking_text() -> list[tuple[str, str]]:
-        if not _thinking["active"]:
-            return []
-        dots = "." * _thinking["dot_count"]
-        return [("class:thinking", f"  {_thinking['text']}{dots}\n")]
-
-    thinking_window = Window(
-        content=FormattedTextControl(_thinking_text),
-        height=1,
-        dont_extend_height=True,
-    )
-    thinking_container = ConditionalContainer(
-        thinking_window, filter=Condition(lambda: bool(_thinking["active"]))
-    )
 
     confirm_window = Window(content=FormattedTextControl(_confirm_text), height=12)
     confirm_container = ConditionalContainer(
         confirm_window, filter=Condition(lambda: _confirm["active"])
+    )
+
+    from ..providers.catalog import MODEL_OPTIONS, active_option
+
+    model_options.extend(MODEL_OPTIONS)
+    try:
+        configured_option = active_option(rt.cfg)
+        if not any(
+            item.model_id == configured_option.model_id
+            and item.base_url == configured_option.base_url
+            for item in model_options
+        ):
+            model_options.insert(0, configured_option)
+    except Exception:
+        pass
+
+    def _screen_text() -> str:
+        destination = screens.destination
+        width, height = _app_width(), _app_height()
+        key = destination.value
+        snapshot = screen_snapshots.get(key)
+        if snapshot is None:
+            message = "Loading..." if key in screens.loading else (
+                screens.status or f"Could not load {key}."
+            )
+            return fullscreen_frame(
+                destination.value.upper(), ["", message],
+                width=width, height=height, scroll=0,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if destination is DestinationView.STATS:
+            return render_stats(
+                snapshot, width=width, height=height,
+                scroll=screens.scroll.get(key, 0),
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if destination is DestinationView.SKILLS:
+            return render_skills(
+                snapshot, width=width, height=height,
+                selected=screens.selected.get(key, 0),
+                scroll=screens.scroll.get(key, 0),
+                detail_name=screens.detail.get(key),
+                status=screens.status,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if destination is DestinationView.TOOLS:
+            return render_tools(
+                snapshot, width=width, height=height,
+                selected=screens.selected.get(key, 0),
+                scroll=screens.scroll.get(key, 0),
+                detail_name=screens.detail.get(key),
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if destination is DestinationView.USAGE:
+            return render_usage(
+                snapshot, width=width, height=height,
+                scroll=screens.scroll.get(key, 0),
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        return ""
+
+    def _overlay_text() -> str:
+        overlay = screens.overlay
+        width = _app_width()
+        if overlay is OverlayView.THEME:
+            return render_theme_modal(
+                getattr(state, "theme_name", "marshmallow"),
+                screens.selected.get("theme", 0),
+                width,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if overlay is OverlayView.MODEL:
+            local_engine = getattr(getattr(rt, "client", None), "_engine", None)
+            local_ready = bool(
+                local_engine is not None
+                and local_engine.model_path is not None
+                and local_engine.is_running
+            )
+            return render_model_modal(
+                model_options,
+                rt.cfg.provider.model,
+                screens.selected.get("model", 0),
+                width,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+                local_ready=local_ready,
+            )
+        if overlay is OverlayView.MODEL_CUSTOM:
+            return render_model_custom_modal(
+                modal_input[0], width, screens.status,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if overlay is OverlayView.MODEL_KEY:
+            selected = screens.selected.get("model", 0)
+            option = model_options[selected] if model_options else active_option(rt.cfg)
+            return render_model_key_modal(
+                option.provider_name, "•" * len(modal_input[0]), width, screens.status,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        return ""
+
+    screen_window = Window(
+        content=FormattedTextControl(lambda: _semantic_screen_fragments(_screen_text())),
+        wrap_lines=False,
+    )
+    screen_container = ConditionalContainer(
+        screen_window,
+        filter=Condition(lambda: screens.destination is not DestinationView.CHAT),
+    )
+    overlay_window = Window(
+        content=FormattedTextControl(lambda: _semantic_screen_fragments(_overlay_text())),
+        wrap_lines=False,
+    )
+    overlay_container = ConditionalContainer(
+        overlay_window,
+        filter=Condition(
+            lambda: screens.overlay
+            in {
+                OverlayView.THEME,
+                OverlayView.MODEL,
+                OverlayView.MODEL_CUSTOM,
+                OverlayView.MODEL_KEY,
+            }
+        ),
     )
 
     # 1-row border lines above and below input per TUI_FACIT.md §5.1
@@ -792,21 +1194,19 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         FloatContainer(
             content=HSplit([
                 output_window,
-                thinking_container,
+                mascot_container,
                 input_border_top,
                 input_row,
+                completion_container,
                 input_border_bottom,
                 status_window,
             ]),
             floats=[
+                Float(content=screen_container, left=0, right=0, top=0, bottom=0),
+                Float(content=overlay_container),
                 Float(
                     content=confirm_container,
                 ),
-                Float(
-                    xcursor=True,
-                    ycursor=True,
-                    content=CompletionsMenu(max_height=12),
-                )
             ],
         ),
         focused_element=input_window,
@@ -814,9 +1214,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     # ---- shared mutable state ----
     holder: dict[str, Any] = {}
-    turn_running = [False]
 
     def _invalidate() -> None:
+        _MODAL_ACTIVE[0] = bool(_confirm.get("active")) or (
+            screens.overlay is not OverlayView.NONE
+        )
         app = holder.get("app")
         if app is not None:
             try:
@@ -839,18 +1241,38 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 pass
         return _term_width()
 
+    def _content_width() -> int:
+        return _responsive_content_width(_app_width())
+
+    def _app_height() -> int:
+        app = holder.get("app")
+        if app is not None:
+            try:
+                rows = app.output.get_size().rows
+                if rows > 0:
+                    return rows
+            except Exception:
+                pass
+        try:
+            return shutil.get_terminal_size((80, 24)).lines
+        except Exception:
+            return 24
+
     def _box_top(width: int | None = None) -> str:
-        return _r_box_top(width if width is not None else _app_width())
+        return _r_box_top(width if width is not None else _content_width())
 
     def _box_bottom(meta: str | None = None, width: int | None = None) -> str:
-        return _r_box_bottom(width if width is not None else _app_width(), meta=meta)
+        return _r_box_bottom(width if width is not None else _content_width(), meta=meta)
 
     _append_lock = threading.Lock()
+    tail_following = [False]
+    response_payloads: list[tuple[str, str | None]] = []
+    active_response: list[tuple[str, str | None] | None] = [None]
 
-    def _set_output(new_text: str) -> None:
-        """Set output_buffer with cursor at start-of-last-line so horizontal scroll is always 0."""
-        last_nl = new_text.rfind("\n")
-        cur_pos = last_nl + 1 if last_nl >= 0 else 0
+    def _set_output(new_text: str, *, follow_tail: bool = True) -> None:
+        """Set output text with deterministic top or tail viewport anchoring."""
+        tail_following[0] = follow_tail
+        cur_pos = _output_cursor_position(new_text, follow_tail=follow_tail)
         try:
             output_window.horizontal_scroll = 0
         except Exception:
@@ -869,10 +1291,13 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     # seed banner
     from .render import build_startup_banner
-    actual_width = _app_width()
+    def _banner_width() -> int:
+        return _content_width()
+
+    actual_width = _banner_width()
     rendered_banner = build_startup_banner(rt, width=actual_width)
     seed = rendered_banner.rstrip("\n") + "\n\n"
-    _set_output(seed)
+    _set_output(seed, follow_tail=False)
 
     def _reflow_borders() -> None:
         """Re-width response box borders and re-wrap content to the current terminal width."""
@@ -885,6 +1310,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             in_panel = False
             box_lines: list[str] = []
             panel_lines: list[str] = []
+            response_index = 0
 
             for line in lines:
                 if line.startswith("╔") and line.endswith("╗"):
@@ -894,7 +1320,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                     in_panel = False
                     panel_lines.append(line)
                     panel_text = "\n".join(panel_lines)
-                    app_w = _app_width()
+                    app_w = _banner_width()
 
                     if "── MOTOR SKILLS" in panel_text or "── DOMAIN SKILLS" in panel_text:
                         from .skills_view import render_skills_panel
@@ -934,11 +1360,12 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                     if trimmed:
                         box_meta = trimmed.strip()
 
-                    # Unbox lines
+                    # Padding is structural: render_response_box() always emits
+                    # exactly one row before and after the payload. Blank rows
+                    # inside the payload are semantic content.
                     content_lines: list[str] = []
-                    for bl in box_lines:
-                        if not bl.strip("│ "):
-                            continue  # Skip top/bottom padding rows
+                    payload_lines = box_lines[1:-1] if len(box_lines) >= 2 else box_lines
+                    for bl in payload_lines:
                         if bl.startswith("│  ") and bl.endswith("  │"):
                             content_lines.append(bl[3:-3].rstrip())
                         elif bl.startswith("│ ") and bl.endswith(" │"):
@@ -947,9 +1374,17 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                             content_lines.append(bl[1:-1].rstrip())
                         else:
                             content_lines.append(bl.rstrip())
-                    raw_content = "\n".join(content_lines).strip("\n")
-                    re_boxed = render_response_box(raw_content, _app_width(), meta=box_meta)
+                    saved = (
+                        response_payloads[response_index]
+                        if response_index < len(response_payloads)
+                        else active_response[0]
+                    )
+                    raw_content = saved[0] if saved is not None else "\n".join(content_lines)
+                    if saved is not None and saved[1] is not None:
+                        box_meta = saved[1]
+                    re_boxed = render_response_box(raw_content, _content_width(), meta=box_meta)
                     new_lines.extend(re_boxed.split("\n"))
+                    response_index += 1
                     changed = True
                 elif in_box:
                     box_lines.append(line)
@@ -958,7 +1393,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
             if changed:
                 new_text = "\n".join(new_lines)
-                _set_output(new_text)
+                _set_output(new_text, follow_tail=tail_following[0])
                 _invalidate()
 
     messages = rt.messages
@@ -973,54 +1408,37 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             self._tool_marker: int | None = None
             self._tool_start_time: float = 0.0
             self._tool_args: dict = {}
+            self._activity = ActivityTimeline()
+            self._activity_marker: int | None = None
+            self._activity_prefix = ""
+            self._active_tool_event_id: int | None = None
             self._tool_switched = False
             self._user_input = ""
             self._turn_start_time: float = 0.0
-            self._anim_timer: threading.Timer | None = None
             self._pending_past_timer: threading.Timer | None = None
             self._md = StreamingMarkdownFilter()
             self._snapshot = None
+            self._learning_markers: dict[str, int] = {}
 
         def set_user_input(self, text: str) -> None:
             self._user_input = text or ""
             self._tool_switched = False
             self._turn_start_time = time.time()
+            self._activity.clear()
+            self._activity_marker = None
+            self._activity_prefix = ""
+            self._active_tool_event_id = None
 
         def set_turn_snapshot(self, snapshot) -> None:
             self._snapshot = snapshot
 
         def _cancel_timers(self) -> None:
-            if self._anim_timer is not None:
-                try:
-                    self._anim_timer.cancel()
-                except Exception:
-                    pass
-                self._anim_timer = None
             if self._pending_past_timer is not None:
                 try:
                     self._pending_past_timer.cancel()
                 except Exception:
                     pass
                 self._pending_past_timer = None
-
-        def _start_anim_timer(self) -> None:
-            if self._anim_timer is not None:
-                try:
-                    self._anim_timer.cancel()
-                except Exception:
-                    pass
-
-            def _tick() -> None:
-                if _thinking["active"]:
-                    _thinking["dot_count"] = (_thinking["dot_count"] % 3) + 1
-                    _invalidate()
-                    self._anim_timer = threading.Timer(0.3, _tick)
-                    self._anim_timer.daemon = True
-                    self._anim_timer.start()
-
-            self._anim_timer = threading.Timer(0.3, _tick)
-            self._anim_timer.daemon = True
-            self._anim_timer.start()
 
         def thinking(self, msg: str | None = None) -> None:
             if not self._turn_start_time:
@@ -1029,10 +1447,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             _thinking["active"] = True
             _thinking["text"] = msg.rstrip(".…") if msg else "hund is reading"
             _thinking["past"] = None
-            _thinking["dot_count"] = 1
             _thinking["start_time"] = time.time()
             self._tool_switched = False
-            self._start_anim_timer()
             _invalidate()
 
         def clear_thinking(self) -> None:
@@ -1044,7 +1460,10 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 _thinking["past"] = None
                 _invalidate()
 
-                if past:
+                if past and self._activity_marker is not None:
+                    self._activity_prefix = f"  {past}\n"
+                    self._render_activity()
+                elif past:
                     elapsed = time.time() - start_time
                     if elapsed < 0.3:
                         remaining = 0.3 - elapsed
@@ -1056,6 +1475,16 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                     else:
                         append(f"  {past}\n")
                         _invalidate()
+
+        def _render_activity(self) -> None:
+            """Replace the current turn's observed activity block in-place."""
+            if self._activity_marker is None:
+                return
+            block = self._activity_prefix + self._activity.render()
+            with _append_lock:
+                current = output_buffer.text
+                _set_output(current[: self._activity_marker] + block)
+            _invalidate()
 
         def chunk(self, text: str) -> None:
             if not self._turn_start_time:
@@ -1075,7 +1504,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 self._box_start_marker = len(output_buffer.text)
                 self._raw_response = ""
             self._raw_response += filtered
-            boxed = render_response_box(self._raw_response, _app_width())
+            active_response[0] = (self._raw_response, None)
+            boxed = render_response_box(self._raw_response, _content_width())
             with _append_lock:
                 prefix = output_buffer.text[: self._box_start_marker]
                 new_text = prefix + boxed
@@ -1088,7 +1518,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             if self._box_open:
                 leftover = self._md.flush()
                 self._raw_response += leftover
-                boxed = render_response_box(self._raw_response, _app_width(), meta=meta)
+                boxed = render_response_box(self._raw_response, _content_width(), meta=meta)
+                active_response[0] = (self._raw_response, meta)
 
                 reflection_lines: list[str] = []
                 if getattr(self, "_snapshot", None) is not None:
@@ -1108,7 +1539,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                     new_text = prefix + boxed + refl_text + "\n\n"
                     _set_output(new_text)
 
-                if reflection_lines and not input_buffer.text.strip():
+                if (
+                    reflection_lines
+                    and not input_buffer.text.strip()
+                    and not getattr(rt.cfg, "reduced_motion", False)
+                ):
                     has_bar = any("XP" in ln and ("█" in ln or "░" in ln) for ln in reflection_lines)
                     if has_bar:
                         def _animate_glint(base_prefix: str, base_boxed: str, final_refl: list[str]) -> None:
@@ -1138,6 +1573,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                         ).start()
 
                 self._box_open = False
+                response_payloads.append((self._raw_response, meta))
+                active_response[0] = None
                 self._raw_response = ""
                 self._turn_start_time = 0.0
                 _invalidate()
@@ -1145,17 +1582,48 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 append("\n\n")
                 self._turn_start_time = 0.0
 
+        def learning_pending(self, job_id: str) -> None:
+            line = "  · evaluating evidence...\n"
+            with _append_lock:
+                base = output_buffer.text.rstrip("\n") + "\n"
+                self._learning_markers[job_id] = len(base)
+                _set_output(base + line)
+            _invalidate()
+
+        def learning_receipt(self, receipt) -> None:
+            from hund.learning.runtime import format_receipt_bundle
+
+            marker = self._learning_markers.pop(receipt.job_id, None)
+            pending = "  · evaluating evidence...\n"
+            replacement = (
+                "" if receipt.kind == "no_change"
+                else "\n".join(format_receipt_bundle(receipt)) + "\n"
+            )
+            with _append_lock:
+                current = output_buffer.text
+                if marker is not None and current[marker:marker + len(pending)] == pending:
+                    current = current[:marker] + replacement + current[marker + len(pending):]
+                else:
+                    current += replacement
+                _set_output(current)
+            _invalidate()
+
         def error(self, markup: str) -> None:
             clean = strip_rich(strip_markdown(markup)).strip()
-            if self._tool_marker is not None:
-                err_line = f"  ┊ ✗ error: {_trunc(clean, 50)}\n"
-                with _append_lock:
-                    new_text = output_buffer.text[: self._tool_marker] + err_line
-                    _set_output(new_text)
-                self._tool_marker = None
-                _invalidate()
+            if self._active_tool_event_id is not None:
+                self._activity.finish(
+                    self._active_tool_event_id,
+                    ActivityStatus.ERROR,
+                    duration_s=time.time() - self._tool_start_time,
+                    detail=_trunc(clean, 50),
+                )
+                self._active_tool_event_id = None
+                self._render_activity()
             else:
                 append(clean + "\n")
+
+        def edit(self, request: ConfirmRequest) -> dict | None:
+            return prompt_edits(request)
 
         def confirm(self, request: ConfirmRequest) -> ConfirmVerdict:
             title = _confirm_title(request)
@@ -1163,10 +1631,12 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             if len(detail) > 58:
                 detail = detail[:55] + "..."
             _confirm["title"] = title
+            _confirm["options"] = _confirm_options(request.tool_name)
             _confirm["detail"] = detail
             _confirm["selected"] = 0
             _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = True
+            screens.overlay = OverlayView.CONFIRM
             _MODAL_ACTIVE[0] = True
             with _append_lock:
                 _set_output(output_buffer.text)
@@ -1174,6 +1644,7 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             _invalidate()
             _confirm["event"].wait()
             _confirm["active"] = False
+            screens.overlay = OverlayView.NONE
             _MODAL_ACTIVE[0] = False
             with _append_lock:
                 _set_output(output_buffer.text)
@@ -1181,21 +1652,18 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             return _confirm["answer"]
 
         def tool_start(self, name: str, args) -> None:
-            if not self._tool_switched:
-                u_text = self._user_input
-                if not u_text and messages:
-                    u_text = next(
-                        (m.content for m in reversed(messages) if getattr(m, "role", "") == "user"),
-                        "",
-                    )
-                gerund, past = select_thinking_phrase(u_text)
-                _thinking["text"] = gerund
-                _thinking["past"] = past
-                _thinking["start_time"] = time.time()
-                _thinking["active"] = True
-                self._tool_switched = True
-                self._start_anim_timer()
-                _invalidate()
+            screen_reader = getattr(rt.cfg, "screen_reader", False)
+            if screen_reader:
+                append(f"Tool started: {name}.\n")
+            gerund, past = tool_thinking_phrase(
+                name, args if isinstance(args, dict) else None
+            )
+            _thinking["text"] = gerund
+            _thinking["past"] = past
+            _thinking["start_time"] = time.time()
+            _thinking["active"] = True
+            self._tool_switched = True
+            _invalidate()
 
             if self._box_open:
                 self._box_open = False
@@ -1204,77 +1672,136 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
             self._tool_args = args if isinstance(args, dict) else {}
             self._tool_start_time = time.time()
-            self._tool_marker = len(output_buffer.text)
             desc = _format_tool_desc(name, self._tool_args)
-            append(f"  ┊ ⟳ {desc}\n")
+            if self._activity_marker is None:
+                self._activity_marker = len(output_buffer.text)
+            verification = False
+            if name == "terminal":
+                try:
+                    from ..agent.verification import VerificationKind, classify_verification
+
+                    verification = (
+                        classify_verification(str(self._tool_args.get("command", "")))
+                        is not VerificationKind.NONE
+                    )
+                except Exception:
+                    verification = False
+            if not screen_reader:
+                self._active_tool_event_id = self._activity.start(
+                    name,
+                    desc,
+                    group=activity_group(name, verification=verification),
+                )
+                self._render_activity()
 
         def tool_result(self, name: str, shown: str) -> None:
             dur = time.time() - self._tool_start_time
-            dur_str = f"{dur:.1f}s"
-            desc = _format_tool_desc(name, self._tool_args)
-            body = ""
-            if name == "write_file" and isinstance(self._tool_args, dict):
-                content = self._tool_args.get("content")
-                if isinstance(content, str) and content.strip():
-                    lines = content.rstrip("\n").splitlines()
-                    max_lines = 40
-                    visible = lines[:max_lines]
-                    body = "".join(f"      + {ln}\n" for ln in visible)
-                    if len(lines) > max_lines:
-                        body += f"      ... ({len(lines) - max_lines} more lines)\n"
-            elif name in ("edit_file", "patch", "apply_patch", "replace_file_content") and isinstance(self._tool_args, dict):
-                diff = self._tool_args.get("diff") or self._tool_args.get("patch")
-                if isinstance(diff, str) and diff.strip():
-                    diff_lines = diff.rstrip("\n").splitlines()
-                    body = "".join(f"      {ln}\n" for ln in diff_lines[:40])
-                else:
-                    target = self._tool_args.get("target_content")
-                    replacement = self._tool_args.get("replacement_content")
-                    if isinstance(target, str) and isinstance(replacement, str):
-                        t_lines = target.rstrip("\n").splitlines()
-                        r_lines = replacement.rstrip("\n").splitlines()
-                        body = "".join(f"      - {ln}\n" for ln in t_lines) + "".join(f"      + {ln}\n" for ln in r_lines)
-
-            result_line = f"  ┊ ✓ {desc}  {dur_str}\n" + body
-            if self._tool_marker is not None:
-                with _append_lock:
-                    new_text = output_buffer.text[: self._tool_marker] + result_line
-                    _set_output(new_text)
-                self._tool_marker = None
-                _invalidate()
-            else:
-                append(result_line)
+            if self._active_tool_event_id is not None:
+                self._activity.finish(
+                    self._active_tool_event_id,
+                    ActivityStatus.COMPLETE,
+                    duration_s=dur,
+                )
+                self._active_tool_event_id = None
+                self._render_activity()
+            if getattr(rt.cfg, "screen_reader", False):
+                append(f"Tool completed: {name}.\n")
 
         def blocked(self, name: str, reason: str) -> None:
             clean_reason = _trunc(reason, 40)
-            blocked_line = f"  ┊ ✗ blocked {name} — {clean_reason}\n"
-            if self._tool_marker is not None:
-                with _append_lock:
-                    new_text = output_buffer.text[: self._tool_marker] + blocked_line
-                    _set_output(new_text)
-                self._tool_marker = None
-                _invalidate()
+            if getattr(rt.cfg, "screen_reader", False):
+                append(f"Tool blocked: {name}. {clean_reason}\n")
+                return
+            if self._active_tool_event_id is not None:
+                self._activity.finish(
+                    self._active_tool_event_id,
+                    ActivityStatus.BLOCKED,
+                    duration_s=time.time() - self._tool_start_time,
+                    detail=clean_reason,
+                )
+                self._active_tool_event_id = None
+                self._render_activity()
             else:
-                append(blocked_line)
+                append(f"  ┊ ✗ blocked {name} — {clean_reason}\n")
 
         def declined(self, name: str, reason: str) -> None:
             clean_reason = _trunc(reason, 40)
-            declined_line = f"  ┊ ✗ declined {name} — {clean_reason}\n"
-            if self._tool_marker is not None:
-                with _append_lock:
-                    new_text = output_buffer.text[: self._tool_marker] + declined_line
-                    _set_output(new_text)
-                self._tool_marker = None
-                _invalidate()
+            if getattr(rt.cfg, "screen_reader", False):
+                append(f"Tool declined: {name}. {clean_reason}\n")
+                return
+            if self._active_tool_event_id is not None:
+                self._activity.finish(
+                    self._active_tool_event_id,
+                    ActivityStatus.DECLINED,
+                    duration_s=time.time() - self._tool_start_time,
+                    detail=clean_reason,
+                )
+                self._active_tool_event_id = None
+                self._render_activity()
             else:
-                append(declined_line)
+                append(f"  ┊ ✗ declined {name} — {clean_reason}\n")
 
     sink = _Sink()
+
+    def _load_destination(destination: DestinationView) -> None:
+        key = destination.value
+        if key in screens.loading:
+            return
+        screens.loading.add(key)
+        screen_snapshots.pop(key, None)
+        _invalidate()
+
+        def loader() -> None:
+            try:
+                if destination is DestinationView.STATS:
+                    snapshot = collect_stats()
+                elif destination is DestinationView.SKILLS:
+                    snapshot = collect_skills()
+                elif destination is DestinationView.TOOLS:
+                    snapshot = collect_tools()
+                elif destination is DestinationView.USAGE:
+                    snapshot = collect_usage(session_id=session_id)
+                else:
+                    return
+                screen_snapshots[key] = snapshot
+            except Exception as exc:
+                screens.status = f"Could not load {key}: {type(exc).__name__}"
+                screen_snapshots[key] = None
+            finally:
+                screens.loading.discard(key)
+                _invalidate()
+
+        threading.Thread(target=loader, daemon=True).start()
+
+    def _open_destination(destination: DestinationView) -> None:
+        if _confirm["active"]:
+            return
+        screens.chat_cursor = output_buffer.cursor_position
+        screens.input_text = input_buffer.text
+        if screens.open_destination(destination):
+            _load_destination(destination)
+            _invalidate()
+
+    def _close_destination() -> None:
+        screens.destination = DestinationView.CHAT
+        if input_buffer.text != screens.input_text:
+            input_buffer.text = screens.input_text
+        output_buffer.cursor_position = min(screens.chat_cursor, len(output_buffer.text))
+        layout.focus(input_window)
+        _invalidate()
+
+    def _open_overlay(overlay: OverlayView) -> None:
+        if _confirm["active"] or turn_running[0]:
+            screens.status = "Wait for the active turn to finish."
+            return
+        screens.open_overlay(overlay)
+        modal_input[0] = ""
+        _invalidate()
 
     # ---- slash command runner ----
     def run_command(user_text: str) -> None:
         buf = io.StringIO()
-        app_w = _app_width()
+        app_w = _content_width()
         console = Console(file=buf, color_system=None, force_terminal=False, width=app_w)
         ctx = CommandContext(console=console, rt=rt, state=state)
         dispatch_command(user_text, ctx)
@@ -1288,10 +1815,11 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     # ---- agent turn runner (background thread) ----
     def _spawn_turn(echo_user: str | None) -> None:
         turn_running[0] = True
+        mascot_machine.start_turn()
         run_id = uuid.uuid4().hex
         user_text = echo_user
         if echo_user is not None:
-            w = max(_app_width() - 4, 20)
+            w = max(_content_width() - 4, 20)
             wrapped_lines: list[str] = []
             for raw_line in echo_user.splitlines():
                 if not raw_line.strip():
@@ -1313,7 +1841,13 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             if len(wrapped_lines) > 1:
                 formatted_echo += "\n" + "\n".join(f"  {ln}" if ln else "" for ln in wrapped_lines[1:])
             append(formatted_echo + "\n\n")
-            messages.append(Message(role="user", content=echo_user))
+            from ..agent.user_context import expand_user_context
+            expanded_context = expand_user_context(echo_user, rt.workspace)
+            messages.append(Message(role="user", content=expanded_context.prompt))
+            if expanded_context.warns_about_size:
+                append(
+                    f"(context warning: about {expanded_context.estimated_tokens} tokens)\n"
+                )
             _session_save(session_id, "user", echo_user, run_id=run_id)
         else:
             user_text = next(
@@ -1328,36 +1862,38 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         except Exception:
             pass
 
-        tokens_before = estimate_tokens(messages)
-        comp = maybe_compress(messages, client=rt.client)
-        if comp.compressed:
-            messages[:] = comp.messages
-            _restore_frozen_system_prompt(messages, frozen)
-            _trace_event(
-                rt.engine, session_id, run_id, "context_compressed",
-                {
-                    "turns_dropped": comp.dropped_turns,
-                    "tokens_before": tokens_before,
-                    "tokens_after": comp.tokens,
-                    "method": comp.method,
-                },
-            )
-            append(f"({comp.dropped_turns} turns compressed)\n")
-
-        dynamic_msg = _dynamic_context_message(
-            skills=rt.skills,
-            user_text=user_text or "",
-            workspace_id=str(rt.workspace),
-            domain_hint=rt.domain_hint,
-        )
-        if dynamic_msg is not None:
-            messages.append(dynamic_msg)
-
         console = _discard_console()
 
         def worker() -> None:
             turn_start = time.time()
+            dynamic_msg = None
             try:
+                tokens_before = estimate_tokens(messages)
+                # Deterministic compression is local and bounded. It still belongs
+                # off the Prompt Toolkit thread so submitting a prompt never freezes
+                # the terminal when a long session crosses the token threshold.
+                comp = maybe_compress(messages)
+                if comp.compressed:
+                    messages[:] = comp.messages
+                    _restore_frozen_system_prompt(messages, frozen)
+                    _trace_event(
+                        rt.engine, session_id, run_id, "context_compressed",
+                        {
+                            "turns_dropped": comp.dropped_turns,
+                            "tokens_before": tokens_before,
+                            "tokens_after": comp.tokens,
+                            "method": comp.method,
+                        },
+                    )
+                    append(f"({comp.dropped_turns} turns compressed)\n")
+                dynamic_msg = _dynamic_context_message(
+                    skills=rt.skills,
+                    user_text=user_text or "",
+                    workspace_id=str(rt.workspace),
+                    domain_hint=rt.domain_hint,
+                )
+                if dynamic_msg is not None:
+                    messages.append(dynamic_msg)
                 _agent_turn(
                     console, rt.client, messages, rt.schemas, rt.engine, rt.cfg,
                     session_id, sink=sink, run_id=run_id,
@@ -1368,8 +1904,15 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 append(f"\nerror: {e}\n")
             finally:
                 state.extra["last_latency_s"] = time.time() - turn_start
+                mascot_machine.finish_turn()
                 if dynamic_msg is not None:
                     messages[:] = [m for m in messages if m is not dynamic_msg]
+                messages[:] = [
+                    m for m in messages
+                    if not (getattr(m, "content", "") or "").startswith(
+                        "[FÖROBSERVATIONER"
+                    )
+                ]
                 _restore_frozen_system_prompt(messages, frozen)
                 state.extra["tokens"] = estimate_tokens(messages)
                 refresh_stats(state)
@@ -1424,6 +1967,24 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             retry_last()
             return True
 
+        destination_commands = {
+            "/stats": DestinationView.STATS,
+            "/skills": DestinationView.SKILLS,
+            "/tools": DestinationView.TOOLS,
+            "/usage": DestinationView.USAGE,
+        }
+        if text in destination_commands:
+            _open_destination(destination_commands[text])
+            return True
+
+        if text == "/theme":
+            _open_overlay(OverlayView.THEME)
+            return True
+
+        if text == "/model":
+            _open_overlay(OverlayView.MODEL)
+            return True
+
         if is_slash(text):
             run_command(text)
             return True
@@ -1438,7 +1999,36 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     input_buffer.accept_handler = on_accept
 
     # ---- keybindings ----
-    confirm_active = Condition(lambda: _confirm["active"])
+    confirm_active = Condition(lambda: bool(_confirm.get("active")))
+    overlay_active = Condition(
+        lambda: screens.overlay
+        in {
+            OverlayView.THEME,
+            OverlayView.MODEL,
+            OverlayView.MODEL_CUSTOM,
+            OverlayView.MODEL_KEY,
+        }
+    )
+    modal_active = Condition(
+        lambda: bool(_confirm.get("active"))
+        or screens.overlay
+        in {
+            OverlayView.THEME,
+            OverlayView.MODEL,
+            OverlayView.MODEL_CUSTOM,
+            OverlayView.MODEL_KEY,
+        }
+    )
+    destination_active = Condition(
+        lambda: screens.destination is not DestinationView.CHAT
+        and not _confirm.get("active")
+        and screens.overlay is OverlayView.NONE
+    )
+    chat_active = Condition(
+        lambda: screens.destination is DestinationView.CHAT
+        and not _confirm.get("active")
+        and screens.overlay is OverlayView.NONE
+    )
 
     def _scroll_lines(count: int) -> None:
         ri = output_window.render_info
@@ -1484,19 +2074,18 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     @kb.add("up", filter=confirm_active)
     def _up(event):
-        _confirm["selected"] = (_confirm["selected"] - 1) % len(_CONFIRM_OPTIONS)
+        _confirm["selected"] = (_confirm["selected"] - 1) % len(_confirm["options"])
         event.app.invalidate()
 
     @kb.add("down", filter=confirm_active)
     def _down(event):
-        _confirm["selected"] = (_confirm["selected"] + 1) % len(_CONFIRM_OPTIONS)
+        _confirm["selected"] = (_confirm["selected"] + 1) % len(_confirm["options"])
         event.app.invalidate()
 
     @kb.add("enter", filter=confirm_active)
     def _enter(event):
-        _confirm["answer"] = _CONFIRM_OPTIONS[_confirm["selected"]][0]
+        _confirm["answer"] = _confirm["options"][_confirm["selected"]][0]
         _confirm["active"] = False
-        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
         _invalidate()
 
@@ -1504,23 +2093,28 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _y(event):
         _confirm["answer"] = ConfirmVerdict.APPROVE_ONCE
         _confirm["active"] = False
-        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
         _invalidate()
 
     @kb.add("e", filter=confirm_active)
     def _e(event):
-        _confirm["answer"] = ConfirmVerdict.EDIT
+        verdicts = {item[0] for item in _confirm["options"]}
+        _confirm["answer"] = (
+            ConfirmVerdict.EDIT if ConfirmVerdict.EDIT in verdicts else ConfirmVerdict.DENY
+        )
         _confirm["active"] = False
-        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
         _invalidate()
 
     @kb.add("a", filter=confirm_active)
     def _a(event):
-        _confirm["answer"] = ConfirmVerdict.ALLOW_SESSION
+        verdicts = {item[0] for item in _confirm["options"]}
+        _confirm["answer"] = (
+            ConfirmVerdict.ALLOW_SESSION
+            if ConfirmVerdict.ALLOW_SESSION in verdicts
+            else ConfirmVerdict.DENY
+        )
         _confirm["active"] = False
-        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
         _invalidate()
 
@@ -1529,15 +2123,214 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     def _n(event):
         _confirm["answer"] = ConfirmVerdict.DENY
         _confirm["active"] = False
-        _MODAL_ACTIVE[0] = False
         _confirm["event"].set()
         _invalidate()
 
     @kb.add("escape", filter=~confirm_active)
     def _escape(event):
+        result = screens.close_escape()
+        if result == "destination":
+            _close_destination()
+            return
+        if result in {"nested", "overlay", "detail"}:
+            modal_input[0] = ""
+            screens.status = ""
+            _invalidate()
+            return
         if output_buffer.selection_state is not None:
             output_buffer.exit_selection()
         layout.focus(input_window)
+        _invalidate()
+
+    @kb.add("up", filter=overlay_active & ~confirm_active)
+    def _overlay_up(event):
+        if screens.overlay is OverlayView.THEME:
+            screens.move("theme", -1, len(theme.theme_names()))
+        elif screens.overlay is OverlayView.MODEL:
+            screens.move("model", -1, len(model_options))
+        _invalidate()
+
+    @kb.add("down", filter=overlay_active & ~confirm_active)
+    def _overlay_down(event):
+        if screens.overlay is OverlayView.THEME:
+            screens.move("theme", 1, len(theme.theme_names()))
+        elif screens.overlay is OverlayView.MODEL:
+            screens.move("model", 1, len(model_options))
+        _invalidate()
+
+    @kb.add("up", filter=destination_active & ~modal_active)
+    def _screen_up(event):
+        key = screens.destination.value
+        snapshot = screen_snapshots.get(key)
+        if screens.destination is DestinationView.SKILLS and snapshot is not None:
+            screens.move(key, -1, len(snapshot.equipped) + len(snapshot.parked))
+            screens.scroll_by(key, -1, 10_000)
+        elif screens.destination is DestinationView.TOOLS and snapshot is not None:
+            screens.move(key, -1, len(snapshot.tools))
+            screens.scroll_by(key, -1, 10_000)
+        else:
+            screens.scroll_by(key, -1, 10_000)
+        _invalidate()
+
+    @kb.add("down", filter=destination_active & ~modal_active)
+    def _screen_down(event):
+        key = screens.destination.value
+        snapshot = screen_snapshots.get(key)
+        if screens.destination is DestinationView.SKILLS and snapshot is not None:
+            screens.move(key, 1, len(snapshot.equipped) + len(snapshot.parked))
+            screens.scroll_by(key, 1, 10_000)
+        elif screens.destination is DestinationView.TOOLS and snapshot is not None:
+            screens.move(key, 1, len(snapshot.tools))
+            screens.scroll_by(key, 1, 10_000)
+        else:
+            screens.scroll_by(key, 1, 10_000)
+        _invalidate()
+
+    @kb.add("enter", filter=overlay_active & ~confirm_active)
+    def _overlay_enter(event):
+        if screens.overlay is OverlayView.THEME:
+            names = theme.theme_names()
+            selected = names[screens.selected.get("theme", 0) % len(names)]
+            old_theme = getattr(state, "theme_name", "marshmallow")
+            state.theme_name = selected
+            rt.cfg.theme = selected
+            try:
+                rt.cfg.save()
+            except Exception:
+                state.theme_name = old_theme
+                rt.cfg.theme = old_theme
+                screens.status = "Could not save the selected theme."
+                return
+            event.app.style = theme.make_pt_style(selected)
+            screens.overlay = OverlayView.NONE
+            screens.status = ""
+        elif screens.overlay is OverlayView.MODEL:
+            from ..providers.catalog import activate_model
+
+            option = model_options[screens.selected.get("model", 0) % len(model_options)]
+            ok, message = activate_model(rt, option)
+            screens.status = message
+            if ok:
+                state.extra["model"] = option.model_id
+                state.extra["token_limit"] = option.context_window
+                screens.overlay = OverlayView.NONE
+        elif screens.overlay is OverlayView.MODEL_CUSTOM:
+            from ..providers.catalog import activate_model, custom_model
+
+            try:
+                provider, base_url, model, context = [
+                    part.strip() for part in modal_input[0].split("|", 3)
+                ]
+                option = custom_model(provider, base_url, model, int(context))
+                ok, message = activate_model(rt, option)
+                screens.status = message
+                if ok:
+                    model_options.insert(0, option)
+                    state.extra["model"] = option.model_id
+                    state.extra["token_limit"] = option.context_window
+                    screens.overlay = OverlayView.NONE
+            except Exception:
+                screens.status = "Use: provider | base URL | model ID | context window"
+        elif screens.overlay is OverlayView.MODEL_KEY:
+            from ..secrets import save_api_key
+
+            option = model_options[screens.selected.get("model", 0) % len(model_options)]
+            secret = modal_input[0]
+            modal_input[0] = ""
+            if save_api_key(secret, option.credential_id):
+                screens.overlay = OverlayView.MODEL
+                screens.status = "Credential stored in Windows Credential Manager."
+            else:
+                screens.status = (
+                    f"Credential vault unavailable. Set {option.env_name or 'HUND_API_KEY'}."
+                )
+        _invalidate()
+
+    @kb.add("enter", filter=destination_active & ~modal_active)
+    def _screen_enter(event):
+        key = screens.destination.value
+        snapshot = screen_snapshots.get(key)
+        if snapshot is None:
+            return
+        index = screens.selected.get(key, 0)
+        if screens.destination is DestinationView.SKILLS:
+            items = snapshot.equipped + snapshot.parked
+            if items:
+                screens.detail[key] = items[index % len(items)].name
+        elif screens.destination is DestinationView.TOOLS and snapshot.tools:
+            screens.detail[key] = snapshot.tools[index % len(snapshot.tools)].name
+        _invalidate()
+
+    @kb.add("e", filter=destination_active & ~modal_active)
+    def _equip_skill(event):
+        if screens.destination is not DestinationView.SKILLS:
+            return
+        snapshot = screen_snapshots.get("skills")
+        if snapshot is None:
+            return
+        items = snapshot.equipped + snapshot.parked
+        if not items:
+            return
+        selected = items[screens.selected.get("skills", 0) % len(items)]
+        from ..skills.loader import load_builtins
+        from ..skills.vault import SkillVault
+
+        ok, message = SkillVault().equip(selected.name)
+        screens.status = message
+        if ok:
+            vault = SkillVault()
+            rt.skills = load_builtins() + vault.get_active_skills()
+            _load_destination(DestinationView.SKILLS)
+        _invalidate()
+
+    @kb.add("p", filter=destination_active & ~modal_active)
+    def _park_skill(event):
+        if screens.destination is not DestinationView.SKILLS:
+            return
+        snapshot = screen_snapshots.get("skills")
+        if snapshot is None:
+            return
+        items = snapshot.equipped + snapshot.parked
+        if not items:
+            return
+        selected = items[screens.selected.get("skills", 0) % len(items)]
+        from ..skills.loader import load_builtins
+        from ..skills.vault import SkillVault
+
+        ok, message = SkillVault().park(selected.name)
+        screens.status = message
+        if ok:
+            vault = SkillVault()
+            rt.skills = load_builtins() + vault.get_active_skills()
+            _load_destination(DestinationView.SKILLS)
+        _invalidate()
+
+    @kb.add("e", filter=Condition(lambda: screens.overlay is OverlayView.MODEL and not _confirm.get("active")))
+    def _custom_model(event):
+        modal_input[0] = ""
+        screens.open_overlay(OverlayView.MODEL_CUSTOM)
+        _invalidate()
+
+    @kb.add("k", filter=Condition(lambda: screens.overlay is OverlayView.MODEL and not _confirm.get("active")))
+    def _model_key(event):
+        modal_input[0] = ""
+        screens.open_overlay(OverlayView.MODEL_KEY)
+        _invalidate()
+
+    @kb.add("backspace", filter=Condition(
+        lambda: screens.overlay in {OverlayView.MODEL_CUSTOM, OverlayView.MODEL_KEY} and not _confirm.get("active")
+    ))
+    def _modal_backspace(event):
+        modal_input[0] = modal_input[0][:-1]
+        _invalidate()
+
+    @kb.add(Keys.Any, filter=Condition(
+        lambda: screens.overlay in {OverlayView.MODEL_CUSTOM, OverlayView.MODEL_KEY} and not _confirm.get("active")
+    ))
+    def _modal_type(event):
+        for key in event.key_sequence:
+            if len(key.data) == 1 and key.data.isprintable():
+                modal_input[0] += key.data
         _invalidate()
 
     @kb.add("c-c")
@@ -1545,7 +2338,6 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
         if _confirm["active"]:
             _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = False
-            _MODAL_ACTIVE[0] = False
             _confirm["event"].set()
             _invalidate()
         elif _copy_selection():
@@ -1563,21 +2355,29 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     @kb.add("<scroll-up>")
     def _scroll_up(event):
-        _scroll_lines(3)
+        if screens.destination is not DestinationView.CHAT:
+            screens.scroll_by(screens.destination.value, -3, 10_000)
+            _invalidate()
+        else:
+            _scroll_lines(3)
 
     @kb.add("<scroll-down>")
     def _scroll_down(event):
-        _scroll_lines(-3)
+        if screens.destination is not DestinationView.CHAT:
+            screens.scroll_by(screens.destination.value, 3, 10_000)
+            _invalidate()
+        else:
+            _scroll_lines(-3)
 
-    @kb.add("enter", filter=has_focus(input_window) & ~confirm_active)
+    @kb.add("enter", filter=has_focus(input_window) & chat_active)
     def _enter_submit(event):
         input_buffer.validate_and_handle()
 
-    @kb.add("c-j", filter=has_focus(input_window) & ~confirm_active)
+    @kb.add("c-j", filter=has_focus(input_window) & chat_active)
     def _newline_input(event):
         input_buffer.insert_text("\n")
 
-    @kb.add(Keys.Any, filter=has_focus(output_window) & ~confirm_active)
+    @kb.add(Keys.Any, filter=has_focus(output_window) & chat_active)
     def _route_output_keys_to_input(event):
         layout.focus(input_window)
         for k in event.key_sequence:
@@ -1589,28 +2389,51 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
                 input_buffer.insert_text(k.data)
 
     # ---- application ----
-    initial_skin = getattr(state, "theme_name", "bone") or "bone"
+    initial_skin = getattr(state, "theme_name", "marshmallow") or "marshmallow"
+    depth = ColorDepth.DEPTH_24_BIT if theme.supports_truecolor() else ColorDepth.DEPTH_4_BIT
     app = Application(
         layout=layout,
         key_bindings=kb,
         full_screen=True,
         style=theme.make_pt_style(initial_skin),
+        color_depth=depth,
         mouse_support=True,
     )
+    app.timeoutlen = 0.05
     holder["app"] = app
 
-    # Re-width box borders when the terminal is resized (polling is cheap).
+    # Resize observations are debounced, then all Prompt Toolkit mutations are
+    # scheduled on its asyncio thread. This avoids flicker, partial layouts and
+    # repeated full-history reflows while the user is dragging the window.
+    watchers_stop = threading.Event()
+    ui_loop = asyncio.get_running_loop()
+
     def _width_watcher() -> None:
-        last = -1
-        while True:
-            time.sleep(0.05)
+        rendered = _app_width()
+        candidate = rendered
+        changed_at = time.monotonic()
+        while not watchers_stop.wait(0.05):
             w = _app_width()
-            if w != last:
-                last = w
-                _reflow_borders()
+            if w != candidate:
+                candidate = w
+                changed_at = time.monotonic()
+            elif candidate != rendered and time.monotonic() - changed_at >= 0.15:
+                rendered = candidate
+                ui_loop.call_soon_threadsafe(_reflow_borders)
+                ui_loop.call_soon_threadsafe(_invalidate)
 
     threading.Thread(target=_width_watcher, daemon=True).start()
 
-    result = await app.run_async()
-    return result if isinstance(result, int) else 0
+    def _mascot_watcher() -> None:
+        if getattr(rt.cfg, "reduced_motion", False):
+            return
+        while not watchers_stop.wait(0.12):
+            _invalidate()
 
+    threading.Thread(target=_mascot_watcher, daemon=True).start()
+
+    try:
+        result = await app.run_async()
+    finally:
+        watchers_stop.set()
+    return result if isinstance(result, int) else 0

@@ -69,8 +69,33 @@ def register_defaults(workspace: Path) -> None:
     for t in specs:
         registry.register(t)
 
-    from .web_search import search_web
+    from .skill_tool import make_handler as skill_handler
+
+    registry.register(registry.Tool(
+        name="create_skill",
+        description=(
+            "Validate and save a declarative Hund skill in the canonical local "
+            "skill vault. Use this instead of write_file for every new skill. "
+            "Write canonical identifiers and operational instructions in English; "
+            "triggers may also include aliases in the user's language."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "skill": {
+                    "type": "object",
+                    "description": "Complete schema_version 1 skill specification.",
+                },
+            },
+            "required": ["skill"],
+        },
+        base_risk="confirm",
+        handler=skill_handler(),
+    ))
+
+    from .web_search import search_web_typed
     from .web_extract import extract_web
+    from .web_open import open_web
 
     registry.register(registry.Tool(
         name="web_search",
@@ -86,13 +111,36 @@ def register_defaults(workspace: Path) -> None:
             "required": ["query"],
         },
         base_risk="safe",
-        handler=search_web,
+        handler=search_web_typed,
+        context_mode="required",
+    ))
+    registry.register(registry.Tool(
+        name="web_open",
+        description=(
+            "Öppna en URL som användaren eller web_search har tillhandahållit. "
+            "Ger en säker semantisk vy med read, next, find och follow."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "url": {"type": "string"},
+                "page_id": {"type": "string"},
+                "read": {"type": "integer"},
+                "next": {"type": "boolean"},
+                "find": {"type": "string"},
+                "follow": {"type": "integer"},
+                "full": {"type": "boolean"},
+            },
+        },
+        base_risk="safe",
+        handler=open_web,
+        context_mode="required",
     ))
     registry.register(registry.Tool(
         name="web_extract",
         description=(
-            "Hamta och extrahera text fran en URL. Returnerar sidans textinnehall "
-            "(HTML-taggar bortrensade). Max 50KB output. Endast http/https URLs."
+            "Bakåtkompatibelt alias för web_open. URL:en måste finnas i "
+            "sessionens säkra provenienslista."
         ),
         parameters={
             "type": "object",
@@ -101,6 +149,7 @@ def register_defaults(workspace: Path) -> None:
         },
         base_risk="safe",
         handler=extract_web,
+        context_mode="required",
     ))
 
     from .execute_code import run_code, BLOCKED_TOOLS
@@ -110,8 +159,9 @@ def register_defaults(workspace: Path) -> None:
         description=(
             "Kor ett Python-script som anropar Hunds tools programmatiskt. "
             "Scriptet har tillgang till call_tool(tool, args) for att anropa "
-            "read_file, search_files, write_file, terminal, web_search, "
-            "web_extract, delete_file. Anvand for komplexa pipelines dar "
+            "read_file, search_files, write_file, terminal och delete_file. "
+            "Nätverksverktyg kräver sessionskontext och körs inte här. "
+            "Anvand for komplexa pipelines dar "
             "flera tool-anrop behovs. Max 50 tool calls, 300s timeout. "
             f"Blockerade tools: {', '.join(sorted(BLOCKED_TOOLS))}."
         ),
@@ -210,7 +260,22 @@ def register_defaults(workspace: Path) -> None:
         handler=manage_cron,
     ))
 
-
-
-
-
+    ui_metadata = {
+        "read_file": ("Filesystem", "PermissionEngine classified"),
+        "search_files": ("Filesystem", "PermissionEngine classified"),
+        "write_file": ("Filesystem", "PermissionEngine classified"),
+        "delete_file": ("Filesystem", "PermissionEngine classified"),
+        "terminal": ("Execution", "PermissionEngine classified"),
+        "create_skill": ("Skills", "Schema and lifecycle gated"),
+        "web_search": ("Network", "Read-only search"),
+        "web_open": ("Network", "Provenance and SSRF gated"),
+        "web_extract": ("Network", "Provenance and SSRF gated"),
+        "execute_code": ("Execution", "PermissionEngine classified"),
+        "delegate_task": ("Agents", "Restricted child runtime"),
+        "session_search": ("Memory", "Local read-only search"),
+        "cronjob": ("Scheduling", "Confirmation gated"),
+    }
+    for tool in registry.all_tools():
+        metadata = ui_metadata.get(tool.name)
+        if metadata is not None:
+            tool.category, tool.dispatch_description = metadata

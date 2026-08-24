@@ -40,7 +40,9 @@ async def _amain() -> int:
 
     state = PromptState()
     model_name = getattr(getattr(rt.cfg, "provider", None), "model", "deepseek-v4-pro")
+    state.theme_name = getattr(rt.cfg, "theme", "marshmallow")
     state.extra["model"] = model_name
+    state.extra["token_limit"] = getattr(rt.cfg.provider, "context_window", 64_000)
     state.extra["workspace"] = Path(str(rt.workspace)).name or "workspace"
 
     init_stats = refresh_stats(state)

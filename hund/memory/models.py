@@ -19,6 +19,9 @@ CATEGORY_WORKFLOW_HABIT = "workflow_habit"
 CATEGORY_PROJECT_STATE = "current_project_state"
 CATEGORY_TEMPORARY_CONTEXT = "temporary_context"
 CATEGORY_CORE = "core"
+CATEGORY_BEHAVIORAL = "behavioral"
+CATEGORY_CONTEXTUAL = "contextual"
+CATEGORY_SENSITIVE = "sensitive"
 
 # Statuses
 STATUS_DRAFT = "draft"

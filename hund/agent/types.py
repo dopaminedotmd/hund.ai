@@ -32,3 +32,25 @@ class ConfirmRequest:
     tool_name: str
     args: dict[str, Any] = field(default_factory=dict)
     risk: str = "confirm"
+
+
+@dataclass(frozen=True)
+class ConfirmResponse:
+    """Structured confirmation result returned by UI sinks."""
+
+    verdict: ConfirmVerdict
+    edited_args: dict[str, Any] | None = None
+
+
+def normalize_confirm_response(
+    value: ConfirmResponse | ConfirmVerdict | str | None,
+) -> ConfirmResponse:
+    """Normalize legacy verdict-only sinks to the canonical response type."""
+    if isinstance(value, ConfirmResponse):
+        return value
+    if isinstance(value, ConfirmVerdict):
+        return ConfirmResponse(verdict=value)
+    try:
+        return ConfirmResponse(verdict=ConfirmVerdict(str(value)))
+    except (TypeError, ValueError):
+        return ConfirmResponse(verdict=ConfirmVerdict.DENY)

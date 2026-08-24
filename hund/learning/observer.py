@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..store.sqlite import connect
+from .gap_detector import detect_evidence_gaps
 
 
 @dataclass
@@ -21,9 +22,14 @@ class Observation:
     privacy_level: str = "local_only"  # default: lämnar aldrig maskinen
 
 
-def add_gap_event(symptom: str, domain: str = "unknown", study_target: str = "") -> str:
+def add_gap_event(
+    symptom: str,
+    domain: str = "unknown",
+    study_target: str = "",
+    db_path=None,
+) -> str:
     """Logga ett gap (kunskapslucka Hund ska studera). Returnerar gap-id."""
-    conn = connect()
+    conn = connect(db_path)
     gid = str(uuid.uuid4())
     conn.execute(
         """INSERT INTO gap_events(id, created_at, domain, symptom, study_target, status)
@@ -39,13 +45,22 @@ def add_gap_event(symptom: str, domain: str = "unknown", study_target: str = "")
     )
     conn.commit()
     conn.close()
-    if domain and domain != "unknown":
-        try:
-            from hund.domains.xp import add_xp
-            add_xp(domain, 2)
-        except Exception:
-            pass
+    # Gap observations are telemetry only. Durable knowledge XP is awarded
+    # exclusively by CommitController lifecycle events.
     return gid
+
+
+def observe_epistemic_gaps(user_message: str, *, domain: str = "unknown", db_path=None) -> list[str]:
+    """Persist only structured, redacted gap labels—not the user's raw prompt."""
+    ids: list[str] = []
+    for gap in detect_evidence_gaps(user_message):
+        ids.append(add_gap_event(
+            symptom=f"epistemic:{gap.kind}",
+            domain=domain,
+            study_target=gap.study_target,
+            db_path=db_path,
+        ))
+    return ids
 
 
 def list_gap_events(status: str | None = None) -> list[tuple]:

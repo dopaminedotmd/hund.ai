@@ -86,3 +86,15 @@ def test_web_rules_injected_into_prompt():
     assert "5-10 for research" in low
 
 
+def test_output_formatting_is_adaptive_not_bullet_default():
+    prompt = build_system_prompt("P", _prof())
+    low = prompt.lower()
+    assert "standardformatet är naturlig, kompakt prosa" in low
+    assert "punktlistor endast när" in low
+    assert "formatering är en förmåga, inte en husstil" in low
+    assert "vanlig prosa först" in low
+    assert "fetstil är semantisk betoning" in low
+    assert "undvik ett fetstilt label-prefix" in low
+    assert "använd punktlistor med tydliga fetstilta rubriker" not in low
+    assert "personan i början av prompten styr alltid röst" in low
+    assert "resolvernamn" in low

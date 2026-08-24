@@ -70,8 +70,8 @@ def test_dangerous_cannot_be_allowlisted(tmp_path):
     hooks.confirm.assert_called_once()
 
 
-def test_confirm_edit_returns_declined_marker(tmp_path):
-    """Om EDIT returneras från confirm, ska anropet nekas med edit-marker utan att krascha."""
+def test_confirm_edit_without_editor_cancels_safely(tmp_path):
+    """A legacy EDIT verdict without edited arguments must cancel safely."""
     register_defaults(tmp_path)
     engine = PermissionEngine(tmp_path)
     console = MagicMock()
@@ -81,9 +81,9 @@ def test_confirm_edit_returns_declined_marker(tmp_path):
     tc = {"id": "1", "function": {"name": "terminal", "arguments": '{"command": "echo test"}'}}
     
     res = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-1")
-    assert res == "[declined: edit requested]"
+    assert res == "[declined: edit cancelled]"
     hooks.confirm.assert_called_once()
-    hooks.declined.assert_called_once_with("terminal", "edit requested (not yet implemented)")
+    hooks.declined.assert_called_once_with("terminal", "edit cancelled")
 
 
 def test_single_confirm_runs_and_allowlists_no_second_prompt(tmp_path):

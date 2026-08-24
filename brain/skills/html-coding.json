@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "name": "html-coding",
+  "domain": "web-development",
+  "status": "active",
+  "triggers": [
+    "html",
+    "html kodning",
+    "html-kodning",
+    "html sida",
+    "webbsida",
+    "webbplats",
+    "markup",
+    "semantisk html",
+    "html struktur",
+    "bygger html",
+    "skapa html",
+    "html element",
+    "dom",
+    "html5",
+    "doctype",
+    "meta viewport",
+    "alt text",
+    "formulär",
+    "html form",
+    "tabell",
+    "html table",
+    "tillgänglighet",
+    "accessibility",
+    "a11y",
+    "aria",
+    "validera html",
+    "html validator",
+    "semantiska element"
+  ],
+  "when_to_use": "When authoring, structuring, inspecting, debugging, or validating HTML documents and static web markup, including semantic structure, forms, tables, and accessibility.",
+  "steps": [
+    "Phase 1 — Inspection: Read any existing HTML file and identify the doctype, lang attribute, head/meta structure, character encoding, and overall nesting before editing.",
+    "Phase 2 — Implementation: Author well-formed HTML5 using the right element for the right job (POSH). Include <!DOCTYPE html>, <html lang=\"...\">, <head> with <meta charset=\"utf-8\"> and viewport, a descriptive <title>, and semantic landmarks (header, nav, main, section, article, aside, footer) over generic <div> containers.",
+    "Phase 3 — Semantics: Use native elements for their purpose — <button> for actions, <a href> for navigation, <ul>/<ol> for lists, <h1>–<h6> in a logical single hierarchy, <table> only for tabular data. Never simulate headings with <span> styling or buttons with styled <div>.",
+    "Phase 4 — Accessibility: Add meaningful alt text to <img> (empty alt=\"\" for purely decorative images), associate every form control with a <label for=\"...\">, use <th scope=\"row|col\"> and <caption> in tables, write link text that works out of context (avoid \"click here\"), and prefer native controls for free keyboard accessibility.",
+    "Phase 5 — Validation & Verification: Confirm all tags are properly nested and closed, verify the document parses, run a validator when possible (W3C Markup Validation Service or tidy), and preview visually via browser or a local server (e.g. python -m http.server).",
+    "Output Rule: After writing an HTML file, reply in 1-4 concise plain-text lines in third person stating what was created and any unverified rendering, without dumping the full source."
+  ],
+  "required_tools": [
+    "read_file",
+    "write_file",
+    "search_files",
+    "terminal"
+  ],
+  "forbidden_actions": [
+    "self_update",
+    "modify_tcb",
+    "elevate_permissions",
+    "apply_update",
+    "delete"
+  ],
+  "safety_level": "confirm_for_write",
+  "verification": [
+    "read_file confirms the HTML document has a doctype, matching open/close tags, and valid nesting",
+    "document parses without obvious structural errors (optional: tidy -eq or W3C validator)",
+    "images carry alt attributes, form controls carry associated labels, tables use th scope and caption"
+  ],
+  "references": [
+    "https://developer.mozilla.org/en-US/docs/Web/HTML/Element",
+    "https://developer.mozilla.org/en-US/docs/Learn_web_development/Core/Accessibility/HTML",
+    "https://html.spec.whatwg.org/multipage/semantics.html",
+    "https://validator.w3.org/"
+  ],
+  "examples": [
+    {
+      "description": "Minimal well-formed document skeleton",
+      "input": "create a basic HTML page",
+      "output": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"utf-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n  <title>Document title</title>\n</head>\n<body>\n  <header><h1>Page heading</h1></header>\n  <main>\n    <p>Content goes here.</p>\n  </main>\n  <footer>Footer content</footer>\n</body>\n</html>"
+    },
+    {
+      "description": "Accessible form control with label",
+      "input": "add a labeled text input",
+      "output": "<label for=\"name\">Fill in your name:</label>\n<input type=\"text\" id=\"name\" name=\"name\">"
+    },
+    {
+      "description": "Decorative image gets empty alt",
+      "input": "add a decorative image",
+      "output": "<img src=\"decor.png\" alt=\"\">"
+    }
+  ]
+}

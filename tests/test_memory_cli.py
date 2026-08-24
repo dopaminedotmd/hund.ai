@@ -6,6 +6,15 @@ from hund.memory.engine import record_contradiction, record_memory
 from hund.ui.commands import CommandContext, cmd_memory
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_hund_home(tmp_path: Path, monkeypatch):
+    """Memory CLI tests must never read or mutate the real user profile."""
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+
 def _make_ctx() -> CommandContext:
     console = MagicMock()
     rt = MagicMock()

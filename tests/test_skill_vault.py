@@ -54,6 +54,8 @@ def test_vault_domain_skills_management(tmp_path: Path):
     assert len(active) == 6
     assert len(vaulted) == 1
     assert vaulted[0].name == "custom-skill-7"
+    assert vaulted[0].status == "active"
+    assert vaulted[0].vault_state == "vaulted"
 
     # Park one skill
     ok, msg = vault.park("custom-skill-1")
@@ -105,4 +107,3 @@ def test_vault_invalid_skill_names(tmp_path: Path):
 
     ok_park, _ = vault.park("nonexistent-skill-xyz")
     assert ok_park is False
-

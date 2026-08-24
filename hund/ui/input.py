@@ -20,6 +20,7 @@ from prompt_toolkit.styles import Style
 from collections.abc import Iterable
 
 from ..paths import hund_home
+from ..agent.user_context import workspace_files
 from . import theme
 from .keys import build_repl_keybindings
 
@@ -51,33 +52,90 @@ SLASH_COMMAND_METAS: dict[str, str] = {
     "/diff": "View working tree modifications",
     "/undo": "File backup and restore information",
     "/lessons": "View learned lessons and feedback",
+    "/learning": "Inspect durable learning receipts",
+    "/trace": "Inspect the last run's redacted tool trace",
 }
 
 
 SLASH_COMMANDS = list(SLASH_COMMAND_METAS.keys())
+MAX_VISIBLE_COMPLETIONS = 6
+
+
+def _fuzzy_score(query: str, candidate: str) -> tuple[int, int] | None:
+    """Score multi-word subsequence matches; lower values are better."""
+    tokens = [token for token in query.lower().split() if token]
+    haystack = candidate.lower()
+    total_gap = 0
+    for token in tokens:
+        position = -1
+        first = None
+        for char in token:
+            position = haystack.find(char, position + 1)
+            if position < 0:
+                return None
+            if first is None:
+                first = position
+        total_gap += position - (first or 0) - len(token) + 1
+    return total_gap, len(candidate)
 
 
 class SlashCommandCompleter(Completer):
-    """Context-aware slash command completer that properly filters prefixes."""
+    """Fuzzy, multi-word slash command completer."""
+
+    def __init__(self, workspace: Any = None) -> None:
+        self.workspace = workspace
 
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
     ) -> Iterable[Completion]:
         text = document.text_before_cursor.lstrip()
+        token = document.get_word_before_cursor(WORD=True)
+        if token.startswith("@"):
+            if token.startswith("@file:") and self.workspace is not None:
+                query = token[len("@file:"):]
+                for path in workspace_files(self.workspace, query):
+                    yield Completion(
+                        text=f"@file:{path}",
+                        start_position=-len(token),
+                        display=path,
+                        display_meta="workspace file",
+                    )
+            else:
+                for item, meta in (
+                    ("@file:", "attach workspace file"),
+                    ("@git:diff", "attach working tree diff"),
+                    ("@git:status", "attach git status"),
+                ):
+                    if item.startswith(token.lower()):
+                        yield Completion(item, start_position=-len(token), display_meta=meta)
+            return
         if not text.startswith("/"):
             return
-        # Stop completing once space/arguments are entered
-        if " " in text:
+        if text.endswith(" ") and text.strip().lower() in {
+            command.lower() for command in SLASH_COMMANDS
+        }:
             return
         query = text.lower()
+        ranked: list[tuple[tuple[int, int], str, str]] = []
         for cmd, meta in SLASH_COMMAND_METAS.items():
-            if cmd.lower().startswith(query):
-                yield Completion(
-                    text=cmd,
-                    start_position=-len(text),
-                    display=cmd,
-                    display_meta=meta,
+            query_parts = query.split()
+            score = _fuzzy_score(query_parts[0], cmd)
+            if score is not None and len(query_parts) > 1:
+                meta_score = _fuzzy_score(" ".join(query_parts[1:]), meta)
+                score = (
+                    (score[0] + meta_score[0], score[1] + meta_score[1])
+                    if meta_score is not None
+                    else None
                 )
+            if score is not None:
+                ranked.append((score, cmd, meta))
+        for _score, cmd, meta in sorted(ranked):
+            yield Completion(
+                text=cmd,
+                start_position=-len(text),
+                display=cmd,
+                display_meta=meta,
+            )
 
 
 @dataclass
@@ -86,7 +144,7 @@ class PromptState:
     stats_text: list[tuple[str, str]] | None = None
     prev_tiers: dict[str, str] = field(default_factory=dict)
     session_id: str | None = None
-    theme_name: str = "bone"
+    theme_name: str = "marshmallow"
     notifications_enabled: bool = True
     start_time: float = field(default_factory=time.time)
     extra: dict[str, Any] = field(default_factory=dict)

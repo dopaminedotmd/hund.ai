@@ -33,15 +33,34 @@ def load_persona() -> str:
     from .paths import brain_persona_path
 
     env_path = os.environ.get("HUND_PERSONA_PATH")
-    candidates: list[Path] = []
     if env_path:
-        candidates.append(Path(env_path))
-    candidates.append(brain_persona_path())  # kanonisk redigerbar plats
-    candidates.extend(_PERSONA_CANDIDATES)
-    for c in candidates:
+        try:
+            override = Path(env_path)
+            if override.is_file():
+                return override.read_text(encoding="utf-8-sig")
+        except OSError:
+            pass
+
+    canonical = brain_persona_path()
+    try:
+        if canonical.is_file():
+            return canonical.read_text(encoding="utf-8-sig")
+    except OSError:
+        pass
+
+    for c in _PERSONA_CANDIDATES:
         try:
             if c.is_file():
-                return c.read_text(encoding="utf-8-sig")  # sig = hantera BOM
+                text = c.read_text(encoding="utf-8-sig")
+                # First-run seed: make the actually loaded full persona canonical
+                # and editable without ever overwriting an existing user version.
+                try:
+                    canonical.parent.mkdir(parents=True, exist_ok=True)
+                    with canonical.open("x", encoding="utf-8", newline="\n") as fh:
+                        fh.write(text)
+                except (FileExistsError, OSError):
+                    pass
+                return text
         except OSError:
             continue
     return DEFAULT_PERSONA

@@ -90,7 +90,7 @@ def test_theme_list_shows_options() -> None:
     ctx = _ctx(theme_name="bone")
     dispatch_command("/theme", ctx)
     out = ctx.console.file.getvalue()
-    assert "bone" in out
+    assert "marshmallow" in out
     assert "nord" in out
     assert "synthwave" in out
 
@@ -117,7 +117,7 @@ def test_theme_persistence_reloaded(tmp_path) -> None:
     cfg.save(cfg_file)
 
     loaded = HundConfig.load(cfg_file)
-    assert loaded.theme == "bone"
+    assert loaded.theme == "marshmallow"
 
     # Save new theme
     loaded.theme = "synthwave"

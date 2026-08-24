@@ -31,6 +31,9 @@ class ProviderConfig(BaseModel):
     model: str = "deepseek-v4-pro"  # deepseek-v4-flash = billigare
     # api_key hanteras separat — ALDRIG serialiserad till disk.
     api_key_env: str = "HUND_API_KEY"
+    provider_id: str = "deepseek"
+    credential_id: str = "deepseek"
+    context_window: int = 64_000
 
 
 class HundConfig(BaseModel):
@@ -40,7 +43,10 @@ class HundConfig(BaseModel):
     workspace_root: Path | None = None  # None = cwd. Workspace-confined.
     telemetry_local: bool = True  # lokal prestandalog: på som default
     telemetry_upload: bool = False  # extern upload: AV som default (inte i v1)
-    theme: str = "bone"  # active skin: bone / nord / synthwave
+    theme: str = "marshmallow"  # active skin: marshmallow / nord / synthwave
+    reduced_motion: bool = False
+    screen_reader: bool = False
+    ascii_ui: bool = False
 
     @classmethod
     def load(cls, path: Path | None = None) -> "HundConfig":
@@ -53,9 +59,11 @@ class HundConfig(BaseModel):
                     cfg.provider.model.startswith("gpt-") or cfg.provider.model not in KNOWN_MODELS
                 ):
                     cfg.provider.model = "deepseek-v4-pro"
-                # Migrate legacy theme names if present
-                if cfg.theme not in ("bone", "nord", "synthwave"):
-                    cfg.theme = "bone"
+                # Canonicalize the legacy public name without breaking old configs.
+                if cfg.theme == "bone":
+                    cfg.theme = "marshmallow"
+                elif cfg.theme not in ("marshmallow", "nord", "synthwave"):
+                    cfg.theme = "marshmallow"
                 return cfg
             except Exception:
                 return cls()

@@ -89,6 +89,24 @@ def record_memory(
     if not clean_statement:
         raise ValueError("Memory statement cannot be empty.")
 
+    existing_conn = connect_memory(db_path)
+    existing = existing_conn.execute(
+        """SELECT memory_id FROM memory
+           WHERE scope=? AND category=? AND lower(trim(statement))=lower(trim(?))
+             AND status IN ('verified', 'draft') AND superseded_by IS NULL
+           ORDER BY confidence DESC, last_seen DESC LIMIT 1""",
+        (scope, category, clean_statement),
+    ).fetchone()
+    existing_conn.close()
+    if existing is not None:
+        reinforced = reinforce_memory(
+            existing[0],
+            evidence_id=(evidence_ids or [None])[0],
+            db_path=db_path,
+        )
+        if reinforced is not None:
+            return reinforced
+
     # Calculate initial confidence
     if initial_confidence is not None:
         confidence = float(initial_confidence)
@@ -397,6 +415,7 @@ def list_active_memories(
     category: str | None = None,
     include_drafts: bool = False,
     db_path: Path | str | None = None,
+    limit: int = 100,
 ) -> list[MemoryItem]:
     """List active memories (verified, or drafts if requested) ordered by is_core DESC, confidence DESC."""
     conn = connect_memory(db_path)
@@ -421,7 +440,9 @@ def list_active_memories(
         SELECT * FROM memory
         {where_clause}
         ORDER BY is_core DESC, confidence DESC, last_seen DESC
+        LIMIT ?
     """
+    params.append(max(1, min(int(limit), 500)))
     rows = conn.execute(query, params).fetchall()
     conn.close()
     return [MemoryItem.from_row(r) for r in rows]
