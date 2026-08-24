@@ -882,9 +882,48 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             new_lines: list[str] = []
             changed = False
             in_box = False
+            in_panel = False
             box_lines: list[str] = []
+            panel_lines: list[str] = []
+
             for line in lines:
-                if line.startswith("┌─ hund ") or line.startswith("╭─ hund "):
+                if line.startswith("╔") and line.endswith("╗"):
+                    in_panel = True
+                    panel_lines = [line]
+                elif in_panel and (line.startswith("╚") and line.endswith("╝")):
+                    in_panel = False
+                    panel_lines.append(line)
+                    panel_text = "\n".join(panel_lines)
+                    app_w = _app_width()
+
+                    if "── MOTOR SKILLS" in panel_text or "── DOMAIN SKILLS" in panel_text:
+                        from .skills_view import render_skills_panel
+                        new_panel = render_skills_panel(rt, width=app_w)
+                        new_lines.extend(new_panel.split("\n"))
+                        changed = True
+                    elif "SKILL DETAIL:" in panel_text:
+                        from .skills_view import render_skill_detail
+                        # Extract skill name from detail line
+                        sk_name = ""
+                        for pl in panel_lines:
+                            if "SKILL DETAIL:" in pl:
+                                sk_name = pl.split("SKILL DETAIL:")[-1].strip(" ║│═").strip()
+                                break
+                        if sk_name:
+                            new_panel = render_skill_detail(sk_name, rt, width=app_w)
+                            new_lines.extend(new_panel.split("\n"))
+                            changed = True
+                        else:
+                            new_lines.extend(panel_lines)
+                    elif "OS      " in panel_text or "── BASE ATTRIBUTES ──" in panel_text or "HUND AI" in panel_text:
+                        new_banner = build_startup_banner(rt, width=app_w)
+                        new_lines.extend(new_banner.split("\n"))
+                        changed = True
+                    else:
+                        new_lines.extend(panel_lines)
+                elif in_panel:
+                    panel_lines.append(line)
+                elif line.startswith("┌─ hund ") or line.startswith("╭─ hund "):
                     in_box = True
                     box_lines = []
                 elif in_box and (line.startswith("└") or line.startswith("╰")):
