@@ -886,7 +886,14 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
             box_lines: list[str] = []
 
             for line in lines:
-                if line.startswith("╔") and line.endswith("╗"):
+                if (
+                    line.startswith("╔")
+                    and line.endswith("╗")
+                    and "SKILLS" not in line
+                    and "DETAIL" not in line
+                    and "CARD" not in line
+                    and line.strip("╔═╗") == ""
+                ):
                     in_banner = True
                     new_banner = build_startup_banner(rt, width=_app_width())
                     new_lines.extend(new_banner.split("\n"))
