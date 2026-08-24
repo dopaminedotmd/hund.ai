@@ -55,10 +55,11 @@ def _all_domain_files(home: Optional[Path] = None) -> list[Path]:
 def add(domain: str, trigger: str, rule: str, source: str = "manual",
         home: Optional[Path] = None) -> str:
     uid = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
     data = _load(domain, home)
     data["units"].append({
         "id": uid,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now,
         "trigger": trigger,
         "rule": rule,
         "frequency": 0,
@@ -68,6 +69,26 @@ def add(domain: str, trigger: str, rule: str, source: str = "manual",
         "source": source,
     })
     _save(data, home)
+    try:
+        from . import db as kdb
+        from .models import KnowledgeUnit, STATUS_CANDIDATE
+        db_path = (home / "knowledge" / "knowledge.db") if home else None
+        kdb.insert_unit(
+            KnowledgeUnit(
+                id=uid,
+                domain=domain,
+                statement=rule,
+                trigger=trigger,
+                status=STATUS_CANDIDATE,
+                confidence=0.6,
+                created_at=now,
+            ),
+            reason=f"added via store.add source={source}",
+            db_path=db_path,
+        )
+    except Exception:
+        pass
+
     try:
         from hund.domains.xp import add_xp
         add_xp(domain, 3)

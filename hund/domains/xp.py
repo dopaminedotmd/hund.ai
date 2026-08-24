@@ -1,13 +1,33 @@
-"""Domain XP — knowledge-driven XP engine and progression tiers per domain."""
+"""Domain XP v2 — knowledge-driven XP engine, deterministic rewards, and audit trail per domain."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime, timezone
+from typing import Any, Optional
+import uuid
 
 from hund.stats.tiers import TIERS, render_bar
 from hund.store.sqlite import connect
 
 XP_TABLE = "domain_xp"
+XP_EVENTS_TABLE = "domain_xp_events"
+
+CURRENT_XP_ALGORITHM = "v2.0"
+
+# Event types and reward weights (§6)
+EVENT_DISCOVERY = "discovery"
+EVENT_SAME_TASK_REUSE = "same_task_reuse"
+EVENT_CROSS_SESSION_REUSE = "cross_session_reuse"
+EVENT_VALIDATION_PROMOTION = "validation_promotion"
+EVENT_MANUAL_ADJUST = "manual_adjust"
+
+XP_AMOUNTS: dict[str, int] = {
+    EVENT_DISCOVERY: 1,
+    EVENT_SAME_TASK_REUSE: 3,
+    EVENT_CROSS_SESSION_REUSE: 5,
+    EVENT_VALIDATION_PROMOTION: 8,
+    EVENT_MANUAL_ADJUST: 0,
+}
 
 
 def _ensure_table(db_path=None) -> None:
@@ -20,6 +40,23 @@ def _ensure_table(db_path=None) -> None:
             tier TEXT DEFAULT 'Novice'
         )"""
     )
+
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS {XP_EVENTS_TABLE} (
+            event_id TEXT PRIMARY KEY,
+            domain TEXT NOT NULL,
+            unit_id TEXT,
+            xp_amount INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            task_id TEXT,
+            session_id TEXT,
+            xp_algorithm TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )"""
+    )
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_xp_events_domain ON {XP_EVENTS_TABLE}(domain)")
+    conn.execute(f"CREATE INDEX IF NOT EXISTS idx_xp_events_unit ON {XP_EVENTS_TABLE}(unit_id)")
+
     conn.commit()
     conn.close()
 
@@ -158,7 +195,7 @@ def get_xp(domain: str, db_path=None) -> dict[str, Any]:
 
 
 def add_xp(domain: str, amount: int, db_path=None) -> tuple[int, str, bool]:
-    """Add XP to domain. Returns (new_level, new_tier, leveled_up)."""
+    """Directly add XP to domain without creating an audit event (legacy helper)."""
     if amount <= 0:
         current = get_xp(domain, db_path)
         return current["level"], current["tier"], False
@@ -183,6 +220,132 @@ def add_xp(domain: str, amount: int, db_path=None) -> tuple[int, str, bool]:
     conn.close()
 
     return new_level, new_tier, leveled_up
+
+
+def award_xp(
+    domain: str,
+    event_type: str,
+    amount: Optional[int] = None,
+    unit_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    xp_algorithm: str = CURRENT_XP_ALGORITHM,
+    db_path=None,
+) -> tuple[int, str, bool, int]:
+    """Award XP deterministically based on knowledge event, with full audit trail logging.
+
+    Returns (new_level, new_tier, leveled_up, xp_awarded).
+    """
+    xp_val = amount if amount is not None else XP_AMOUNTS.get(event_type, 0)
+    if xp_val <= 0:
+        current = get_xp(domain, db_path)
+        return current["level"], current["tier"], False, 0
+
+    _ensure_table(db_path)
+    now = datetime.now(timezone.utc).isoformat()
+    event_id = f"xpevt_{uuid.uuid4().hex[:12]}"
+
+    conn = connect(db_path)
+
+    # 1. Update Domain XP
+    row = conn.execute(f"SELECT xp, level FROM {XP_TABLE} WHERE domain=?", (domain,)).fetchone()
+    old_xp = row[0] if row else 0
+    old_level = row[1] if row else 1
+
+    new_xp = old_xp + xp_val
+    new_level, new_tier, _, _, _ = calculate_level_and_tier(new_xp)
+    leveled_up = new_level > old_level
+
+    conn.execute(
+        f"""INSERT OR REPLACE INTO {XP_TABLE} (domain, xp, level, tier)
+            VALUES (?, ?, ?, ?)""",
+        (domain, new_xp, new_level, new_tier),
+    )
+
+    # 2. Record Event in Audit Trail
+    conn.execute(
+        f"""INSERT INTO {XP_EVENTS_TABLE} (
+            event_id, domain, unit_id, xp_amount, event_type,
+            task_id, session_id, xp_algorithm, timestamp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            event_id,
+            domain,
+            unit_id,
+            xp_val,
+            event_type,
+            task_id,
+            session_id,
+            xp_algorithm,
+            now,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    return new_level, new_tier, leveled_up, xp_val
+
+
+def list_xp_events(
+    domain: Optional[str] = None,
+    unit_id: Optional[str] = None,
+    db_path=None,
+) -> list[dict[str, Any]]:
+    """List recorded XP audit events."""
+    _ensure_table(db_path)
+    conn = connect(db_path)
+
+    query = f"""SELECT event_id, domain, unit_id, xp_amount, event_type,
+                       task_id, session_id, xp_algorithm, timestamp
+                FROM {XP_EVENTS_TABLE} WHERE 1=1"""
+    params: list[Any] = []
+
+    if domain:
+        query += " AND domain = ?"
+        params.append(domain)
+    if unit_id:
+        query += " AND unit_id = ?"
+        params.append(unit_id)
+
+    query += " ORDER BY timestamp ASC"
+    rows = conn.execute(query, params).fetchall()
+    conn.close()
+
+    return [
+        {
+            "event_id": r[0],
+            "domain": r[1],
+            "unit_id": r[2],
+            "xp_amount": r[3],
+            "event_type": r[4],
+            "task_id": r[5],
+            "session_id": r[6],
+            "xp_algorithm": r[7],
+            "timestamp": r[8],
+        }
+        for r in rows
+    ]
+
+
+def recalculate_domain_xp(domain: str, db_path=None) -> int:
+    """Deterministically recalculate total XP from raw audit events."""
+    _ensure_table(db_path)
+    conn = connect(db_path)
+    row = conn.execute(
+        f"SELECT SUM(xp_amount) FROM {XP_EVENTS_TABLE} WHERE domain = ?", (domain,)
+    ).fetchone()
+    total_xp = int(row[0] or 0) if row else 0
+
+    new_level, new_tier, _, _, _ = calculate_level_and_tier(total_xp)
+    conn.execute(
+        f"""INSERT OR REPLACE INTO {XP_TABLE} (domain, xp, level, tier)
+            VALUES (?, ?, ?, ?)""",
+        (domain, total_xp, new_level, new_tier),
+    )
+    conn.commit()
+    conn.close()
+    return total_xp
 
 
 def list_all_xp(db_path=None) -> list[dict[str, Any]]:
@@ -216,7 +379,6 @@ def migrate_confidence_to_xp(db_path=None) -> int:
     """
     _ensure_table(db_path)
     conn = connect(db_path)
-    # Check if domain_confidence table exists
     table_check = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='domain_confidence'"
     ).fetchone()
