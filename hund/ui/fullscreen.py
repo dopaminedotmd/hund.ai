@@ -1235,7 +1235,8 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
     # ---- slash command runner ----
     def run_command(user_text: str) -> None:
         buf = io.StringIO()
-        console = Console(file=buf, color_system=None, force_terminal=False, width=100)
+        app_w = _app_width()
+        console = Console(file=buf, color_system=None, force_terminal=False, width=app_w)
         ctx = CommandContext(console=console, rt=rt, state=state)
         dispatch_command(user_text, ctx)
         out = buf.getvalue()
