@@ -397,8 +397,6 @@ def render_usage(
 
 THEME_OPTIONS = (
     ("marshmallow", "Clean white & cyan glow"),
-    ("nord", "Arctic slate & pastels"),
-    ("synthwave", "Cyberpunk neon & purple"),
 )
 
 

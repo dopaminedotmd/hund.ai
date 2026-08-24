@@ -59,11 +59,7 @@ class HundConfig(BaseModel):
                     cfg.provider.model.startswith("gpt-") or cfg.provider.model not in KNOWN_MODELS
                 ):
                     cfg.provider.model = "deepseek-v4-pro"
-                # Canonicalize the legacy public name without breaking old configs.
-                if cfg.theme == "bone":
-                    cfg.theme = "marshmallow"
-                elif cfg.theme not in ("marshmallow", "nord", "synthwave"):
-                    cfg.theme = "marshmallow"
+                cfg.theme = "marshmallow"
                 return cfg
             except Exception:
                 return cls()

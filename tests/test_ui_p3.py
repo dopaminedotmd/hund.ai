@@ -87,25 +87,23 @@ def test_config_set_bool_parses(monkeypatch) -> None:
 # -- /theme ----------------------------------------------------------------
 
 def test_theme_list_shows_options() -> None:
-    ctx = _ctx(theme_name="bone")
+    ctx = _ctx(theme_name="marshmallow")
     dispatch_command("/theme", ctx)
     out = ctx.console.file.getvalue()
     assert "marshmallow" in out
-    assert "nord" in out
-    assert "synthwave" in out
 
 
 def test_theme_set_known() -> None:
-    ctx = _ctx(theme_name="bone")
-    dispatch_command("/theme nord", ctx)
-    assert ctx.state.theme_name == "nord"
-    assert "nord" in ctx.console.file.getvalue()
+    ctx = _ctx(theme_name="marshmallow")
+    dispatch_command("/theme marshmallow", ctx)
+    assert ctx.state.theme_name == "marshmallow"
+    assert "marshmallow" in ctx.console.file.getvalue()
 
 
 def test_theme_set_unknown_errors() -> None:
-    ctx = _ctx(theme_name="bone")
+    ctx = _ctx(theme_name="marshmallow")
     dispatch_command("/theme neon", ctx)
-    assert ctx.state.theme_name == "bone"
+    assert ctx.state.theme_name == "marshmallow"
     assert "unknown theme" in ctx.console.file.getvalue().lower()
 
 
@@ -119,14 +117,11 @@ def test_theme_persistence_reloaded(tmp_path) -> None:
     loaded = HundConfig.load(cfg_file)
     assert loaded.theme == "marshmallow"
 
-    # Save new theme
-    loaded.theme = "synthwave"
-    loaded.save(cfg_file)
-
+    # Marshmallow is the single authoritative theme
     reloaded = HundConfig.load(cfg_file)
-    assert reloaded.theme == "synthwave"
-    assert theme.get_pygments_theme(reloaded.theme) == "dracula"
-    assert theme.get_skin("nord")["pygments"] == "nord"
+    assert reloaded.theme == "marshmallow"
+    assert theme.get_pygments_theme(reloaded.theme) == "one-dark"
+    assert theme.get_skin("marshmallow")["pygments"] == "one-dark"
     assert "thinking" in theme.SEMANTIC
     assert "learning" in theme.SEMANTIC
     assert "add" in theme.SEMANTIC

@@ -77,120 +77,33 @@ SKINS: dict[str, dict[str, Any]] = {
             "mascot": "ansiwhite",
         },
     },
-    "nord": {
-        "name": "nord",
-        "pygments": "nord",
-        "tokens": {
-            "primary": "#D8DEE9",
-            "secondary": "#4C566A",
-            "accent": "#88C0D0",
-            "meta_accent": "#5E81AC",
-            "logo": "#D8DEE9",
-            "user": "#A3BE8C",
-            "success": "#A3BE8C",
-            "warning": "#EBCB8B",
-            "danger": "#BF616A",
-            "tool": "#B48EAD",
-            "thinking": "#81A1C1",
-            "learning": "#EBCB8B",
-            "add": "#8FB89E",
-            "del": "#C2767D",
-            "add_bg": "#263D36",
-            "add_fg": "#D8DEE9",
-            "del_bg": "#3D2328",
-            "del_fg": "#D8DEE9",
-            "mascot": "#D8DEE9",
-            "mascot_status": "#68758B",
-        },
-        "ansi": {
-            "primary": "ansiwhite",
-            "secondary": "ansibrightblack",
-            "accent": "ansicyan",
-            "meta_accent": "ansiblue",
-            "logo": "ansiwhite",
-            "user": "ansigreen",
-            "success": "ansigreen",
-            "warning": "ansiyellow",
-            "danger": "ansired",
-            "tool": "ansimagenta",
-            "thinking": "ansibrightcyan",
-            "learning": "ansiyellow",
-            "add": "ansigreen",
-            "del": "ansired",
-            "mascot": "ansiwhite",
-        },
-    },
-    "synthwave": {
-        "name": "synthwave",
-        "pygments": "dracula",
-        "tokens": {
-            "primary": "#E0DEF4",
-            "secondary": "#6E6A86",
-            "accent": "#8BE9FD",
-            "meta_accent": "#C4A7E7",
-            "logo": "#E0DEF4",
-            "user": "#A6E3A1",
-            "success": "#A6E3A1",
-            "warning": "#F9E2AF",
-            "danger": "#F38BA8",
-            "tool": "#C4A7E7",
-            "thinking": "#F5E0DC",
-            "learning": "#F9E2AF",
-            "add": "#88C090",
-            "del": "#C87085",
-            "add_bg": "#1E3B33",
-            "add_fg": "#E0DEF4",
-            "del_bg": "#3B1E2E",
-            "del_fg": "#E0DEF4",
-            "mascot": "#E0DEF4",
-            "mascot_status": "#817A96",
-        },
-        "ansi": {
-            "primary": "ansiwhite",
-            "secondary": "ansibrightblack",
-            "accent": "ansibrightcyan",
-            "meta_accent": "ansibrightmagenta",
-            "logo": "ansiwhite",
-            "user": "ansibrightgreen",
-            "success": "ansibrightgreen",
-            "warning": "ansiyellow",
-            "danger": "ansibrightred",
-            "tool": "ansibrightmagenta",
-            "thinking": "ansiwhite",
-            "learning": "ansiyellow",
-            "add": "ansigreen",
-            "del": "ansired",
-            "mascot": "ansiwhite",
-        },
-    },
 }
 
 DEFAULT_SKIN = "marshmallow"
 DEFAULT_THEME = DEFAULT_SKIN
 THEMES = SKINS  # Alias for backward compatibility
 
-# Code-level compatibility only. User-facing selectors use canonical names.
+# Code-level compatibility only.
 SKINS["bone"] = SKINS["marshmallow"]
+SKINS["nord"] = SKINS["marshmallow"]
+SKINS["synthwave"] = SKINS["marshmallow"]
 
 PYGMENTS_THEMES: dict[str, str] = {
     "marshmallow": "one-dark",
     "bone": "one-dark",
-    "nord": "nord",
-    "synthwave": "dracula",
+    "nord": "one-dark",
+    "synthwave": "one-dark",
 }
 
 
 def get_pygments_theme(skin_name: str | None = None) -> str:
     """Get the corresponding Pygments syntax highlighting theme name for a skin."""
-    return PYGMENTS_THEMES.get((skin_name or DEFAULT_SKIN).lower(), "one-dark")
+    return "one-dark"
 
 
 def get_skin(name: str | None = None) -> dict[str, Any]:
     """Retrieve skin definition by name with fallback to DEFAULT_SKIN."""
-    key = (name or DEFAULT_SKIN).lower().strip()
-    if key == "bone":
-        key = "marshmallow"
-    return SKINS.get(key, SKINS[DEFAULT_SKIN])
+    return SKINS["marshmallow"]
 
 
 def get_theme(name: str | None = None) -> dict[str, Any]:
@@ -200,7 +113,7 @@ def get_theme(name: str | None = None) -> dict[str, Any]:
 
 def theme_names() -> list[str]:
     """List all available skin names."""
-    return ["marshmallow", "nord", "synthwave"]
+    return ["marshmallow"]
 
 
 def make_pt_style(skin_name: str | None = None) -> Style:
