@@ -642,23 +642,53 @@ class _OutputLexer(Lexer):
                 if rest.startswith(" "):
                     tokens.append(("class:secondary", " "))
                     rest = rest[1:]
+                symbol_style = "class:primary"
                 if rest.startswith("⟳"):
                     tokens.append(("class:tool", "⟳"))
                     rest = rest[1:]
+                    symbol_style = "class:tool"
                 elif rest.startswith("✓"):
                     tokens.append(("class:success", "✓"))
                     rest = rest[1:]
+                    symbol_style = "class:primary"
                 elif rest.startswith("✗") or rest.startswith("⊘"):
                     tokens.append(("class:danger", rest[0]))
                     rest = rest[1:]
-                
-                # Split metadata suffix (e.g. " · 0.6s", "  0.3s", " 4 files · 0.6s")
+                    symbol_style = "class:danger"
+
+                # Split metadata suffix (e.g. " · 0.6s")
+                meta_part = ""
                 if " · " in rest:
                     main_part, meta_part = rest.rsplit(" · ", 1)
-                    tokens.append(("class:primary", main_part))
-                    tokens.append(("class:secondary", " · " + meta_part))
                 else:
-                    tokens.append(("class:primary", rest))
+                    main_part = rest
+
+                # Detail error/blocked reason (e.g. " — blocked / denied")
+                detail_part = ""
+                if " — " in main_part:
+                    main_part, detail_part = main_part.split(" — ", 1)
+
+                # Parse verb vs target/path/command in main_part
+                if main_part.startswith(" "):
+                    tokens.append(("class:secondary", " "))
+                    main_part = main_part[1:]
+
+                parts = main_part.split(" ", 1)
+                if len(parts) == 2:
+                    verb, target = parts
+                    tokens.append((symbol_style, verb))
+                    tokens.append(("class:secondary", " "))
+                    tokens.append(("class:accent", target))
+                else:
+                    tokens.append((symbol_style, main_part))
+
+                if detail_part:
+                    tokens.append(("class:secondary", " — "))
+                    tokens.append(("class:danger", detail_part))
+
+                if meta_part:
+                    tokens.append(("class:secondary", " · " + meta_part))
+
                 return tokens
             elif line.startswith("  ╰─ ") or (line.startswith("╰─ ") and not line.endswith("╯")):
                 idx = line.find("╰─")
