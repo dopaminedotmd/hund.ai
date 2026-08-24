@@ -134,11 +134,23 @@ def build_startup_banner(rt, width: int = 80) -> str:
         gpu_str = getattr(profile, "shell", "PowerShell")
 
     cfg = getattr(rt, "cfg", None)
-    provider_name = getattr(getattr(cfg, "provider", None), "name", "DeepSeek")
-    model_name = getattr(getattr(cfg, "provider", None), "model", "deepseek-v4-pro")
+    provider_obj = getattr(cfg, "provider", None)
+    provider_id = (
+        getattr(provider_obj, "provider_id", "")
+        or getattr(provider_obj, "credential_id", "")
+        or getattr(provider_obj, "name", "")
+    )
+    provider_names = {
+        "openrouter": "OpenRouter",
+        "deepseek": "DeepSeek",
+        "local": "Local",
+        "openai": "OpenAI",
+    }
+    provider_name = provider_names.get(provider_id.lower(), provider_id if provider_id else "DeepSeek")
+    model_name = getattr(provider_obj, "model", "deepseek-v4-pro")
     if "(" in model_name and ")" in model_name:
         model_display = model_name
-    elif provider_name and model_name.startswith(provider_name.lower()):
+    elif provider_name and model_name.lower().startswith(provider_name.lower()):
         model_display = model_name
     else:
         model_display = f"{provider_name} ({model_name})"
