@@ -12,6 +12,8 @@ Features:
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from enum import Enum
 import json
 import os
 import re
@@ -68,24 +70,92 @@ def parse_confirm_input(ans: str) -> ConfirmVerdict:
     return ConfirmVerdict.DENY
 
 
-class StreamingMarkdownFilter:
-    """Stateful stream filter that converts markdown syntax on-the-fly.
+class SegmentType(str, Enum):
+    PROSE = "prose"
+    CODE = "code"
+    DIFF = "diff"
 
-    Transforms:
-      - Line start '- ' or '* ' -> '• '
-      - '### Heading' -> 'Heading' (suppressing raw #)
-      - Code fences ```...``` -> formatted code / diff blocks
-      - Preserves '**bold**', '__bold__', and '`code`' for lexer styling.
+
+@dataclass
+class SemanticSegment:
+    type: SegmentType
+    language: str = ""
+    filename: str = ""
+    lines: list[str] = field(default_factory=list)
+    is_open: bool = False
+    closed_by_eof: bool = False
+
+    def freeze(self) -> FrozenSemanticSegment:
+        return FrozenSemanticSegment(
+            type=self.type,
+            language=self.language,
+            filename=self.filename,
+            lines=tuple(self.lines),
+            is_open=self.is_open,
+            closed_by_eof=self.closed_by_eof,
+        )
+
+
+@dataclass(frozen=True)
+class FrozenSemanticSegment:
+    type: SegmentType
+    language: str = ""
+    filename: str = ""
+    lines: tuple[str, ...] = field(default_factory=tuple)
+    is_open: bool = False
+    closed_by_eof: bool = False
+
+
+class StreamingMarkdownFilter:
+    """Persistent, O(n) incremental streaming markdown filter and segment parser.
+
+    Maintains state across delta chunks without reparsing finalized segments
+    and preserves original canonical chunks verbatim.
     """
 
-    def __init__(self):
-        self._buf = ""
+    def __init__(self, content_width: int = 74):
+        self.content_width = content_width
+        self._canonical_chunks: list[str] = []
+        self._segments: list[FrozenSemanticSegment] = []
+        self._active_segment = SemanticSegment(type=SegmentType.PROSE, is_open=True)
+        self._chars: list[str] = []
+        self._cursor: int = 0
+        self._pending_cr: bool = False
         self._at_line_start = True
         self._in_fence = False
         self._fence_info = ""
         self._fence_lines: list[str] = []
+        self._prose_line: list[str] = []
+        self._emitted_len = 0
+        self._parse_calls_count = 0  # Instrumentation counter for O(n) verification
 
-    def _render_fence(self) -> str:
+    @property
+    def canonical_source(self) -> str:
+        """Join canonical chunks on demand without modifying raw code points."""
+        return "".join(self._canonical_chunks)
+
+    @property
+    def segments(self) -> list[FrozenSemanticSegment]:
+        return self.get_segments()
+
+    def get_segments(self) -> list[FrozenSemanticSegment]:
+        res = list(self._segments)
+        active_lines = list(self._active_segment.lines)
+        if self._prose_line and not self._in_fence:
+            active_lines.append("".join(self._prose_line))
+        if active_lines or (self._in_fence and self._active_segment.is_open):
+            seg = SemanticSegment(
+                type=self._active_segment.type,
+                language=self._active_segment.language,
+                filename=self._active_segment.filename,
+                lines=active_lines,
+                is_open=self._active_segment.is_open,
+                closed_by_eof=self._active_segment.closed_by_eof,
+            )
+            res.append(seg.freeze())
+        return res
+
+    def _render_fence(self, is_open: bool = False) -> str:
         from .render import format_code_block, format_diff_block
 
         code_text = "\n".join(self._fence_lines)
@@ -94,7 +164,7 @@ class StreamingMarkdownFilter:
         lang = tokens[0].lower() if tokens else ""
         filename = tokens[1] if len(tokens) > 1 else ""
 
-        # Extension-gated filename detection from first line comment if filename not in fence header
+        # Extension-gated filename detection from first line comment if not provided
         if not filename and self._fence_lines:
             first_line = self._fence_lines[0].strip()
             fn_match = re.match(r"^(?:#|//|/\*|--)\s*([\w\-./\\]+\.[a-zA-Z0-9]+)(?:\s*\*/)?$", first_line)
@@ -103,119 +173,226 @@ class StreamingMarkdownFilter:
                 self._fence_lines = self._fence_lines[1:]
                 code_text = "\n".join(self._fence_lines)
 
-        # Check if diff
         is_diff = lang in ("diff", "patch")
-        if not is_diff:
-            for l in self._fence_lines:
-                if l.startswith("+") or l.startswith("-") or l.startswith("@@"):
-                    is_diff = True
-                    break
-
         if is_diff:
             fn = filename if filename else (tokens[0] if (tokens and "." in tokens[0] and lang != "diff") else "")
-            return "\n" + format_diff_block(code_text, filename=fn) + "\n"
+            return "\n" + format_diff_block(code_text, filename=fn, width=self.content_width, is_open=is_open) + "\n"
         else:
             fn = filename if filename else (tokens[0] if (tokens and "." in tokens[0]) else "")
             language = lang if not ("." in lang) else ""
-            return "\n" + format_code_block(code_text, language=language, filename=fn) + "\n"
+            return "\n" + format_code_block(code_text, language=language, filename=fn, width=self.content_width, is_open=is_open) + "\n"
 
     def feed(self, text: str) -> str:
-        self._buf += text
+        if not text:
+            return ""
+
+        self._parse_calls_count += 1
+        # Store verbatim canonical code points
+        self._canonical_chunks.append(text)
+
+        # Normalize line endings for presentation state
+        for ch in text:
+            if self._pending_cr:
+                self._pending_cr = False
+                if ch == "\n":
+                    self._chars.append("\n")
+                    continue
+                else:
+                    self._chars.append("\n")
+            if ch == "\r":
+                self._pending_cr = True
+            else:
+                self._chars.append(ch)
+
         out: list[str] = []
-        i = 0
-        n = len(self._buf)
+        i = self._cursor
+        n = len(self._chars)
 
         while i < n:
             rem = n - i
-            ch = self._buf[i]
+            ch = self._chars[i]
 
             if self._in_fence:
-                if self._at_line_start and self._buf[i : i + 3] == "```":
-                    nl_pos = self._buf.find("\n", i)
-                    if nl_pos == -1:
-                        # Wait for full closing line
-                        break
-                    self._in_fence = False
-                    out.append(self._render_fence())
-                    self._fence_lines = []
-                    self._fence_info = ""
-                    self._at_line_start = True
-                    i = nl_pos + 1
-                    continue
-                else:
-                    nl_pos = self._buf.find("\n", i)
-                    if nl_pos == -1:
-                        # Wait for newline
-                        break
-                    line = self._buf[i:nl_pos]
-                    self._fence_lines.append(line)
-                    self._at_line_start = True
-                    i = nl_pos + 1
-                    continue
+                if self._at_line_start:
+                    # Look ahead for closing fence
+                    if ch == "`":
+                        if rem < 3:
+                            # Incomplete fence prefix - wait for more chars
+                            break
+                        if self._chars[i : i + 3] == ["`", "`", "`"]:
+                            # Find newline
+                            nl_pos = -1
+                            for idx in range(i + 3, n):
+                                if self._chars[idx] == "\n":
+                                    nl_pos = idx
+                                    break
+                            if nl_pos == -1:
+                                # Wait for full closing line
+                                break
+                            self._in_fence = False
+                            self._active_segment.is_open = False
+                            self._segments.append(self._active_segment.freeze())
+                            self._active_segment = SemanticSegment(type=SegmentType.PROSE, is_open=True)
+                            out.append(self._render_fence(is_open=False))
+                            self._fence_lines = []
+                            self._fence_info = ""
+                            self._at_line_start = True
+                            i = nl_pos + 1
+                            continue
 
-            # Line-start formatting (bullets, headings, and code fences)
-            if self._at_line_start:
-                if self._buf[i : i + 3] == "```":
-                    nl_pos = self._buf.find("\n", i)
-                    if nl_pos == -1:
-                        # Wait for full fence header line
+                # Code line accumulation
+                nl_pos = -1
+                for idx in range(i, n):
+                    if self._chars[idx] == "\n":
+                        nl_pos = idx
                         break
-                    fence_header = self._buf[i + 3 : nl_pos].strip()
-                    self._in_fence = True
-                    self._fence_info = fence_header
-                    self._fence_lines = []
-                    self._at_line_start = True
-                    i = nl_pos + 1
-                    continue
+                if nl_pos == -1:
+                    break
+                line = "".join(self._chars[i:nl_pos])
+                self._fence_lines.append(line)
+                self._active_segment.lines.append(line)
+                self._at_line_start = True
+                i = nl_pos + 1
+                continue
+
+            # Outside fence (prose)
+            if self._at_line_start:
+                if ch == "`":
+                    if rem < 3:
+                        # Incomplete opening fence prefix - wait for more chars
+                        break
+                    if self._chars[i : i + 3] == ["`", "`", "`"]:
+                        nl_pos = -1
+                        for idx in range(i + 3, n):
+                            if self._chars[idx] == "\n":
+                                nl_pos = idx
+                                break
+                        if nl_pos == -1:
+                            break
+                        fence_header = "".join(self._chars[i + 3 : nl_pos]).strip()
+                        if self._prose_line:
+                            self._active_segment.lines.append("".join(self._prose_line))
+                            self._prose_line = []
+                        if self._active_segment.lines:
+                            self._active_segment.is_open = False
+                            self._segments.append(self._active_segment.freeze())
+
+                        info_tokens = fence_header.split()
+                        lang = info_tokens[0].lower() if info_tokens else ""
+                        filename = info_tokens[1] if len(info_tokens) > 1 else ""
+                        is_diff = lang in ("diff", "patch")
+
+                        self._in_fence = True
+                        self._fence_info = fence_header
+                        self._fence_lines = []
+                        self._active_segment = SemanticSegment(
+                            type=SegmentType.DIFF if is_diff else SegmentType.CODE,
+                            language=lang,
+                            filename=filename,
+                            is_open=True,
+                        )
+                        self._at_line_start = True
+                        i = nl_pos + 1
+                        continue
 
                 if ch in (" ", "\t"):
                     out.append(ch)
+                    self._prose_line.append(ch)
                     i += 1
                     continue
-                if ch in ("-", "*") and rem >= 2 and self._buf[i + 1] == " ":
+                if ch in ("-", "*") and rem >= 2 and self._chars[i + 1] == " ":
                     out.append("• ")
+                    self._prose_line.append("• ")
                     i += 2
                     self._at_line_start = False
                     continue
                 if ch == "#":
                     j = i
-                    while j < n and self._buf[j] == "#":
+                    while j < n and self._chars[j] == "#":
                         j += 1
-                    if j < n and self._buf[j] == " ":
+                    if j < n and self._chars[j] == " ":
                         i = j + 1
                         self._at_line_start = False
                         continue
                     elif j == n:
                         break
 
-            # Regular characters (including **, __, `)
             if ch == "\n":
                 out.append("\n")
+                if self._prose_line:
+                    self._active_segment.lines.append("".join(self._prose_line))
+                    self._prose_line = []
+                else:
+                    self._active_segment.lines.append("")
                 self._at_line_start = True
                 i += 1
             else:
                 self._at_line_start = False
                 out.append(ch)
+                self._prose_line.append(ch)
                 i += 1
 
-        self._buf = self._buf[i:]
-        return "".join(out)
+        self._cursor = i
+        if self._cursor > 1024:
+            self._chars = self._chars[self._cursor:]
+            self._cursor = 0
+
+        emitted = "".join(out)
+        self._emitted_len += len(emitted)
+        return emitted
 
     def flush(self) -> str:
+        if self._pending_cr:
+            self._chars.append("\n")
+            self._pending_cr = False
+
         out: list[str] = []
+        rem_chars = self._chars[self._cursor:]
+        self._chars.clear()
+        self._cursor = 0
+        rem_str = "".join(rem_chars)
+
         if self._in_fence:
-            if self._buf:
-                if self._buf.strip() != "```":
-                    self._fence_lines.append(self._buf.rstrip("\n"))
-                self._buf = ""
+            if rem_str:
+                if rem_str.strip() == "```":
+                    self._active_segment.is_open = False
+                else:
+                    line = rem_str.rstrip("\n")
+                    self._fence_lines.append(line)
+                    self._active_segment.lines.append(line)
+                    self._active_segment.is_open = False
+                    self._active_segment.closed_by_eof = True
+            else:
+                self._active_segment.is_open = False
+                self._active_segment.closed_by_eof = True
+
+            self._segments.append(self._active_segment.freeze())
+            self._active_segment = SemanticSegment(type=SegmentType.PROSE, is_open=False)
             self._in_fence = False
-            out.append(self._render_fence())
+            out.append(self._render_fence(is_open=False))
             self._fence_lines = []
             self._fence_info = ""
-        elif self._buf:
-            out.append(self._buf)
-            self._buf = ""
+        else:
+            if self._prose_line:
+                self._active_segment.lines.append("".join(self._prose_line))
+                self._prose_line = []
+            elif rem_str:
+                self._active_segment.lines.append(rem_str)
+                out.append(rem_str)
+
+            if self._active_segment.lines:
+                self._active_segment.is_open = False
+                self._segments.append(self._active_segment.freeze())
+                self._active_segment = SemanticSegment(type=SegmentType.PROSE, is_open=False)
         return "".join(out)
+
+
+def parse_semantic_segments(text: str, content_width: int = 74) -> list[FrozenSemanticSegment]:
+    """Parse raw Markdown into immutable typed semantic segments."""
+    parser = StreamingMarkdownFilter(content_width=content_width)
+    parser.feed(text)
+    parser.flush()
+    return parser.get_segments()
 
 
 def transform_streaming_markdown(text: str) -> str:

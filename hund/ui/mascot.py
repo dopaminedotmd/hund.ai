@@ -65,3 +65,20 @@ class MascotMachine:
         order = self._FRAME_ORDER[self.state]
         order_index = int((elapsed + 1e-9) / frame_seconds) % len(order)
         return TINTS.get(asset_skin, TINTS["bone"]), clips[order[order_index]]
+
+
+# Horizontal mirror map for block-element art (TL<->TR, BL<->BR quadrants).
+_MIRROR = str.maketrans({
+    "\u2598": "\u259d", "\u259d": "\u2598",  # \u2598<->\u259d
+    "\u2596": "\u2597", "\u2597": "\u2596",  # \u2596<->\u2597
+    "\u259a": "\u259e", "\u259e": "\u259a",  # \u259a<->\u259e
+    "\u2599": "\u259f", "\u259f": "\u2599",  # \u2599<->\u259f
+    "\u259b": "\u259c", "\u259c": "\u259b",  # \u259b<->\u259c
+})
+
+
+def mirror_art(art: str) -> str:
+    """Horizontally flip a sprite-sheet frame."""
+    lines = art.splitlines()
+    w = max(map(len, lines), default=0)
+    return "\n".join((ln.ljust(w)[::-1].translate(_MIRROR)).rstrip() for ln in lines)

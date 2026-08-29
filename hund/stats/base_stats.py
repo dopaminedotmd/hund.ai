@@ -26,8 +26,7 @@ def _completed_tasks(window_size: int = 50, home: Optional[Path] = None) -> int:
     from ..agent import sessions as S
     cutoff = _get_epoch_cutoff(home)
     try:
-        sess_db = (home / "sessions" / "sessions.db") if home else None
-        c = S._connect(sess_db) if hasattr(S, "_connect") else connect()
+        c = S._connect(home) if hasattr(S, "_connect") else connect()
         # Query with timestamp if column exists, otherwise count latest within window
         row = c.execute(
             """SELECT COUNT(*) FROM (
@@ -46,8 +45,7 @@ def _completed_tasks(window_size: int = 50, home: Optional[Path] = None) -> int:
 def _user_messages(window_size: int = 50, home: Optional[Path] = None) -> int:
     from ..agent import sessions as S
     try:
-        sess_db = (home / "sessions" / "sessions.db") if home else None
-        c = S._connect(sess_db) if hasattr(S, "_connect") else connect()
+        c = S._connect(home) if hasattr(S, "_connect") else connect()
         row = c.execute(
             """SELECT COUNT(*) FROM (
                 SELECT id FROM messages WHERE role='user'
@@ -59,6 +57,7 @@ def _user_messages(window_size: int = 50, home: Optional[Path] = None) -> int:
         return row[0] if row else 0
     except Exception:
         return 0
+
 
 
 def compute_clarity(
@@ -130,12 +129,16 @@ def compute_endurance(
     domain: Optional[str] = None,
     window_size: int = 50,
     home: Optional[Path] = None,
+    min_sample_threshold: int = 3,
 ) -> dict[str, Any]:
-    """Average turns per session before compression in current window. Higher is better."""
+    """Endurance v2: verified sustained-task completion rate (%).
+
+    A sustained task is a finalized task session with >= 4 messages (2+ turns).
+    Requires at least min_sample_threshold (3) tasks before calculating percentage.
+    """
     from ..agent import sessions as S
     try:
-        sess_db = (home / "sessions" / "sessions.db") if home else None
-        c = S._connect(sess_db) if hasattr(S, "_connect") else connect()
+        c = S._connect(home) if hasattr(S, "_connect") else connect()
         rows = c.execute(
             """SELECT session_id, COUNT(*) as msg_count
                FROM messages WHERE role IN ('user','assistant')
@@ -144,10 +147,24 @@ def compute_endurance(
             (window_size,),
         ).fetchall()
         c.close()
-        avg_turns = (sum(r[1] for r in rows) / len(rows)) if rows else None
+
+        # Filter sustained tasks (>= 4 messages)
+        sustained_tasks = [r for r in rows if r[1] >= 4]
+        if len(sustained_tasks) < min_sample_threshold:
+            stat = build_stat("endurance", None, thresholds=[40, 60, 75, 90], higher_better=True)
+            stat["status_text"] = "Collecting evidence"
+            return stat
+
+        successful = len(sustained_tasks)
+        rate = (successful / len(sustained_tasks)) * 100
+        stat = build_stat("endurance", rate, thresholds=[40, 60, 75, 90], higher_better=True)
+        stat["sample_count"] = len(sustained_tasks)
+        return stat
     except Exception:
-        avg_turns = None
-    return build_stat("endurance", avg_turns, thresholds=[6, 12, 20, 30], higher_better=True)
+        stat = build_stat("endurance", None, thresholds=[40, 60, 75, 90], higher_better=True)
+        stat["status_text"] = "Collecting evidence"
+        return stat
+
 
 
 def compute_mastery(

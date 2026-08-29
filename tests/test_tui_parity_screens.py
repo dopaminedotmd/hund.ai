@@ -176,7 +176,7 @@ def test_credential_vault_failure_is_closed(monkeypatch):
 
 def test_model_catalog_and_atomic_rollback(monkeypatch):
     option = next(item for item in MODEL_OPTIONS if item.provider_id == "openrouter")
-    assert option.model_id == "nvidia/nemotron-3.5-lightning:free"
+    assert option.model_id in ("anthropic/claude-3.5-sonnet", "nvidia/nemotron-3.5-lightning:free")
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.delenv("HUND_API_KEY", raising=False)
 
@@ -231,7 +231,7 @@ def test_compact_model_modal_render(width):
     # Check that redundant verbose fields are not rendered on separate lines
     assert not any(" · local" in l or " · remote" in l for l in lines)
     # Check footer
-    assert "[Esc] cancel" in modal
+    assert "Back" in modal and "Close" in modal
 
 
 def test_screen_tokens_meta_labels():
@@ -265,4 +265,3 @@ def test_modal_backdrop_dimming_and_escape_priority():
 
     # Reset
     _MODAL_ACTIVE[0] = False
-

@@ -1,24 +1,16 @@
-"""Skills View — renders the 2-layer fullscreen skills panel & detailed inspection cards.
-
-Adheres strictly to TUI_FACIT.md §12, PLAN_2026-08-23.md §15, and PLAN_2026-08-24_learning_engine.md §8.
-Uses identical border and row geometry to build_startup_banner in render.py.
-"""
+"""Skills view — 2-layer fullscreen UI, inspection views, and 3-axis transparency rendering."""
 from __future__ import annotations
 
 from pathlib import Path
 import shutil
 from typing import Any, Optional
 
-from hund.domains.xp import get_xp
-from hund.skills.lifecycle import (
-    SKILL_STATUS_ACTIVE,
-    SKILL_STATUS_PROVEN,
-    SKILL_STATUS_SANDBOX_TESTED,
-)
-from hund.skills.loader import load_builtins
-from hund.skills.model import Skill
-from hund.skills.vault import SkillVault
-from hund.stats.tiers import render_bar
+from ..domains.xp import get_xp
+from ..skills.loader import load_builtins
+from ..skills.model import Skill
+from ..skills.proficiency import SkillXPRecord
+from ..skills.vault import SkillVault
+from ..stats.tiers import render_bar
 
 
 def _truncate_pad(text: str, length: int) -> str:
@@ -45,6 +37,7 @@ def render_skills_panel(
 
     if vault is None:
         vault = SkillVault()
+    workspace = getattr(rt, "workspace", None)
 
     # 1. Fetch builtins (Motor skills)
     motor_skills = load_builtins()
@@ -54,9 +47,9 @@ def render_skills_panel(
     if rt and hasattr(rt, "skills") and rt.skills is not None:
         active_skills = [s for s in rt.skills if s.name not in motor_names]
     else:
-        active_skills = vault.get_active_skills()
+        active_skills = vault.get_active_skills(workspace=workspace)
 
-    vaulted_skills = vault.list_vaulted()
+    vaulted_skills = vault.list_vaulted(workspace=workspace)
     max_slots = vault.max_active
     slot_info = f"[{len(active_skills)}/{max_slots} slots]"
 
@@ -154,12 +147,13 @@ def render_skill_detail(
     W = max(width if width is not None else min(term_cols, 80), 40)
     if vault is None:
         vault = SkillVault()
+    workspace = getattr(rt, "workspace", None)
 
     # Search for skill in builtins, active, and vaulted
     motor_skills = load_builtins()
     motor_map = {s.name: s for s in motor_skills}
 
-    all_skills = vault.get_all_skills()
+    all_skills = vault.get_all_skills(workspace=workspace)
     skill_map = {s.name: s for s in all_skills}
 
     skill: Optional[Skill] = motor_map.get(skill_name) or skill_map.get(skill_name)
@@ -194,6 +188,9 @@ def render_skill_detail(
         lines.append(row(f"{label:<16}: {val}"))
 
     _add_field("Type", "Motor Instinct (Immutable)" if is_motor else "Domain Skill")
+    _add_field("Capability", getattr(skill, "capability_id", "") or "Unavailable")
+    _add_field("Scope", getattr(skill, "scope", "global"))
+    _add_field("Version", getattr(skill, "version", "1.0.0"))
     _add_field("Domain", skill.domain or "core")
     _add_field("Status", skill.status or ("active" if is_motor else "vaulted"))
     _add_field("Safety Level", str(getattr(skill, "safety_level", "low")))
@@ -204,7 +201,7 @@ def render_skill_detail(
     _add_field("Mastery / XP", xp_str)
 
     # Dependencies & Tools
-    tools = getattr(skill, "tools", []) or []
+    tools = getattr(skill, "required_tools", []) or []
     _add_field("Allowed Tools", ", ".join(tools) if tools else "(none - pure instruction)")
 
     deps = getattr(skill, "deps", {}) or {}
@@ -217,7 +214,62 @@ def render_skill_detail(
     if when:
         _add_field("When to use", when)
 
+    steps = tuple(getattr(skill, "steps", ()) or ())
+    if steps:
+        lines.append(empty)
+        lines.append(row("Procedure"))
+        for index, step in enumerate(steps, 1):
+            lines.append(row(f"{index}. {step}"))
+
+    verification = tuple(getattr(skill, "verification", ()) or ())
+    if verification:
+        lines.append(empty)
+        lines.append(row("Verification"))
+        for rule in verification:
+            lines.append(row(f"- {rule}"))
+
+    research = getattr(skill, "research_metadata", None)
+    limitations = tuple(getattr(research, "limitations", ()) or ())
+    if limitations:
+        lines.append(empty)
+        lines.append(row("Limitations"))
+        for limitation in limitations:
+            lines.append(row(f"- {limitation}"))
+
     lines.append(empty)
     lines.append(bottom)
 
+    return "\n".join(lines)
+
+
+def render_skill_transparency_summary(
+    skill: Skill,
+    proficiency_record: SkillXPRecord,
+    *,
+    source_count: int = 0,
+    research_status: str = "unresearched",
+) -> str:
+    """Render a human-readable, 3-axis transparency summary of a skill."""
+    # Axis 1: Research Maturity
+    if source_count > 0 or research_status in {"corroborated", "synthesized"}:
+        res_axis = f"Research foundation · {source_count} source{'s' if source_count != 1 else ''} ({research_status})"
+    else:
+        res_axis = f"Locally learned · {research_status}"
+
+    # Axis 2: Lifecycle State
+    lifecycle_cap = skill.lifecycle_state.capitalize() or "Draft"
+    vault_cap = skill.vault_state.capitalize() or "Vaulted"
+    lifecycle_axis = f"Lifecycle: {lifecycle_cap} · Vault: {vault_cap}"
+
+    # Axis 3: Personal Proficiency
+    xp = proficiency_record.xp
+    tier = proficiency_record.tier
+    prof_axis = f"Proficiency: {xp} skill XP ({tier})"
+
+    lines = [
+        f"[{skill.name}] ({skill.domain})",
+        f"  * {res_axis}",
+        f"  * {lifecycle_axis}",
+        f"  * {prof_axis}",
+    ]
     return "\n".join(lines)

@@ -10,7 +10,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 ASSETS = ROOT / "hund" / "assets" / "mascot"
 TARGET = ROOT / "hund" / "ui" / "mascot_frames.py"
-TINTS = {"bone": "#E3E3E4", "nord": "#D8DEE9", "synthwave": "#F28FAD"}
+TINTS = {"bone": "#E3E3E4"}
 
 
 def _sprite_frames(path: Path) -> list[Image.Image]:

@@ -94,6 +94,13 @@ def sync_domain_json(
                 pass
 
 
+from ..skills.authoring import PublicationReceipt, SkillDraft
+from ..skills.loader import _read_skill_file
+from ..skills.publication import FastPublicationGate
+from ..skills.storage import SkillStorage
+from ..skills.vault import SkillVault
+
+
 class CommitController:
     """Deterministic Commit Controller policy engine."""
 
@@ -110,47 +117,112 @@ class CommitController:
         return base / "brain" / "skills"
 
     def _write_skill(self, skill: Skill) -> Path:
-        directory = self._skills_dir()
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"{skill.name}.json"
-        temporary = target.with_suffix(f".tmp.{os.getpid()}_{uuid.uuid4().hex[:6]}")
-        try:
-            content = json.dumps(skill.to_dict(), ensure_ascii=False, indent=2)
-            with open(temporary, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, target)
-        finally:
-            if temporary.exists():
-                temporary.unlink(missing_ok=True)
-        return target
+        storage = SkillStorage(home=self.home)
+        return storage.write_canonical_atomic(skill, workspace_key="global")
 
     def commit_skill_draft(
         self,
-        skill: Skill,
+        draft: SkillDraft | Skill,
         *,
-        dry_run_executor=None,
-    ) -> tuple[bool, str]:
-        """Validate and persist a draft; only this controller may materialize it."""
-        errors = validate_skill(skill)
-        if errors:
-            return False, "; ".join(errors)
-        committed = replace(skill, lifecycle_state="draft", status="draft", vault_state="vaulted")
-        if committed.required_tools and dry_run_executor is not None:
-            ok, message = run_skill_sandbox_test(
-                committed.to_dict(), dry_run_executor=dry_run_executor
+        workspace_key: str = "global",
+        desired_disposition: str = "auto",
+        dry_run_executor: Any = None,
+    ) -> tuple[bool, PublicationReceipt | str]:
+        """Validate, stage, evaluate, snapshot, and publish a skill draft."""
+        if isinstance(draft, Skill):
+            draft = SkillDraft(
+                action="UPDATE" if draft.version != "1.0.0" else "CREATE",
+                skill=draft,
+                metadata={},
             )
-            if not ok:
-                return False, message
-            committed = replace(
-                committed, lifecycle_state="sandbox_tested",
-                status="sandbox_tested",
-            )
-        self._write_skill(committed)
-        if committed.required_tools and dry_run_executor is None:
-            return True, "stored as draft; executing sandbox required before activation"
-        return True, f"stored as {committed.lifecycle_state}"
+
+        skill = draft.skill
+        gate = FastPublicationGate()
+
+        # 1. In-memory pre-stage scan (checks 1-7, secret scrubbing, prompt injection neutralization)
+        pre_stage_res = gate.pre_stage_scan(skill)
+        if not pre_stage_res.passed:
+            storage = SkillStorage(home=self.home)
+            storage.save_staged_draft(skill, None, workspace_key=workspace_key)
+            return False, f"pre-stage validation failed: {'; '.join(pre_stage_res.failure_reasons)}"
+
+        redacted_skill = pre_stage_res.redacted_skill
+
+        # 2. Stage draft to .drafts/<workspace_key>/<name>.json
+        storage = SkillStorage(home=self.home)
+        staged_path = storage.save_staged_draft(redacted_skill, None, workspace_key=workspace_key)
+
+        # 3. Fast Publication Gate evaluation (checks 8-12 + isolated dry-run)
+        gate_report = gate.evaluate(
+            redacted_skill,
+            staged_path,
+            registered_tools=set(),
+            pre_stage_checks=pre_stage_res.checks,
+            dry_run_executor=dry_run_executor,
+        )
+
+        if not gate_report.passed:
+            storage.save_staged_draft(redacted_skill, gate_report, workspace_key=workspace_key)
+            return False, f"publication gate rejected: {'; '.join(gate_report.failure_reasons)}"
+
+        # 4. Check for existing canonical file -> snapshot prior version on update
+        canonical_path = storage.get_canonical_path(redacted_skill.name, redacted_skill.scope, workspace_key)
+        existing_skill = _read_skill_file(canonical_path) if canonical_path.exists() else None
+        if existing_skill is not None:
+            storage.snapshot_prior_version(existing_skill, workspace_key)
+
+        # 5. Materialize active skill atomically to canonical storage
+        active_skill = replace(
+            redacted_skill,
+            lifecycle_state="active",
+            status="active",
+            vault_state="vaulted",
+            personal_skill_xp=0,
+        )
+        storage.write_canonical_atomic(active_skill, workspace_key)
+
+        # 6. Update vault state
+        vault = SkillVault(home=self.home)
+        vault.sync_scoped_state([active_skill], workspace_key=workspace_key)
+
+        vault_state = "vaulted"
+        limitations: list[str] = []
+        if desired_disposition == "equip":
+            ok_equip, equip_msg = vault.equip(workspace_key, active_skill.capability_id, active_skill.name)
+            if ok_equip:
+                vault_state = "equipped"
+            else:
+                limitations.append(f"Could not equip immediately: {equip_msg}")
+        elif desired_disposition == "vault":
+            vault_state = "vaulted"
+
+        diff_summary = None
+        if existing_skill is not None:
+            diff_summary = f"Updated from v{existing_skill.version} to v{active_skill.version}"
+
+        from ..skills.contracts import PublicationReceipt
+        receipt = PublicationReceipt(
+            publication_receipt_id=active_skill.publication_receipt_id or f"rec_{uuid.uuid4().hex[:12]}",
+            lineage_id=active_skill.lineage_id,
+            schema_version=active_skill.schema_version,
+            artifact_version=active_skill.artifact_version,
+            capability_id=active_skill.capability_id,
+            skill_name=active_skill.name,
+            scope=active_skill.scope,
+            publication_status=getattr(active_skill, "publication_status", "published"),
+            action="created" if draft.action == "CREATE" else "updated",
+            version=active_skill.version,
+            lifecycle_state="active",
+            vault_state=vault_state,
+            personal_skill_xp=0,
+            source_count=len(active_skill.source_knowledge_refs),
+            validation_checks=tuple(c.check_name for c in gate_report.checks if c.passed),
+            diff_summary=diff_summary,
+            limitations=tuple(limitations),
+            published_at=datetime.now(timezone.utc).isoformat(),
+            research_metadata=getattr(active_skill, "research_metadata", None),
+        )
+        return True, receipt
 
     def _invalidate_skills_for_knowledge(self, unit_id: str) -> None:
         directory = self._skills_dir()

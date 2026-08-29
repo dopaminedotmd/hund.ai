@@ -97,7 +97,13 @@ def build_system_prompt(
     skill_summaries: list[str] | None = None,
     memory_lines: list[str] | None = None,
 ) -> str:
-    persona = _truncate_context(persona)
+    from ..persona import get_compact_voice_contract
+
+    if not persona:
+        persona = get_compact_voice_contract()
+    else:
+        persona = _truncate_context(persona)
+
     project_context = _truncate_context(project_context)
 
     if persona:
@@ -170,36 +176,9 @@ def build_system_prompt(
     )
     parts.append("")
     parts.append("## Output-formatering och visuell hierarki i terminalen")
-    parts.append(
-        "- Standardformatet är naturlig, kompakt prosa i 1-4 rader. "
-        "Gör inte varje svar till en rapport."
-    )
-    parts.append(
-        "- Välj struktur i denna ordning: vanlig prosa först; korta stycken när ett "
-        "ämne skiftar; lista först när relationerna verkligen behöver räknas eller jämföras."
-    )
-    parts.append(
-        "- Använd punktlistor endast när innehållet faktiskt består av minst tre "
-        "jämförbara saker, tydliga steg eller alternativ som blir lättare att skanna."
-    )
-    parts.append(
-        "- Formatering är en förmåga, inte en husstil: använd rubriker, tabeller, "
-        "fetstil och listor sparsamt och bara när strukturen tillför information."
-    )
-    parts.append(
-        "- När en lista passar: håll den kort, konsekvent och luftig. När en lista "
-        "inte behövs: skriv som hund i vanlig prosa."
-    )
-    parts.append(
-        "- Fetstil är semantisk betoning, inte dekoration. Undvik ett fetstilt label-prefix "
-        "på varje listpunkt och undvik rubriker i svar som redan är korta."
-    )
-    parts.append(
-        "- Använd backticks (`kod`) för filnamn, kommandon, funktioner och tekniska termer."
-    )
-    parts.append(
-        "- När verktyg (som write_file eller edit_file) skapar eller ändrar filer renderas koden och diffen automatiskt i aktivitetsfeeden (under ✓ wrote/modified). Hund behöver därför INTE upprepa hela källkoden i sin svarsbox, utan håller sitt svar rent, precist och i tredje person (t.ex. 'hund skapade test_kod.py på skrivbordet.')."
-    )
+    from .response_policy import get_response_policy_rules
+    for rule in get_response_policy_rules(language="en"):
+        parts.append(f"- {rule}")
 
     parts.append("")
     parts.append("## Skill-skapande och Mastery")

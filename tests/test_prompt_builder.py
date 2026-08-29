@@ -57,7 +57,7 @@ def test_persona_truncation():
     huge_persona = "A" * 7000 + "B" * 5000  # 12KB totalt
     prof = _prof()
     prompt = build_system_prompt(huge_persona, prof)
-    
+
     assert "[TRUNCATD: 12000 chars totalt" in prompt
     assert prompt.startswith("A" * 6000)
     # prompt slutar på tail-delen (2000 tecken) samt resten av systemprompten, så vi kollar om "B"*2000 finns i den
@@ -71,7 +71,7 @@ def test_project_context_truncation():
     huge_context = "C" * 7000 + "D" * 5000  # 12KB totalt
     prof = _prof()
     prompt = build_system_prompt("P", prof, project_context=huge_context)
-    
+
     assert "[TRUNCATD: 12000 chars totalt" in prompt
     assert "C" * 6000 in prompt
     assert "D" * 2000 in prompt
@@ -89,12 +89,11 @@ def test_web_rules_injected_into_prompt():
 def test_output_formatting_is_adaptive_not_bullet_default():
     prompt = build_system_prompt("P", _prof())
     low = prompt.lower()
-    assert "standardformatet är naturlig, kompakt prosa" in low
-    assert "punktlistor endast när" in low
-    assert "formatering är en förmåga, inte en husstil" in low
-    assert "vanlig prosa först" in low
-    assert "fetstil är semantisk betoning" in low
-    assert "undvik ett fetstilt label-prefix" in low
+    assert "the standard response format is natural, concise prose" in low
+    assert "use bullet lists only when" in low
+    assert "formatting is an ability, not a house style" in low
+    assert "plain prose first" in low
+    assert "bold is for semantic emphasis" in low
+    assert "avoid bold label prefixes" in low
     assert "använd punktlistor med tydliga fetstilta rubriker" not in low
-    assert "personan i början av prompten styr alltid röst" in low
-    assert "resolvernamn" in low
+    assert "standardformatet är naturlig, kompakt prosa" not in low

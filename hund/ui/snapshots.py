@@ -56,6 +56,20 @@ class SkillItem:
     safety_level: str
     provenance: tuple[str, ...]
     when_to_use: str
+    capability_id: str = ""
+    scope: str = "global"
+    version: str = "1.0.0"
+    steps: tuple[str, ...] = ()
+    verification: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class SkillProposalItem:
+    candidate_id: str
+    name: str
+    scope: str
+    state: str
 
 
 @dataclass(frozen=True)
@@ -63,6 +77,7 @@ class SkillsSnapshot:
     equipped: tuple[SkillItem, ...]
     parked: tuple[SkillItem, ...]
     max_active: int
+    proposals: tuple[SkillProposalItem, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,7 +141,12 @@ def _home_db(home: Path | None, relative: str) -> Path | None:
     return home / relative if home is not None else None
 
 
-def collect_stats(*, home: Path | None = None, now: datetime | None = None) -> StatsSnapshot:
+def collect_stats(
+    *,
+    home: Path | None = None,
+    workspace: Path | str | None = None,
+    now: datetime | None = None,
+) -> StatsSnapshot:
     from ..domains import confidence
     from ..domains.xp import get_xp
     from ..skills.vault import SkillVault
@@ -169,7 +189,7 @@ def collect_stats(*, home: Path | None = None, now: datetime | None = None) -> S
         pass
 
     specializations: list[SpecializationItem] = []
-    for skill in vault.get_domain_skills():
+    for skill in vault.get_domain_skills(workspace=workspace):
         xp = get_xp(skill.domain or skill.name, db_path=_home_db(home, "hund.db"))
         conf = domain_confidence.get(skill.domain, {})
         percent = max(int(xp["progress_pct"]), int(conf.get("score", 0) or 0))
@@ -225,7 +245,12 @@ def collect_stats(*, home: Path | None = None, now: datetime | None = None) -> S
     )
 
 
-def collect_skills(*, home: Path | None = None) -> SkillsSnapshot:
+def collect_skills(
+    *,
+    home: Path | None = None,
+    workspace: Path | str | None = None,
+    include_proposals: bool = False,
+) -> SkillsSnapshot:
     from ..domains.xp import get_xp
     from ..skills.vault import SkillVault
 
@@ -236,16 +261,45 @@ def collect_skills(*, home: Path | None = None) -> SkillsSnapshot:
         provenance = tuple(
             f"{ref.knowledge_id}@{ref.version}" for ref in skill.source_knowledge_refs
         ) + tuple(skill.created_from_event_ids)
+        research = getattr(skill, "research_metadata", None)
         return SkillItem(
             skill.name, skill.domain, int(xp["xp"]), int(xp["level"]),
             str(xp["tier"]), int(xp["progress_pct"]), skill.lifecycle_state,
             skill.vault_state, tuple(skill.triggers), tuple(skill.required_tools),
             skill.safety_level, provenance, skill.when_to_use,
+            skill.capability_id,
+            skill.scope,
+            skill.version,
+            tuple(skill.steps),
+            tuple(skill.verification),
+            tuple(getattr(research, "limitations", ()) or ()),
         )
 
-    equipped = tuple(convert(skill) for skill in vault.get_active_skills())
-    parked = tuple(convert(skill) for skill in vault.list_vaulted())
-    return SkillsSnapshot(equipped, parked, vault.max_active)
+    equipped = tuple(
+        convert(skill) for skill in vault.get_active_skills(workspace=workspace)
+    )
+    parked = tuple(
+        convert(skill) for skill in vault.list_vaulted(workspace=workspace)
+    )
+    proposals: tuple[SkillProposalItem, ...] = ()
+    if include_proposals:
+        from ..learning.skill_proposals import ProposalState, SkillProposalStore
+
+        proposal_states = {
+            ProposalState.QUEUED.value,
+            ProposalState.DEFERRED.value,
+            ProposalState.DECLINED.value,
+            ProposalState.NEVER_SUGGEST.value,
+        }
+        proposals = tuple(
+            SkillProposalItem(
+                item.candidate_id, item.display_name, item.scope, item.state
+            )
+            for item in SkillProposalStore(_home_db(home, "hund.db")).list_candidates(
+                proposal_states
+            )
+        )
+    return SkillsSnapshot(equipped, parked, vault.max_active, proposals)
 
 
 def collect_tools() -> ToolsSnapshot:

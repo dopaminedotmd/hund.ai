@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from unittest.mock import MagicMock
+import pytest
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import set_app
@@ -18,14 +19,14 @@ from hund.ui import theme
 from hund.ui.fullscreen import (
     _SelectableControl,
     _FullWidthCompletionsMenu,
-    _OUTPUT_LEXER,
+    _OutputLexer,
     _ScrollThroughFormattedTextControl,
     _output_cursor_position,
     _responsive_content_width,
     _shine_fragments,
     _wheel_scroll_passthrough,
 )
-from hund.ui.mascot import MascotMachine, MascotState
+from hund.ui.mascot import MascotMachine, MascotState, mirror_art
 from hund.ui.mascot_frames import FRAMES
 
 
@@ -55,6 +56,19 @@ def test_mascot_sprite_sheets_are_split_into_animation_frames() -> None:
     for skin in FRAMES.values():
         for clips in skin.values():
             assert all(max(map(len, frame.splitlines()), default=0) <= 16 for frame in clips)
+
+
+def test_mirror_art_flips_horizontally() -> None:
+    assert mirror_art("\u259b x") == "x \u259c"
+    assert mirror_art(" \u2584\u2580    \u2588\u2588\u2588\u2588\u2588\u2580") == "\u2580\u2588\u2588\u2588\u2588\u2588    \u2580\u2584"
+    assert mirror_art("\u259a") == "\u259e"
+    assert mirror_art("") == ""
+    assert mirror_art("\n\n") == "\n"
+    # Every mirrored frame stays within the 16-cell sprite sheet limit.
+    for skin in FRAMES.values():
+        for clips in skin.values():
+            for frame in clips:
+                assert max(map(len, mirror_art(frame).splitlines()), default=0) <= 16
 
 
 def test_mascot_each_state_advances_real_frames() -> None:
@@ -142,7 +156,7 @@ def test_selectable_control_mouse_wheel_and_selection() -> None:
     scrolled: list[int] = []
     output_control = _SelectableControl(
         buffer=output_buffer,
-        lexer=_OUTPUT_LEXER,
+        lexer=_OutputLexer(),
         scroll_cb=lambda count: scrolled.append(count),
         fallback_focus=input_window,
     )
@@ -268,7 +282,7 @@ def test_view_scroll_calculation() -> None:
         text = "\n".join(lines)
         output_buffer.set_document(Document(text, cursor_position=len(text)), bypass_readonly=True)
 
-        output_control = _SelectableControl(buffer=output_buffer, lexer=_OUTPUT_LEXER)
+        output_control = _SelectableControl(buffer=output_buffer, lexer=_OutputLexer())
         output_window = Window(content=output_control, wrap_lines=True, always_hide_cursor=True)
         input_buffer = Buffer(name="input", multiline=False)
         input_window = Window(content=BufferControl(buffer=input_buffer, focus_on_click=True), height=1)
@@ -318,6 +332,147 @@ def test_view_scroll_calculation() -> None:
     asyncio.run(_async_test())
 
 
+def test_mascot_float_right_transparent_and_bottom_gap() -> None:
+    """Mascot: right-anchored transparent float; 7-row gap reserved only at bottom."""
+
+    async def _async_test() -> None:
+        from hund.ui.fullscreen import _TransparentSpriteWindow, create_fullscreen_app
+        from prompt_toolkit.layout.containers import Window as _Window
+        from prompt_toolkit.layout.screen import Screen, Char, WritePosition
+
+        # Verify _TransparentSpriteWindow only writes non-space characters
+        ts_win = _TransparentSpriteWindow(lambda: [("fg:white", " ▄\n█ ")], width=4, height=2)
+        scr = Screen()
+        scr.data_buffer[0][0] = Char(".", "bg:blue")
+        scr.data_buffer[0][1] = Char(".", "bg:blue")
+        scr.data_buffer[1][0] = Char(".", "bg:blue")
+        scr.data_buffer[1][1] = Char(".", "bg:blue")
+        ts_win.write_to_screen(scr, MagicMock(), WritePosition(0, 0, 4, 2), "parent", False, None)
+        assert scr.data_buffer[0][0].char == "."  # space skipped, background preserved
+        assert scr.data_buffer[0][1].char == "▄"  # pixel written
+        assert scr.data_buffer[1][0].char == "█"  # pixel written
+        assert scr.data_buffer[1][1].char == "."  # space skipped, background preserved
+
+        rt = MagicMock()
+        rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+        rt.profile = None
+        rt.messages = []
+
+        state = MagicMock()
+        state.extra = {}
+        state.start_time = 0.0
+
+        out = ResizableOutput(cols=80, rows=27)
+        app, ctx = create_fullscreen_app(rt, state, output=out)
+
+        # Mascot float config: status on left, mascot on right, transparent background.
+        inner_float_container = app.layout.container.content.children[0]
+        status_float, mascot_float = inner_float_container.floats
+        assert status_float.left == 2
+        assert status_float.transparent() is True
+        assert mascot_float.right == 0
+        assert mascot_float.transparent() is True
+
+        output_buffer = ctx["output_buffer"]
+        lines = [f"Line {i:03d}" for i in range(80)]
+        text = "\n".join(lines) + "\n"
+        output_buffer.set_document(
+            Document(text, cursor_position=len(text)),
+            bypass_readonly=True,
+        )
+
+        def find_output_window():
+            for container in app.layout.walk():
+                if (
+                    isinstance(container, _Window)
+                    and getattr(getattr(container, "content", None), "buffer", None)
+                    is output_buffer
+                ):
+                    return container
+            raise AssertionError("output window not found")
+
+        output_window = find_output_window()
+
+        with set_app(app):
+            # Tail following at bottom: last line of buffer (Line 079) sits 7 rows above the bottom
+            app.renderer.render(app, app.layout)
+            window_height = output_window.render_info.window_height
+            displayed = output_window.render_info.displayed_lines
+            # The last 7 displayed lines in the viewport are the virtual blank lines (80..86)
+            assert displayed[-1] >= len(lines)
+
+            # Scroll up: text scrolls down through all rows
+            output_window.content.scroll_cb(20)
+            app.renderer.render(app, app.layout)
+            assert output_window.render_info.window_height == window_height
+            displayed_scrolled = output_window.render_info.displayed_lines
+            # Scrolled up, text is shown at the bottom of the window
+            assert displayed_scrolled[-1] < len(lines)
+
+    asyncio.run(_async_test())
+
+
+def test_transparent_sprite_preserves_underlying_mouse_handler() -> None:
+    from hund.ui.fullscreen import _TransparentSpriteWindow
+    from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+    from prompt_toolkit.layout.screen import Screen, WritePosition
+
+    handlers = MouseHandlers()
+    underlying = MagicMock(return_value=None)
+    handlers.set_mouse_handler_for_range(0, 4, 0, 2, underlying)
+    sprite = _TransparentSpriteWindow(
+        lambda: [("fg:white", " x\nxx")], width=4, height=2
+    )
+
+    sprite.write_to_screen(
+        Screen(), handlers, WritePosition(0, 0, 4, 2), "", False, None
+    )
+
+    assert handlers.mouse_handlers[0][0] is underlying
+    assert handlers.mouse_handlers[1][1] is underlying
+
+
+def test_wheel_scroll_preserves_output_selection() -> None:
+    from hund.ui.fullscreen import create_fullscreen_app
+    from prompt_toolkit.selection import SelectionType
+
+    async def _async_test() -> None:
+        rt = MagicMock()
+        rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+        rt.profile = None
+        rt.messages = []
+        state = MagicMock(theme_name="marshmallow", extra={}, start_time=0.0)
+        app, ctx = create_fullscreen_app(rt, state, output=ResizableOutput(rows=24))
+        output_buffer = ctx["output_buffer"]
+        output_window = next(
+            container
+            for container in app.layout.walk()
+            if isinstance(container, Window)
+            and getattr(getattr(container, "content", None), "buffer", None)
+            is output_buffer
+        )
+        lines = [f"Line {index:03d}" for index in range(100)]
+        text = "\n".join(lines)
+        start = text.index("Line 080")
+        end = text.index("Line 085") + len("Line 085")
+        output_buffer.set_document(Document(text, cursor_position=start), bypass_readonly=True)
+        output_buffer.start_selection(selection_type=SelectionType.CHARACTERS)
+        output_buffer.cursor_position = end
+        output_window.vertical_scroll = 70
+
+        with set_app(app):
+            app.renderer.render(app, app.layout)
+            before_range = output_buffer.document.selection_range()
+            before_top = output_window.render_info.first_visible_line(after_scroll_offset=True)
+            output_window.content.scroll_cb(3)
+            app.renderer.render(app, app.layout)
+
+            assert output_buffer.document.selection_range() == before_range
+            assert output_window.render_info.first_visible_line(after_scroll_offset=True) < before_top
+
+    asyncio.run(_async_test())
+
+
 def test_tool_desc_formatting() -> None:
     from hund.ui.fullscreen import _format_tool_desc, _trunc
 
@@ -351,7 +506,7 @@ def test_activity_stream_lexer_tokens() -> None:
         "  ┊ ⊘ declined terminal — user declined\n"
         "  hund is reading your message…\n"
     )
-    get_line = _OUTPUT_LEXER.lex_document(doc)
+    get_line = _OutputLexer().lex_document(doc)
 
     # Line 0: spinner line
     toks0 = get_line(0)
@@ -448,7 +603,7 @@ def test_output_lexer_rich_markdown_tokens() -> None:
         "- Ansvar: Fullständiga Python-ingenjörsflöden\n"
         "- Arbetsflöde: Baseline via `uv run pytest` -> re-run\n"
     )
-    get_line = _OUTPUT_LEXER.lex_document(doc)
+    get_line = _OutputLexer().lex_document(doc)
 
     # Line 0: Header
     toks0 = get_line(0)
@@ -527,3 +682,313 @@ def test_overlay_enter_and_keybinding_filters() -> None:
     assert screens.close_escape() == "overlay"
     assert screens.overlay is OverlayView.NONE
 
+
+def test_run_fullscreen_initialization_no_unbound_locals(monkeypatch) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+    from hund.config import HundConfig
+    from hund.ui.fullscreen import run_fullscreen
+
+    rt = MagicMock()
+    rt.cfg = HundConfig()
+    rt.profile = None
+    rt.workspace = None
+    state = MagicMock()
+    state.theme_name = "marshmallow"
+    state.extra = {}
+
+    # Mock Application.run_async so it returns immediately, and create_output for headless environment
+    import prompt_toolkit.output.defaults
+    monkeypatch.setattr(prompt_toolkit.output.defaults, "create_output", lambda *args, **kwargs: DummyOutput())
+    monkeypatch.setattr(Application, "run_async", AsyncMock(return_value=0))
+
+    exit_code = asyncio.run(run_fullscreen(rt, state, banner="test", session_id="test_sess"))
+    assert exit_code == 0
+
+
+def test_run_fullscreen_open_overlays_via_slash_commands(monkeypatch) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+    from hund.config import HundConfig
+    from hund.ui.fullscreen import run_fullscreen
+
+    rt = MagicMock()
+    rt.cfg = HundConfig()
+    rt.profile = None
+    rt.workspace = None
+    state = MagicMock()
+    state.theme_name = "marshmallow"
+    state.extra = {}
+
+    import prompt_toolkit.output.defaults
+    monkeypatch.setattr(prompt_toolkit.output.defaults, "create_output", lambda *args, **kwargs: DummyOutput())
+
+    async def _mock_run(self):
+        # Trigger slash commands through input buffer
+        for cmd in ("/model", "/theme", "/auth"):
+            self.layout.container.content.text = cmd
+            buf = self.current_buffer
+            buf.text = cmd
+            buf.validate_and_handle()
+        return 0
+
+    monkeypatch.setattr(Application, "run_async", _mock_run)
+
+    exit_code = asyncio.run(run_fullscreen(rt, state, banner="test", session_id="test_sess"))
+    assert exit_code == 0
+
+
+def test_mascot_dimmed_on_active_modal() -> None:
+    from hund.ui.fullscreen import _MODAL_ACTIVE, create_fullscreen_app
+    from hund.ui.screen_state import OverlayView
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock()
+    state.theme_name = "marshmallow"
+    state.extra = {}
+    state.start_time = 0.0
+
+    out = DummyOutput()
+    app, ctx = create_fullscreen_app(rt, state, output=out)
+
+    # Find mascot window
+    inner_float_container = app.layout.container.content.children[0]
+    _status_float, mascot_float = inner_float_container.floats
+    mascot_window = mascot_float.content.content
+
+    # Normal mode: mascot has bright tint
+    normal_frags = mascot_window._get_text_fragments()
+    assert normal_frags[0][0].startswith("class:mascot fg:")
+
+    # Modal mode (e.g. /model or confirm): mascot dims to backdrop
+    _MODAL_ACTIVE[0] = True
+    modal_frags = mascot_window._get_text_fragments()
+    assert modal_frags[0][0] == "class:backdrop"
+
+    # Reset
+    _MODAL_ACTIVE[0] = False
+    restored_frags = mascot_window._get_text_fragments()
+    assert restored_frags[0][0].startswith("class:mascot fg:")
+
+
+def test_mascot_hidden_on_non_chat_screens() -> None:
+    from hund.ui.fullscreen import create_fullscreen_app
+    from hund.ui.screen_state import DestinationView
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock()
+    state.theme_name = "marshmallow"
+    state.extra = {}
+    state.start_time = 0.0
+
+    out = DummyOutput()
+    app, ctx = create_fullscreen_app(rt, state, output=out)
+    screens = ctx["screens"]
+
+    inner_float_container = app.layout.container.content.children[0]
+    _status_float, mascot_float = inner_float_container.floats
+    mascot_container = mascot_float.content
+
+    # In CHAT view: mascot container is active
+    screens.destination = DestinationView.CHAT
+    assert mascot_container.filter() is True
+
+    # In SKILLS view: mascot container is inactive
+    screens.destination = DestinationView.SKILLS
+    assert mascot_container.filter() is False
+
+    # In STATS view: mascot container is inactive
+    screens.destination = DestinationView.STATS
+    assert mascot_container.filter() is False
+
+
+def test_authoring_stepper_is_inline_after_prompt_and_replaced_in_place() -> None:
+    from hund.skills.authoring import AuthoringState
+    from hund.skills.authoring_runtime import AuthoringOption, AuthoringView
+    from hund.ui.fullscreen import create_fullscreen_app
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False, ascii_ui=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock()
+    state.theme_name = "marshmallow"
+    state.extra = {}
+    state.start_time = 0.0
+
+    output = ResizableOutput(cols=80, rows=24)
+    app, ctx = create_fullscreen_app(rt, state, output=output)
+    transcript_before = ctx["output_buffer"].text + "❯ Create a marketing skill\n\n"
+    ctx["output_buffer"].set_document(
+        Document(transcript_before, cursor_position=len(transcript_before)),
+        bypass_readonly=True,
+    )
+    ctx["authoring_anchor"][0] = len(transcript_before)
+    ctx["authoring_view"][0] = AuthoringView(
+        session_id="stepper",
+        phase=AuthoringState.SHAPING,
+        subject="marketing",
+        title="Primary Workflow Focus",
+        question_key="focus",
+        step_index=1,
+        step_total=2,
+        options=(
+            AuthoringOption("answer", "Automate marketing", "Automate marketing"),
+            AuthoringOption("answer", "Validate marketing", "Validate marketing"),
+        ),
+    )
+
+    ctx["_sync_authoring_inline"]()
+    assert ctx["authoring_container"] not in tuple(app.layout.walk())
+    fragments = ctx["_authoring_fragments"]()
+    assert any(style == "class:growth_gold bold" and "◆" in text for style, text in fragments)
+    assert any(style == "class:growth_gold" and "│" in text for style, text in fragments)
+    inline_text = ctx["output_buffer"].text
+    assert inline_text.startswith(transcript_before)
+    assert inline_text.count("SKILL AUTHORING · Shaping 1/2") == 1
+
+    output.set_size(cols=60, rows=24)
+    ctx["_reflow_borders"]()
+
+    ctx["_move_authoring_selection"](1)
+    assert ctx["authoring_selected"][0] == 1
+    replaced_text = ctx["output_buffer"].text
+    assert replaced_text.count("SKILL AUTHORING · Shaping 1/2") == 1
+    assert "› Validate marketing" in replaced_text
+    assert len(replaced_text) != len(inline_text) or replaced_text != inline_text
+
+
+def test_inline_authoring_lexer_applies_gold_semantics() -> None:
+    from hund.ui.fullscreen import _OutputLexer
+
+    text = (
+        "❯ Create a marketing skill\n\n"
+        "  ◆  SKILL AUTHORING · Shaping 1/2\n"
+        "  │\n"
+        "  │  Primary Marketing Outcome\n"
+        "  │  Choose the result so checks match.\n"
+        "  │\n"
+        "  │  › Plan campaign strategy\n"
+        "  │    Draft campaign content\n"
+        "  └  ↑↓ Select · Enter Confirm · Esc Back"
+    )
+    get_line = _OutputLexer().lex_document(Document(text))
+
+    assert get_line(2)[-1][0] == "class:growth_gold bold"
+    assert any(style == "class:growth_gold" and text == "│" for style, text in get_line(3))
+    assert get_line(4)[-1][0] == "class:growth_gold bold"
+    assert get_line(7)[-1][0] == "class:growth_gold bold"
+    assert get_line(8)[-1][0] == "class:secondary"
+    assert get_line(9)[-1][0] == "class:growth_gold"
+
+
+def test_fullscreen_has_explicit_ctrl_d_exit_binding() -> None:
+    from prompt_toolkit.keys import Keys
+    from hund.ui.fullscreen import create_fullscreen_app
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock(theme_name="marshmallow", extra={}, start_time=0.0)
+
+    _app, ctx = create_fullscreen_app(rt, state, output=DummyOutput())
+
+    assert ctx["kb"].get_bindings_for_keys((Keys.ControlD,))
+
+def test_mouse_click_and_drag_selection() -> None:
+    from hund.ui.fullscreen import create_fullscreen_app
+    from prompt_toolkit.layout.containers import Window
+    from prompt_toolkit.mouse_events import MouseButton, MouseEvent, MouseEventType
+    from prompt_toolkit.data_structures import Point
+
+    async def _async_test() -> None:
+        rt = MagicMock()
+        rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+        rt.profile = None
+        rt.messages = []
+        state = MagicMock()
+        state.theme_name = "marshmallow"
+        state.extra = {}
+        state.start_time = 0.0
+
+        out = DummyOutput()
+        app, ctx = create_fullscreen_app(rt, state, output=out)
+
+        output_buffer = ctx["output_buffer"]
+        output_window = None
+        for c in app.layout.walk():
+            if isinstance(c, Window) and getattr(getattr(c, "content", None), "buffer", None) is output_buffer:
+                output_window = c
+                break
+
+        assert output_window is not None
+        output_control = output_window.content
+
+        # Populate 50 lines of text
+        lines = [f"Line {i:02d}: some test text content here" for i in range(50)]
+        text = "\n".join(lines) + "\n"
+        output_buffer.set_document(Document(text, cursor_position=len(text)), bypass_readonly=True)
+
+        with set_app(app):
+            app.renderer.render(app, app.layout)
+            # Window passes document coordinates to the control, even when the
+            # visible transcript is scrolled or wrapped.
+            down_evt = MouseEvent(
+                position=Point(x=10, y=5),
+                event_type=MouseEventType.MOUSE_DOWN,
+                button=MouseButton.LEFT,
+                modifiers=set(),
+            )
+            output_control.mouse_handler(down_evt)
+
+            assert output_buffer.document.cursor_position_row == 5
+
+            # Drag to row 5, col 20
+            move_evt = MouseEvent(
+                position=Point(x=20, y=5),
+                event_type=MouseEventType.MOUSE_MOVE,
+                button=MouseButton.LEFT,
+                modifiers=set(),
+            )
+            output_control.mouse_handler(move_evt)
+            assert output_buffer.selection_state is not None
+
+            # Mouse up completes selection
+            up_evt = MouseEvent(
+                position=Point(x=20, y=5),
+                event_type=MouseEventType.MOUSE_UP,
+                button=MouseButton.NONE,
+                modifiers=set(),
+            )
+            output_control.mouse_handler(up_evt)
+            assert output_buffer.selection_state is not None
+
+    asyncio.run(_async_test())
+
+
+def test_theme_tokens_and_selection_styling() -> None:
+    from hund.ui.theme import get_skin, make_pt_style
+
+    skin = get_skin("marshmallow")
+    tokens = skin["tokens"]
+
+    # Verify lifted contrast tokens
+    assert tokens["secondary"] == "#7E889B"
+    assert tokens["meta_accent"] == "#D896C7"
+    assert tokens["mascot_status"] == "#959EAE"
+    assert tokens["modal_footer"] == "#A2ABC0"
+    assert tokens["growth_gold"] == "#E6C07B"
+    assert tokens["growth_ochre"] == "#D19A66"
+    assert tokens["growth_brass"] == "#C8A96B"
+
+    # Verify PT style contains white/black selection rules
+    style = make_pt_style("marshmallow")
+    style_dict = dict(style.style_rules)
+    assert "selected" in style_dict
+    assert "bg:#ffffff" in style_dict["selected"].lower()
+    assert "fg:#000000" in style_dict["selected"].lower()

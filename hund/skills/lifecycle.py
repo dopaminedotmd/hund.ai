@@ -85,6 +85,9 @@ def validate_skill_schema(skill_data: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(skill_data, dict):
         return False, "skill definition must be a dictionary"
 
+    if "tools" in skill_data and "required_tools" in skill_data:
+        return False, "conflicting 'tools' and 'required_tools' fields present; use 'required_tools' exclusively"
+
     name = skill_data.get("name")
     if not name or not isinstance(name, str) or len(name.strip()) < 2:
         return False, "skill 'name' is required and must be at least 2 characters"
@@ -93,9 +96,9 @@ def validate_skill_schema(skill_data: dict[str, Any]) -> tuple[bool, str]:
     if not isinstance(version, str):
         return False, "skill 'version' must be a string"
 
-    tools = skill_data.get("required_tools", skill_data.get("tools", []))
-    if not isinstance(tools, list):
-        return False, "skill 'tools' must be a list of tool names"
+    tools = skill_data.get("required_tools") if "required_tools" in skill_data else skill_data.get("tools", [])
+    if not isinstance(tools, (list, tuple)):
+        return False, "skill 'required_tools' must be a list of tool names"
 
     return True, "schema is valid"
 
@@ -109,7 +112,7 @@ def run_skill_sandbox_test(
     if not is_valid:
         return False, f"sandbox test failed on schema: {msg}"
 
-    tools = skill_data.get("tools", [])
+    tools = skill_data.get("required_tools") if "required_tools" in skill_data else skill_data.get("tools", [])
     if not tools:
         # Pure instruction skill without tools passes sandbox automatically
         return True, "instruction skill passes sandbox without tool execution"
@@ -156,3 +159,23 @@ def can_transition_skill(
         )
 
     return True, f"transition to '{target_status}' allowed"
+
+
+def evaluate_proven_promotion(
+    skill: Any,
+    proficiency_record: Any,
+) -> tuple[bool, str]:
+    """Evaluate whether an active skill qualifies for promotion to PROVEN lifecycle status."""
+    if getattr(skill, "revalidation_required", False):
+        return False, "revalidation required before promotion"
+
+    if proficiency_record.successful_use_count < 5:
+        return False, f"insufficient successful runs ({proficiency_record.successful_use_count}/5 required)"
+
+    if proficiency_record.cross_session_success < 2:
+        return False, f"insufficient cross-session evidence ({proficiency_record.cross_session_success}/2 required)"
+
+    if proficiency_record.health < 0.85:
+        return False, f"insufficient health ratio ({proficiency_record.health:.2f} < 0.85 required)"
+
+    return True, "qualifies for proven lifecycle promotion"

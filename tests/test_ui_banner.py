@@ -47,7 +47,7 @@ def test_build_startup_banner_structure_and_width() -> None:
 
     # Base attributes and skills
     assert "── BASE STATS" in banner
-    assert "── SPECIALIZATIONS" in banner
+    assert "── ACTIVE SKILLS" in banner
     assert "CLR Clarity" in banner
     assert "PRC Precision" in banner
     assert "EFF Efficiency" in banner
@@ -147,4 +147,3 @@ def test_spec_labels_tokenization() -> None:
         # Ensure value is styled with class:primary
         val_toks = [t for t in toks if t[0] == "class:primary"]
         assert len(val_toks) == 1
-

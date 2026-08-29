@@ -1,11 +1,4 @@
-"""hund doctor — hårdvara-/miljöprofil.
-
-DETTA ÄR DIFFERENTIATORN. Profilen får inte bara visas — den ska injiceras i
-systemprompten och ÄNDRA Hundens beteende (se docs/mvp.md komponent 2):
-  - saknas git    -> blockera repo-operationer, fråga
-  - svag maskin   -> varna för tunga bakgrundsjobb
-  - saknas python -> föreslå PowerShell-alternativ
-"""
+"""hund doctor — hardware/environment profiler and read-only diagnostic checks."""
 from __future__ import annotations
 
 import os
@@ -14,6 +7,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
+from typing import Any, Literal
 
 
 @dataclass
@@ -78,6 +72,40 @@ class EnvironmentProfile:
         return self.gpu_vram_mb / 1024 if self.gpu_vram_mb else 0.0
 
 
+@dataclass(frozen=True)
+class CheckResult:
+    """Individual diagnostic evaluation result."""
+
+    name: str
+    status: Literal["pass", "warn", "fail"]
+    detail: str
+    remedy: str = ""
+
+
+@dataclass(frozen=True)
+class DoctorReport:
+    """Comprehensive read-only diagnostic report for Hund."""
+
+    checks: tuple[CheckResult, ...]
+    fix_plan: tuple[str, ...] = ()
+
+    @property
+    def passed_count(self) -> int:
+        return sum(1 for c in self.checks if c.status == "pass")
+
+    @property
+    def warnings_count(self) -> int:
+        return sum(1 for c in self.checks if c.status == "warn")
+
+    @property
+    def failed_count(self) -> int:
+        return sum(1 for c in self.checks if c.status == "fail")
+
+    @property
+    def summary_text(self) -> str:
+        return f"{self.passed_count} passed · {self.warnings_count} warnings · {self.failed_count} failed"
+
+
 def _which(name: str) -> bool:
     return shutil.which(name) is not None
 
@@ -104,12 +132,30 @@ def _detect_os_arch() -> str:
     return _powershell("(Get-CimInstance Win32_OperatingSystem).OSArchitecture")
 
 
-def _detect_gpu() -> tuple[str, int]:
-    """Return (model name, VRAM in MB) via CIM (WMIC removed on Win11)."""
-    raw = _powershell(
-        'Get-CimInstance Win32_VideoController | ForEach-Object { "{0}|{1}" -f $_.AdapterRAM, $_.Name }'
-    )
-    if not raw:
+def parse_nvidia_smi_output(raw: str) -> tuple[str, int]:
+    """Parse nvidia-smi csv output (name,memory.total) returning (best_name, best_vram_mb)."""
+    if not raw or not raw.strip():
+        return "", 0
+    best_name = ""
+    best_vram = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or "," not in line:
+            continue
+        name, vram_str = line.split(",", 1)
+        try:
+            vram = int(vram_str.strip())
+        except ValueError:
+            vram = 0
+        if vram > best_vram:
+            best_vram = vram
+            best_name = name.strip()
+    return best_name, best_vram
+
+
+def parse_wmi_gpu_output(raw: str) -> tuple[str, int]:
+    """Parse WMI AdapterRAM|Name output returning (best_name, best_vram_mb)."""
+    if not raw or not raw.strip():
         return "", 0
     best_vram = 0
     best_name = ""
@@ -132,6 +178,29 @@ def _detect_gpu() -> tuple[str, int]:
     if best_vram > 1024 * 1024:
         best_vram //= 1024 * 1024
     return best_name, best_vram
+
+
+def _detect_gpu() -> tuple[str, int]:
+    """Return (model name, VRAM in MB) prioritizing true discrete GPU hardware VRAM."""
+    # 1. Try nvidia-smi first (exact hardware VRAM, immune to 32-bit WMI wrap-around)
+    if _which("nvidia-smi"):
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=4,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                name, vram = parse_nvidia_smi_output(out.stdout)
+                if name and vram > 0:
+                    return name, vram
+        except Exception:
+            pass
+
+    # 2. Fallback to CIM/WMI
+    raw = _powershell(
+        'Get-CimInstance Win32_VideoController | ForEach-Object { "{0}|{1}" -f $_.AdapterRAM, $_.Name }'
+    )
+    return parse_wmi_gpu_output(raw)
 
 
 def _detect_ram_gb() -> float:
@@ -218,3 +287,159 @@ def profile_environment(workspace: Path | None = None) -> EnvironmentProfile:
         "can_run_node": prof.has_node,
     }
     return prof
+
+
+def diagnose_system(rt: Any = None, workspace: Path | None = None) -> DoctorReport:
+    """Run structured read-only health checks on Hund and integrations."""
+    from .config import HundConfig
+    from .secrets import get_credential_status
+    from .stats.environment_snapshot import create_environment_snapshot
+
+    checks: list[CheckResult] = []
+    fix_plan: list[str] = []
+
+    # 1. Environment snapshot check
+    try:
+        snapshot = create_environment_snapshot(workspace)
+        if snapshot.processor and snapshot.total_ram_gb > 0:
+            checks.append(CheckResult(
+                name="Environment snapshot",
+                status="pass",
+                detail="Current",
+            ))
+        else:
+            checks.append(CheckResult(
+                name="Environment snapshot",
+                status="warn",
+                detail="Partial sensor data",
+                remedy="Run /system refresh to re-evaluate hardware metrics.",
+            ))
+            fix_plan.append("Re-scan hardware metrics via /system refresh")
+    except Exception as exc:
+        checks.append(CheckResult(
+            name="Environment snapshot",
+            status="fail",
+            detail="Snapshot evaluation failed",
+            remedy="Check host permissions for hardware inspection.",
+        ))
+        fix_plan.append("Verify system discovery permissions")
+
+    # 2. Config & Recovery check
+    try:
+        cfg = getattr(rt, "cfg", None) or HundConfig.load()
+        if cfg and getattr(cfg, "provider", None) and cfg.provider.model:
+            checks.append(CheckResult(
+                name="Config and recovery",
+                status="pass",
+                detail="Healthy",
+            ))
+        else:
+            checks.append(CheckResult(
+                name="Config and recovery",
+                status="warn",
+                detail="Default configuration",
+                remedy="Run /config to verify your settings.",
+            ))
+            fix_plan.append("Save configuration with /config")
+    except Exception:
+        checks.append(CheckResult(
+            name="Config and recovery",
+            status="fail",
+            detail="Configuration error",
+            remedy="Restore config from backup or reset with /config reset.",
+        ))
+        fix_plan.append("Restore configuration defaults")
+
+    # 3. Provider credentials check
+    try:
+        cfg = getattr(rt, "cfg", None) or HundConfig.load()
+        active_model = getattr(cfg.provider, "model", "deepseek-chat")
+        cred_id = getattr(cfg.provider, "credential_id", "deepseek")
+        env_name = getattr(cfg.provider, "api_key_env", "DEEPSEEK_API_KEY")
+        status, _info = get_credential_status(cred_id, env_name)
+        if status in ("configured", "environment"):
+            checks.append(CheckResult(
+                name="Provider credentials",
+                status="pass",
+                detail=f"{cred_id.title()} [{status.title()}]",
+            ))
+        else:
+            checks.append(CheckResult(
+                name="Provider credentials",
+                status="warn",
+                detail=f"{cred_id.title()} needs a key",
+                remedy=f"Use /auth to configure API key for {cred_id}.",
+            ))
+            fix_plan.append(f"Configure {cred_id} API key in /auth")
+    except Exception:
+        checks.append(CheckResult(
+            name="Provider credentials",
+            status="warn",
+            detail="Credential vault unverified",
+            remedy="Check Windows Credential Manager accessibility.",
+        ))
+        fix_plan.append("Verify keyring access in /auth")
+
+    # 4. Selected model consistency
+    try:
+        cfg = getattr(rt, "cfg", None) or HundConfig.load()
+        active_model = getattr(cfg.provider, "model", "deepseek-chat")
+        checks.append(CheckResult(
+            name="Selected model",
+            status="pass",
+            detail=f"{active_model}",
+        ))
+    except Exception:
+        checks.append(CheckResult(
+            name="Selected model",
+            status="warn",
+            detail="Unknown model",
+            remedy="Select an active model in /model.",
+        ))
+        fix_plan.append("Select active model via /model")
+
+    # 5. Learning store check
+    try:
+        from .store.sqlite import connect_requests
+        conn = connect_requests()
+        conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        conn.close()
+        checks.append(CheckResult(
+            name="Learning store",
+            status="pass",
+            detail="Schema current",
+        ))
+    except Exception:
+        checks.append(CheckResult(
+            name="Learning store",
+            status="warn",
+            detail="Database offline",
+            remedy="Run /reset if local learning database is corrupted.",
+        ))
+        fix_plan.append("Verify learning store schema")
+
+    # 6. Terminal capabilities & profile
+    try:
+        from .ui import theme
+        if theme.supports_truecolor():
+            checks.append(CheckResult(
+                name="Terminal profile",
+                status="pass",
+                detail="Truecolor enabled",
+            ))
+        else:
+            checks.append(CheckResult(
+                name="Terminal profile",
+                status="warn",
+                detail="Standard color mode",
+                remedy="Use Windows Terminal for 24-bit Truecolor and Nerd Font rendering.",
+            ))
+            fix_plan.append("Enable Truecolor in terminal settings")
+    except Exception:
+        checks.append(CheckResult(
+            name="Terminal profile",
+            status="pass",
+            detail="Standard",
+        ))
+
+    return DoctorReport(checks=tuple(checks), fix_plan=tuple(fix_plan))

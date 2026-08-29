@@ -18,20 +18,19 @@ def test_activity_timeline_replaces_running_state() -> None:
     timeline = ActivityTimeline()
     event_id = timeline.start("web_search", "searched the web for Hund")
     assert timeline.render_lines() == ["  ┊ ⟳ searched the web for Hund"]
-    timeline.finish(event_id, ActivityStatus.COMPLETE, duration_s=0.4)
-    assert timeline.render_lines() == ["  ┊ ✓ searched the web for Hund · 0.4s"]
+    timeline.finish(event_id, ActivityStatus.COMPLETE, duration_s=0.9)
+    assert timeline.render_lines() == ["  ┊ ✓ searched the web for Hund · 0.9s"]
 
 
-def test_activity_timeline_renders_each_event_on_own_line() -> None:
+def test_activity_timeline_renders_grouped_read_events() -> None:
     timeline = ActivityTimeline()
     first = timeline.start("web_open", "read source one")
     timeline.finish(first, ActivityStatus.COMPLETE, duration_s=0.2)
     second = timeline.start("web_open", "read source two")
     timeline.finish(second, ActivityStatus.COMPLETE, duration_s=0.3)
     lines = timeline.render_lines()
-    assert lines[0] == "  ┊ ✓ read source one · 0.2s"
-    assert lines[1] == "  ┊ ✓ read source two · 0.3s"
-    assert lines[2] == "  ╰─ cross-checked · 0.5s"
+    assert lines[0] == "  ┊ ✓ read relevant pages          2 sources · 0.5s"
+    assert lines[1] == "  ╰─ cross-checked · 0.5s"
 
 
 def test_activity_capsule_only_for_verified_complex_or_failed_work() -> None:
@@ -56,4 +55,3 @@ def test_activity_capsule_only_for_verified_complex_or_failed_work() -> None:
     event = failed.start("terminal", "ran build")
     failed.finish(event, ActivityStatus.ERROR, duration_s=0.2, detail="exit code 1")
     assert failed.render_lines()[-1] == "  ╰─ stopped · 0.2s"
-

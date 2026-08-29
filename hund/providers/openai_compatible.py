@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 import httpx
@@ -16,6 +17,152 @@ import httpx
 from .base import CompletionResult, Message, ProviderClient
 
 # Modeller beror på provider. Verifiera mot respektive /models-endpoint.
+
+_PROTOCOL_BLOCK_PATTERNS = [
+    re.compile(r"<[｜|│]\s*tool[_\s]*calls?[_\s]*begin\s*[｜|│]>.*?<[｜|│]\s*tool[_\s]*calls?[_\s]*end\s*[｜|│]>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"＜[｜|│]\s*tool[_\s]*calls?[_\s]*begin\s*[｜|│]＞.*?＜[｜|│]\s*tool[_\s]*calls?[_\s]*end\s*[｜|│]＞", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\s*tool_call\s*>.*?<\s*/\s*tool_call\s*>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\s*DSMLtool_calls?\s*>.*?<\s*/\s*DSMLtool_calls?\s*>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\s*DSMLinvoke(?:\s+name=[^>]*)?>.*?<\s*/\s*DSMLinvoke\s*>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\s*DSMLinvoke(?:\s+name=[^>]*)?\s*/>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"\[\s*TOOL_CALLS?\s*\].*?\[\s*/\s*TOOL_CALLS?\s*\]", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\s*invoke\s+name=[^>]*>.*?<\s*/\s*invoke\s*>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\s*function_call\s*>.*?<\s*/\s*function_call\s*>", re.DOTALL | re.IGNORECASE),
+    re.compile(r"<\|im_start\|>\s*tool.*?<\|im_end\|>", re.DOTALL | re.IGNORECASE),
+]
+
+_DANGLING_MARKER_PATTERNS = [
+    re.compile(r"<[｜|│]\s*tool[_\s]*(?:calls?[_\s]*begin|calls?[_\s]*end|sep)\s*[｜|│]>", re.IGNORECASE),
+    re.compile(r"＜[｜|│]\s*tool[_\s]*(?:calls?[_\s]*begin|calls?[_\s]*end|sep)\s*[｜|│]＞", re.IGNORECASE),
+    re.compile(r"<\s*/?\s*tool_call\s*>", re.IGNORECASE),
+    re.compile(r"<\s*/?\s*DSMLtool_calls?\s*>", re.IGNORECASE),
+    re.compile(r"<\s*/?\s*DSMLinvoke(?:\s+name=[^>]*)?\s*/?>", re.IGNORECASE),
+    re.compile(r"<\s*/?\s*DSML[a-zA-Z0-9_]*\s*>", re.IGNORECASE),
+    re.compile(r"\[\s*/?\s*TOOL_CALLS?\s*\]", re.IGNORECASE),
+    re.compile(r"<\s*/?\s*invoke(?:\s+name=[^>]*)?>", re.IGNORECASE),
+    re.compile(r"<\s*/?\s*function_call\s*>", re.IGNORECASE),
+]
+
+_START_MARKER_PAT = re.compile(
+    r"(?:<[｜|│]\s*tool[_\s]*calls?[_\s]*begin\s*[｜|│]>|"
+    r"＜[｜|│]\s*tool[_\s]*calls?[_\s]*begin\s*[｜|│]＞|"
+    r"<\s*tool_call\s*>|"
+    r"<\s*DSMLtool_calls?\s*>|"
+    r"<\s*DSMLinvoke(?:\s+name=[^>]*)?>|"
+    r"<\s*DSML[a-zA-Z0-9_]*|"
+    r"\[\s*TOOL_CALLS?\s*\]|"
+    r"<\s*invoke\s+name=[^>]*>|"
+    r"<\s*function_call\s*>|"
+    r"<\|im_start\|>\s*tool)",
+    re.IGNORECASE,
+)
+
+_END_MARKER_PAT = re.compile(
+    r"(?:<[｜|│]\s*tool[_\s]*calls?[_\s]*end\s*[｜|│]>|"
+    r"＜[｜|│]\s*tool[_\s]*calls?[_\s]*end\s*[｜|│]＞|"
+    r"<\s*/\s*tool_call\s*>|"
+    r"<\s*/\s*DSMLtool_calls?\s*>|"
+    r"<\s*/\s*DSMLinvoke\s*>|"
+    r"<\s*/\s*DSML[a-zA-Z0-9_]*\s*>|"
+    r"\[\s*/\s*TOOL_CALLS?\s*\]|"
+    r"<\s*/\s*invoke\s*>|"
+    r"<\s*/\s*function_call\s*>|"
+    r"<\|im_end\|>)",
+    re.IGNORECASE,
+)
+
+_POTENTIAL_PREFIX_STARTERS = ("<", "＜", "[", "\u3008", "\uff1c")
+_KNOWN_PREFIXES = (
+    "<|", "<｜", "<tool", "<invoke", "<function", "<t", "<i", "<f",
+    "<d", "<D", "<dsml", "<DSML", "<dsmltool", "<dsmlinvoke",
+    "＜|", "＜｜", "＜tool", "＜t",
+    "[t", "[T", "[tool", "[TOOL",
+)
+
+
+def filter_leaked_protocol(text: str) -> str:
+    """Filter known DSML and function-calling protocol markers and malformed blocks from model output."""
+    if not text:
+        return text
+    cleaned = text
+    for pat in _PROTOCOL_BLOCK_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    for pat in _DANGLING_MARKER_PATTERNS:
+        cleaned = pat.sub("", cleaned)
+    return cleaned
+
+
+class StreamProtocolFilter:
+    """Bounded streaming protocol sanitizer that prevents leaked DSML markup from appearing in chat."""
+
+    def __init__(self, max_prefix_len: int = 48) -> None:
+        self._buffer = ""
+        self._in_block = False
+        self._max_prefix_len = max_prefix_len
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buffer += chunk
+        emitted_parts: list[str] = []
+
+        while self._buffer:
+            if not self._in_block:
+                # Look for a complete start marker
+                start_m = _START_MARKER_PAT.search(self._buffer)
+                if start_m:
+                    start_idx = start_m.start()
+                    # Emit confirmed safe text before the start marker
+                    if start_idx > 0:
+                        emitted_parts.append(filter_leaked_protocol(self._buffer[:start_idx]))
+                    self._buffer = self._buffer[start_m.end():]
+                    self._in_block = True
+                    continue
+
+                # Check if buffer ends with a potential marker prefix
+                last_starter = -1
+                for starter in _POTENTIAL_PREFIX_STARTERS:
+                    pos = self._buffer.rfind(starter)
+                    if pos > last_starter and (len(self._buffer) - pos) <= self._max_prefix_len:
+                        candidate = self._buffer[pos:].lower()
+                        if any(candidate.startswith(p.lower()) or p.lower().startswith(candidate) for p in _KNOWN_PREFIXES):
+                            last_starter = pos
+
+                if last_starter != -1:
+                    # Hold the potential prefix in buffer, emit safe prefix
+                    safe_chunk = self._buffer[:last_starter]
+                    if safe_chunk:
+                        emitted_parts.append(filter_leaked_protocol(safe_chunk))
+                    self._buffer = self._buffer[last_starter:]
+                    break
+                else:
+                    # Entire buffer is safe
+                    emitted_parts.append(filter_leaked_protocol(self._buffer))
+                    self._buffer = ""
+                    break
+            else:
+                # We are inside a protocol block, look for end marker
+                end_m = _END_MARKER_PAT.search(self._buffer)
+                if end_m:
+                    # Discard everything up to end marker
+                    self._buffer = self._buffer[end_m.end():]
+                    self._in_block = False
+                    continue
+                else:
+                    # Still in protocol block, wait for end marker
+                    if len(self._buffer) > 10000:
+                        self._buffer = self._buffer[-200:]
+                    break
+
+        return "".join(emitted_parts)
+
+    def flush(self) -> str:
+        if self._in_block:
+            self._buffer = ""
+            return ""
+        out = filter_leaked_protocol(self._buffer)
+        self._buffer = ""
+        return out
 
 
 def _msg_to_dict(m: Message) -> dict:
@@ -91,8 +238,10 @@ class OpenAICompatibleClient(ProviderClient):
         choice = data["choices"][0]
         msg = choice.get("message", {})
         usage = data.get("usage", {}) or {}
+        raw_text = msg.get("content") or ""
+        filtered_text = filter_leaked_protocol(raw_text)
         self.last_result = CompletionResult(
-            text=msg.get("content") or "",
+            text=filtered_text,
             tool_calls=msg.get("tool_calls") or [],
             finish_reason=choice.get("finish_reason", "stop"),
             prompt_tokens=usage.get("prompt_tokens", 0),
@@ -128,6 +277,7 @@ class OpenAICompatibleClient(ProviderClient):
         finish = "stop"
         pt = ct = tt = 0
         t0 = time.perf_counter()
+        protocol_filter = StreamProtocolFilter()
 
         timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
         try:
@@ -160,7 +310,9 @@ class OpenAICompatibleClient(ProviderClient):
                         if choices:
                             delta = choices[0].get("delta", {}) or {}
                             if delta.get("content"):
-                                yield delta["content"]
+                                filtered_chunk = protocol_filter.feed(delta["content"])
+                                if filtered_chunk:
+                                    yield filtered_chunk
                             for tc in delta.get("tool_calls") or []:
                                 idx = tc.get("index", 0)
                                 acc = tool_acc.setdefault(
@@ -179,6 +331,9 @@ class OpenAICompatibleClient(ProviderClient):
                         u = chunk.get("usage")
                         if u:
                             pt, ct, tt = u.get("prompt_tokens", 0), u.get("completion_tokens", 0), u.get("total_tokens", 0)
+                    final_chunk = protocol_filter.flush()
+                    if final_chunk:
+                        yield final_chunk
         except httpx.TimeoutException as e:
             raise RuntimeError(f"provider stream timeout: {e}") from e
         except httpx.HTTPError as e:

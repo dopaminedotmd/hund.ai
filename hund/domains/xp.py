@@ -30,6 +30,19 @@ XP_AMOUNTS: dict[str, int] = {
     EVENT_MANUAL_ADJUST: 0,
 }
 
+EVENT_DISPLAY_REASONS: dict[str, str] = {
+    EVENT_DISCOVERY: "discovery",
+    EVENT_SAME_TASK_REUSE: "verified same-task reuse",
+    EVENT_CROSS_SESSION_REUSE: "verified cross-session reuse",
+    EVENT_VALIDATION_PROMOTION: "validation promotion",
+    EVENT_MANUAL_ADJUST: "manual adjustment",
+}
+
+
+def format_xp_reason(event_type: str) -> str:
+    """Format internal event_type to human-readable receipt description."""
+    return EVENT_DISPLAY_REASONS.get(event_type, event_type.replace("_", " "))
+
 
 def _ensure_table(db_path=None) -> None:
     conn = connect(db_path)

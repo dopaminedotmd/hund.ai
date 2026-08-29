@@ -13,11 +13,23 @@ from prompt_toolkit.key_binding import KeyBindings
 KEYMAP: dict[str, list[dict[str, str]]] = {
     "Chat Input": [
         {"key": "Enter", "action": "Send prompt / execute command"},
-        {"key": "Alt+Enter (Esc,Enter)", "action": "Insert newline (multi-line input)"},
+        {"key": "Up / Down", "action": "Cycle prompt history (at top/bottom line)"},
+        {"key": "Alt+Enter (Ctrl+J)", "action": "Insert newline (multi-line input)"},
+        {"key": "Ctrl+A", "action": "Select all text in input prompt"},
+        {"key": "Ctrl+W / Alt+Backspace", "action": "Delete word before cursor"},
+        {"key": "Ctrl+X", "action": "Cut selected text to clipboard"},
+        {"key": "Ctrl+V", "action": "Paste from system clipboard"},
+        {"key": "Ctrl+Z / Ctrl+Y", "action": "Undo / Redo input edits"},
         {"key": "Ctrl+R", "action": "Reverse search prompt history"},
         {"key": "Tab", "action": "Auto-complete slash commands"},
-        {"key": "Ctrl+C", "action": "Cancel current line (double-tap to exit)"},
+        {"key": "Ctrl+C", "action": "Cancel active work or clear the current line"},
         {"key": "Ctrl+D / /exit", "action": "Exit REPL cleanly"},
+    ],
+    "Navigation & Scrolling": [
+        {"key": "Backspace", "action": "Browser back step (Detail -> List -> Chat)"},
+        {"key": "Esc / q", "action": "Close menu / return to chat instantly (from any page)"},
+        {"key": "Shift+Up / Shift+Down", "action": "Scroll transcript view (4 lines)"},
+        {"key": "PageUp / PageDown", "action": "Scroll transcript view (page)"},
     ],
     "Confirmation Modal": [
         {"key": "y", "action": "Approve and execute once"},

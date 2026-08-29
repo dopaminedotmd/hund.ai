@@ -11,6 +11,8 @@ class DestinationView(str, Enum):
     SKILLS = "skills"
     TOOLS = "tools"
     USAGE = "usage"
+    SYSTEM = "system"
+    DOCTOR = "doctor"
 
 
 class OverlayView(str, Enum):
@@ -20,12 +22,19 @@ class OverlayView(str, Enum):
     MODEL = "model"
     MODEL_CUSTOM = "model_custom"
     MODEL_KEY = "model_key"
+    AUTH = "auth"
+    AUTH_ADD = "auth_add"
+    AUTH_MANAGE = "auth_manage"
+    AUTH_KEY = "auth_key"
+    AUTH_CUSTOM = "auth_custom"
+    AUTH_FORGET_CONFIRM = "auth_forget_confirm"
 
 
 @dataclass
 class ScreenController:
     destination: DestinationView = DestinationView.CHAT
     overlay: OverlayView = OverlayView.NONE
+    overlay_source: OverlayView = OverlayView.NONE
     selected: dict[str, int] = field(default_factory=dict)
     scroll: dict[str, int] = field(default_factory=dict)
     detail: dict[str, str | None] = field(default_factory=dict)
@@ -45,15 +54,28 @@ class ScreenController:
     def open_overlay(self, overlay: OverlayView) -> bool:
         if self.overlay is OverlayView.CONFIRM and overlay is not OverlayView.CONFIRM:
             return False
+        self.overlay_source = self.overlay
         self.overlay = overlay
         self.status = ""
         return True
 
-    def close_escape(self) -> str:
-        """Close nested modal, modal, or destination in strict priority order."""
-        if self.overlay is OverlayView.CONFIRM:
-            self.overlay = OverlayView.NONE
-            return "confirm"
+    def step_back(self) -> str:
+        """Step back one level in the hierarchy (e.g. Backspace / Left)."""
+        if self.overlay is OverlayView.AUTH_FORGET_CONFIRM:
+            self.overlay = OverlayView.AUTH_MANAGE
+            return "nested"
+        if self.overlay in (OverlayView.AUTH_KEY, OverlayView.AUTH_CUSTOM):
+            if self.overlay_source in (OverlayView.AUTH_ADD, OverlayView.AUTH_MANAGE, OverlayView.MODEL):
+                self.overlay = self.overlay_source
+            else:
+                self.overlay = OverlayView.AUTH_ADD
+            return "nested"
+        if self.overlay in (OverlayView.AUTH_ADD, OverlayView.AUTH_MANAGE):
+            if self.overlay_source is OverlayView.MODEL:
+                self.overlay = OverlayView.MODEL
+            else:
+                self.overlay = OverlayView.AUTH
+            return "nested"
         if self.overlay in (OverlayView.MODEL_CUSTOM, OverlayView.MODEL_KEY):
             self.overlay = OverlayView.MODEL
             return "nested"
@@ -65,6 +87,36 @@ class ScreenController:
             return "detail"
         if self.destination is not DestinationView.CHAT:
             self.destination = DestinationView.CHAT
+            self.detail.clear()
+            return "destination"
+        return "none"
+
+    def close_escape(self) -> str:
+        """Close nested modal, modal, or destination in strict priority order."""
+        if self.overlay is OverlayView.CONFIRM:
+            self.overlay = OverlayView.NONE
+            return "confirm"
+        if self.overlay in (OverlayView.MODEL_CUSTOM, OverlayView.MODEL_KEY):
+            self.overlay = OverlayView.MODEL
+            return "nested"
+        if self.overlay in (OverlayView.AUTH_KEY, OverlayView.AUTH_CUSTOM):
+            if self.overlay_source in (OverlayView.AUTH_ADD, OverlayView.AUTH_MANAGE, OverlayView.MODEL):
+                self.overlay = self.overlay_source
+            else:
+                self.overlay = OverlayView.AUTH_ADD
+            return "nested"
+        if self.overlay is OverlayView.AUTH_FORGET_CONFIRM:
+            self.overlay = OverlayView.AUTH_MANAGE
+            return "nested"
+        if self.overlay is not OverlayView.NONE:
+            self.overlay = OverlayView.NONE
+            return "overlay"
+        if self.detail.get(self.destination.value):
+            self.detail[self.destination.value] = None
+            return "detail"
+        if self.destination is not DestinationView.CHAT:
+            self.destination = DestinationView.CHAT
+            self.detail.clear()
             return "destination"
         return "chat"
 

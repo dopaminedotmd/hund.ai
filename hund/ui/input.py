@@ -22,43 +22,67 @@ from collections.abc import Iterable
 from ..paths import hund_home
 from ..agent.user_context import workspace_files
 from . import theme
+from .command_spec import get_autocomplete_metas
 from .keys import build_repl_keybindings
 
-SLASH_COMMAND_METAS: dict[str, str] = {
-    "/exit": "Exit the REPL session",
-    "/help": "Show command palette and keybindings",
-    "/stats": "View character card and RPG stats",
-    "/model": "View or switch active LLM model",
-    "/skills": "Manage and inspect equipped skills and vault",
-    "/profile": "View host hardware and environment profile",
-    "/tools": "List registered tools and risk levels",
-    "/history": "View session turn history",
-    "/clear": "Clear active conversation context",
-    "/progress": "View session activity and progression",
-    "/domains": "View domain confidence and specializations",
-    "/memory": "Show and manage persistent user memory",
-    "/export": "Export session transcript to file",
-    "/config": "View active configuration settings",
-    "/copy": "Copy last assistant response to clipboard",
-    "/theme": "Switch terminal visual palette",
-    "/session": "Inspect or search session archive",
-    "/retry": "Regenerate last assistant response",
-    "/restore": "Restore previous session messages into active context",
-    "/notifications": "Toggle desktop notifications",
-    "/mascot": "Display Hund ASCII mascot",
-    "/usage": "View token and resource consumption",
-    "/doctor": "Run hardware and system diagnosis",
-    "/compress": "Compress context to save tokens",
-    "/diff": "View working tree modifications",
-    "/undo": "File backup and restore information",
-    "/lessons": "View learned lessons and feedback",
-    "/learning": "Inspect durable learning receipts",
-    "/trace": "Inspect the last run's redacted tool trace",
-}
+SLASH_COMMAND_METAS: dict[str, str] = get_autocomplete_metas()
 
 
 SLASH_COMMANDS = list(SLASH_COMMAND_METAS.keys())
 MAX_VISIBLE_COMPLETIONS = 6
+
+
+def normalize_terminal_input(text: str) -> str:
+    """Convert Win32 UTF-16 surrogate input into UTF-8-safe Unicode text."""
+    if not any(0xD800 <= ord(char) <= 0xDFFF for char in text):
+        return text
+
+    normalized: list[str] = []
+    index = 0
+    while index < len(text):
+        codepoint = ord(text[index])
+        if 0xD800 <= codepoint <= 0xDBFF and index + 1 < len(text):
+            low = ord(text[index + 1])
+            if 0xDC00 <= low <= 0xDFFF:
+                scalar = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00)
+                normalized.append(chr(scalar))
+                index += 2
+                continue
+        if 0xD800 <= codepoint <= 0xDFFF:
+            normalized.append("\uFFFD")
+        else:
+            normalized.append(text[index])
+        index += 1
+    return "".join(normalized)
+
+
+def resolve_slash_command(text: str) -> str:
+    """Resolve exact or prefix slash command to full command name, preserving args.
+
+    Examples:
+        '/mod' -> '/model'
+        '/sk' -> '/skills'
+        '/sta' -> '/stats'
+        '/mod deepseek' -> '/model deepseek'
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return stripped
+    parts = stripped.split(maxsplit=1)
+    cmd_token = parts[0].lower()
+    args = parts[1] if len(parts) > 1 else ""
+
+    # Exact match check
+    for cmd in SLASH_COMMANDS:
+        if cmd_token == cmd.lower():
+            return f"{cmd} {args}".strip()
+
+    # Prefix match check
+    candidates = [cmd for cmd in SLASH_COMMANDS if cmd.lower().startswith(cmd_token)]
+    if candidates:
+        return f"{candidates[0]} {args}".strip()
+
+    return stripped
 
 
 def _fuzzy_score(query: str, candidate: str) -> tuple[int, int] | None:
@@ -151,11 +175,13 @@ class PromptState:
 
 
 def format_tokens_ratio(tokens: int, limit: int = 1_000_000) -> str:
-    """Format token consumption ratio, e.g. 274K/1M or 14K/128K."""
+    """Format token consumption ratio, e.g. 4.6K/1M or 14K/128K."""
     if tokens >= 1_000_000:
         t_str = f"{tokens / 1_000_000:.1f}M"
-    elif tokens >= 1_000:
+    elif tokens >= 10_000:
         t_str = f"{tokens // 1000}K"
+    elif tokens >= 1_000:
+        t_str = f"{tokens / 1000:.1f}K"
     else:
         t_str = f"{tokens}"
 
@@ -193,7 +219,7 @@ def format_status_bar(
     if "(" in model and ")" in model:
         cleaned_model = model.split("(")[-1].split(")")[0].strip()
     if not cleaned_model:
-        cleaned_model = "deepseek-v4-pro"
+        cleaned_model = "deepseek-v4-flash"
 
     token_str = format_tokens_ratio(tokens, limit)
     duration_str = format_duration(duration_s)
@@ -206,7 +232,7 @@ def format_status_bar(
 
 def _toolbar(state: PromptState):
     """Render single-line dim status bar for bottom toolbar."""
-    model = state.extra.get("model", "deepseek-v4-pro")
+    model = state.extra.get("model", "deepseek-v4-flash")
     tokens = state.extra.get("tokens", 0)
     limit = state.extra.get("token_limit", 1_000_000)
     duration_s = time.time() - state.start_time

@@ -134,10 +134,10 @@ def _run_agent_turn(user_msg: str, session_id: str | None = None) -> dict[str, A
     from ..tools.default_tools import register_defaults
     register_defaults(workspace)
 
-    from ..persona import load_persona
+    from ..persona import load_runtime_persona
     from ..doctor import profile_environment
     profile = profile_environment(workspace=workspace)
-    persona = load_persona()
+    persona = load_runtime_persona()
     try:
         from ..domains import detector as ddet
         from ..knowledge import store as kstore
@@ -180,6 +180,24 @@ def _run_agent_turn(user_msg: str, session_id: str | None = None) -> dict[str, A
     sink = ConnectorSink()
     from rich.console import Console
     mock_console = Console(width=80)
+    handled, authoring_outputs = agent_loop._run_authoring_runtime(
+        user_msg,
+        session_id=session_id,
+        workspace=workspace,
+        engine=engine,
+        console=mock_console,
+        width=80,
+        ascii_only=getattr(cfg, "ascii_ui", False),
+        hooks=sink,
+        run_id=run_id,
+    )
+    if handled:
+        response_text = "\n\n".join(authoring_outputs)
+        agent_loop._session_save(session_id, "assistant", response_text, run_id=run_id)
+        return {
+            "status": "ok", "session_id": session_id, "run_id": run_id,
+            "response": response_text, "tool_logs": sink.tool_logs,
+        }
     agent_loop._agent_turn(mock_console, client, messages, schemas, engine, cfg, session_id, sink=sink, run_id=run_id)
     response_text = "".join(sink.chunks) or f"Error: {' '.join(sink.errors)}"
     return {"status": "ok", "session_id": session_id, "run_id": run_id, "response": response_text, "tool_logs": sink.tool_logs}
