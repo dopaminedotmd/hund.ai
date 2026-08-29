@@ -161,7 +161,73 @@ def dispatch_tool_call(
             console.print(f"[red]BLOCKED[/red] {name} — {decision.reason}")
         return f"[blocked] {decision.reason}"
 
-    if not (decision.risk is RiskLevel.SAFE and auto_approve_safe):
+    # Phase 3 Skill Authoring Guards
+    effective_sid = (tool_context.session_id if tool_context else None) or session_id or args.get("session_id")
+    from ..skills.authoring import AuthoringState, get_authoring_registry
+    auth_reg = get_authoring_registry()
+    auth_session = auth_reg.get(effective_sid) if effective_sid else None
+
+    # 1. External Research Grant Check during active Skill Authoring
+    if auth_session is not None and (
+        name in ("web_search", "fetch_web_page", "read_url_content", "web_open", "web_extract")
+        or TOOL_DOMAIN_MAP.get(name) == "research"
+    ):
+        grant = auth_session.research_grant
+        if grant is None or not grant.is_valid(name):
+            reason = "external research not authorized for this authoring session"
+            _emit("tool_call_declined", {"reason": reason}, risk_level=decision.risk.value)
+            if hooks is not None:
+                hooks.declined(name, reason)
+            else:
+                console.print(f"[yellow]DECLINED[/yellow] {name} — {reason}")
+            return f"[declined: {reason}]"
+
+    # 2. Exact-Draft Single-Use Publication Authorization Check for create_skill
+    publication_binding: tuple[str, str, str] | None = None
+    if name == "create_skill":
+        from ..skills.contracts import compute_payload_hash
+
+        skill_payload = args.get("skill")
+        supplied_hash = str(args.get("payload_hash", ""))
+        supplied_auth_id = str(args.get("authorization_id", ""))
+        actual_hash = compute_payload_hash(skill_payload) if isinstance(skill_payload, dict) else ""
+        auth = auth_session.publication_authorization if auth_session is not None else None
+        requested_scope = str(skill_payload.get("scope", "global")) if isinstance(skill_payload, dict) else ""
+        requested_disposition = str(args.get("desired_disposition", "auto"))
+        terminal_authoring_states = {
+            AuthoringState.PUBLISHED,
+            AuthoringState.CANCELLED,
+        }
+        has_active_authoring = (
+            auth_session is not None
+            and auth_session.state not in terminal_authoring_states
+        )
+        attempts_exact_publication = bool(supplied_hash or supplied_auth_id)
+        if has_active_authoring or attempts_exact_publication:
+            if (
+                auth_session is None
+                or auth_session.state in terminal_authoring_states
+                or auth is None
+                or not isinstance(skill_payload, dict)
+                or supplied_hash != actual_hash
+                or supplied_auth_id != auth.authorization_id
+                or effective_sid != auth.session_id
+                or requested_scope != auth.scope
+                or requested_disposition != auth.disposition
+                or not auth.is_valid(actual_hash)
+            ):
+                reason = "unconfirmed or modified skill payload requires explicit user acceptance"
+                _emit("tool_call_declined", {"reason": reason}, risk_level=decision.risk.value)
+                if hooks is not None:
+                    hooks.declined(name, reason)
+                else:
+                    console.print(f"[yellow]DECLINED[/yellow] {name} — {reason}")
+                return f"[declined: {reason}]"
+            publication_binding = (effective_sid, supplied_auth_id, actual_hash)
+
+    if publication_binding is None and not (
+        decision.risk is RiskLevel.SAFE and auto_approve_safe
+    ):
         approved_id = str(uuid.uuid4())
         if noninteractive:
             reason = f"{decision.risk} requires approval"
@@ -241,6 +307,15 @@ def dispatch_tool_call(
         ):
             _SESSION_ALLOWLIST.allow(session_id, name)
 
+    if publication_binding is not None:
+        pub_session_id, pub_auth_id, pub_hash = publication_binding
+        if not auth_reg.consume_publication_authorization(pub_session_id, pub_auth_id, pub_hash):
+            reason = "publication authorization was already used or expired"
+            _emit("tool_call_declined", {"reason": reason}, risk_level=decision.risk.value)
+            if hooks is not None:
+                hooks.declined(name, reason)
+            return f"[declined: {reason}]"
+
     _emit("tool_call_started", args, risk_level=decision.risk.value)
     if hooks is not None:
         hooks.tool_start(name, args)
@@ -257,6 +332,16 @@ def dispatch_tool_call(
     if len(result) > MAX_TOOL_OUTPUT:
         result = result[:MAX_TOOL_OUTPUT] + "\n[TRUNCATED — output oversteg 50KB]"
     success = 1 if typed_result.status is ToolStatus.SUCCESS else 0
+    if publication_binding is not None and not success:
+        from dataclasses import replace
+
+        failed_session = auth_reg.get(publication_binding[0])
+        if failed_session is not None and failed_session.state == AuthoringState.PUBLISHING:
+            auth_reg.save(replace(
+                failed_session,
+                state=AuthoringState.READY,
+                publication_authorization=None,
+            ))
     _log_tool(name, decision.risk.value, result, success, run_id=run_id)
     if success:
         _emit("tool_call_completed", {"stdout_redacted_summary": result[:200]}, risk_level=decision.risk.value)
@@ -295,9 +380,8 @@ def dispatch_tool_call(
             except Exception:
                 pass
     shown = result if len(result) <= 120 else result[:120] + "…"
-    if hooks is not None:
+    if hooks is not None and hasattr(hooks, "tool_result"):
         hooks.tool_result(name, shown)
     else:
         console.print(f"[dim]tool {name} -> {shown}[/dim]")
     return result
-

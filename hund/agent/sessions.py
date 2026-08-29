@@ -173,6 +173,19 @@ def list_messages(session_id: str, home: Optional[Path] = None) -> list[tuple]:
     return rows
 
 
+def messages_for_run(
+    session_id: str, run_id: str, home: Optional[Path] = None
+) -> list[tuple[str, str]]:
+    """Read one completed run without reconstructing or mutating the session."""
+    conn = _connect(home)
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE session_id=? AND run_id=? ORDER BY seq",
+        (session_id, run_id),
+    ).fetchall()
+    conn.close()
+    return rows
+
+
 def history(session_id: str, home: Optional[Path] = None) -> list[tuple]:
     """Endast user+assistant (resume-kontext). Skippar system/tool för säker rekonstruktion."""
     conn = _connect(home)

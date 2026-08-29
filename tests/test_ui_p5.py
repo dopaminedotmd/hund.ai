@@ -124,7 +124,7 @@ def test_streaming_sink_renders_rails_and_meta() -> None:
 
 def test_output_lexer_box_and_thinking_styles() -> None:
     from prompt_toolkit.document import Document
-    from hund.ui.fullscreen import _OUTPUT_LEXER
+    from hund.ui.fullscreen import _OutputLexer
 
     doc = Document(
         "  hund planned.\n"
@@ -138,7 +138,7 @@ def test_output_lexer_box_and_thinking_styles() -> None:
         "│                                                      │\n"
         "╰──────────────────────────────────────────────────────╯\n"
     )
-    lexer_fn = _OUTPUT_LEXER.lex_document(doc)
+    lexer_fn = _OutputLexer().lex_document(doc)
 
     # Line 0: "  hund planned." -> class:secondary (dim)
     t0 = lexer_fn(0)
@@ -154,11 +154,11 @@ def test_output_lexer_box_and_thinking_styles() -> None:
     t3 = lexer_fn(3)
     assert t3[0][0] == "class:secondary"
 
-    # Line 4: "│  hund skapar skills ...  │" -> primary text
+    # Line 4: "│   hund skapar skills ...   │" -> primary text
     t4 = lexer_fn(4)
-    assert t4[0] == ("class:secondary", "│  ")
+    assert t4[0] == ("class:secondary", "│   ")
     assert any("hund skapar skills" in text and style == "class:primary" for style, text in t4)
-    assert t4[-1] == ("class:secondary", "  │")
+    assert t4[-1] == ("class:secondary", "   │")
 
     # Line 5: "│  Hur hund går tillväga: ...  │" -> label bold
     t5 = lexer_fn(5)
@@ -182,10 +182,10 @@ def test_output_lexer_box_and_thinking_styles() -> None:
 
 def test_rounded_response_bottom_is_never_user_or_success_green() -> None:
     from prompt_toolkit.document import Document
-    from hund.ui.fullscreen import _OUTPUT_LEXER
+    from hund.ui.fullscreen import _OutputLexer
 
     doc = Document("╰────────────────────────────────── 0.4s ────╯")
-    tokens = _OUTPUT_LEXER.lex_document(doc)(0)
+    tokens = _OutputLexer().lex_document(doc)(0)
     assert any("class:accent" in style and text == "0.4s" for style, text in tokens)
     assert all("class:user" not in style for style, _text in tokens)
     assert all("class:success" not in style for style, _text in tokens)

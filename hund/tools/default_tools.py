@@ -74,23 +74,32 @@ def register_defaults(workspace: Path) -> None:
     registry.register(registry.Tool(
         name="create_skill",
         description=(
-            "Validate and save a declarative Hund skill in the canonical local "
-            "skill vault. Use this instead of write_file for every new skill. "
-            "Write canonical identifiers and operational instructions in English; "
-            "triggers may also include aliases in the user's language."
+            "Publish the exact declarative Hund skill accepted in the active "
+            "Shaping, Quality, and Ready authoring flow. Requires the complete "
+            "skill payload and its single-use publication authorization."
         ),
         parameters={
             "type": "object",
             "properties": {
+                "session_id": {"type": "string"},
+                "authorization_id": {"type": "string"},
+                "payload_hash": {"type": "string"},
+                "desired_disposition": {
+                    "type": "string",
+                    "enum": ["equip", "vault"],
+                },
                 "skill": {
                     "type": "object",
-                    "description": "Complete schema_version 1 skill specification.",
+                    "description": "Exact complete skill payload shown in the accepted Ready draft.",
                 },
             },
-            "required": ["skill"],
+            "required": [
+                "session_id", "authorization_id", "payload_hash",
+                "desired_disposition", "skill",
+            ],
         },
         base_risk="confirm",
-        handler=skill_handler(),
+        handler=skill_handler(workspace_path=workspace),
     ))
 
     from .web_search import search_web_typed

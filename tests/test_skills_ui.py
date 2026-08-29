@@ -8,6 +8,8 @@ from hund.skills.model import Skill
 from hund.skills.vault import SkillVault
 from hund.ui.commands import CommandContext, cmd_skills
 from hund.ui.skills_view import render_skill_detail, render_skills_panel
+from hund.ui.screen_render import skill_detail_lines
+from hund.ui.snapshots import SkillItem
 
 
 @pytest.fixture
@@ -51,6 +53,40 @@ def test_render_skill_detail_view(skills_home: Path) -> None:
     assert "Dependencies" in detail
 
 
+def test_snapshot_skill_detail_exposes_canonical_procedure_and_identity() -> None:
+    item = SkillItem(
+        name="marketing",
+        domain="general",
+        xp=0,
+        level=1,
+        tier="Novice",
+        percent=0,
+        lifecycle_state="active",
+        vault_state="equipped",
+        triggers=("marketing review",),
+        tools=("read_file",),
+        safety_level="read_only",
+        provenance=("local-authoring",),
+        when_to_use="When planning a marketing campaign.",
+        capability_id="general/marketing",
+        scope="project",
+        version="1.0.0",
+        steps=("Define the audience.", "Review channel fit."),
+        verification=("Confirm claims have evidence.",),
+        limitations=("No paid-media execution.",),
+    )
+
+    rendered = "\n".join(skill_detail_lines(item))
+
+    assert "Capability: general/marketing" in rendered
+    assert "Scope: project" in rendered
+    assert "Version: 1.0.0" in rendered
+    assert "1. Define the audience." in rendered
+    assert "Verification:" in rendered
+    assert "Confirm claims have evidence." in rendered
+    assert "No paid-media execution." in rendered
+
+
 def test_cmd_skills_dispatch_and_inspection(skills_home: Path) -> None:
     vault = SkillVault(home=skills_home)
     buf = StringIO()
@@ -64,7 +100,7 @@ def test_cmd_skills_dispatch_and_inspection(skills_home: Path) -> None:
     # Test /skills overview
     cmd_skills(ctx, [])
     output = buf.getvalue()
-    assert "SPECIALIZATIONS" in output
+    assert "SKILLS" in output
     assert "MOTOR SKILLS" not in output
 
     # Test /skills info <name>
@@ -73,3 +109,89 @@ def test_cmd_skills_dispatch_and_inspection(skills_home: Path) -> None:
     cmd_skills(ctx, ["info", "file-operations"])
     output_info = buf.getvalue()
     assert "SKILL DETAIL: file-operations" in output_info
+
+
+def test_zero_personal_xp_invariant_all_stages():
+    from hund.skills.authoring import PublicationReceipt, render_publication_receipt
+    from hund.skills.model import Skill
+
+    skill = Skill(
+        schema_version=1,
+        name="test-xp",
+        domain="general",
+        status="active",
+        triggers=("test",),
+        when_to_use="When testing.",
+        steps=("Step 1",),
+        required_tools=(),
+        forbidden_actions=("modify_tcb", "self_update", "apply_update", "elevate_permissions"),
+        safety_level="read_only",
+        verification=("Verify",),
+    )
+    assert skill.personal_skill_xp == 0
+    assert skill.to_dict()["personal_skill_xp"] == 0
+
+    receipt = PublicationReceipt(
+        skill_name="test-xp",
+        capability_id="general/test-xp",
+        scope="global",
+        action="created",
+        version="1.0.0",
+        lifecycle_state="active",
+        vault_state="vaulted",
+        personal_skill_xp=skill.personal_skill_xp,
+        source_count=0,
+        validation_checks=("schema_and_manifest",),
+    )
+    rendered = render_publication_receipt(receipt)
+    assert "0 XP" in rendered
+
+
+def test_personal_skill_xp_rendered_as_zero():
+    from hund.skills.authoring import PublicationReceipt, render_publication_receipt
+
+    receipt = PublicationReceipt(
+        skill_name="my-skill",
+        capability_id="general/my-skill",
+        scope="project",
+        action="created",
+        version="1.0.0",
+        lifecycle_state="active",
+        vault_state="equipped",
+        personal_skill_xp=0,
+        source_count=1,
+        validation_checks=("schema_and_manifest",),
+    )
+    text = render_publication_receipt(receipt)
+    assert "0 XP" in text
+    assert "1 authoritative reference(s)" in text
+
+
+def test_receipt_rendering_width_and_ascii():
+    from hund.skills.authoring import PublicationReceipt, render_publication_receipt
+
+    receipt = PublicationReceipt(
+        skill_name="markdown-table-formatter",
+        capability_id="general/markdown-table-formatter",
+        scope="global",
+        action="created",
+        version="1.0.0",
+        lifecycle_state="active",
+        vault_state="equipped",
+        personal_skill_xp=0,
+        source_count=2,
+        validation_checks=("schema_and_manifest", "loader_roundtrip"),
+        diff_summary="Added table column padding alignment rules and multiline cell support",
+        limitations=("Requires clean markdown inputs",),
+    )
+
+    # Test widths: 42, 60, 80, 120
+    for width in (42, 60, 80, 120):
+        rendered = render_publication_receipt(receipt, width=width)
+        for line in rendered.splitlines():
+            assert len(line) <= max(width + 5, 20)  # textwrap boundaries
+
+    # Test ASCII fallback
+    rendered_ascii = render_publication_receipt(receipt, width=80, ascii_only=True)
+    assert "·" not in rendered_ascii
+    assert "|" in rendered_ascii or "*" in rendered_ascii

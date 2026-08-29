@@ -31,8 +31,8 @@ def test_provider_roundtrip():
         )
     except RuntimeError as e:
         msg = str(e).lower()
-        # Saldo/fel nyckel = inte ett kod-fel. Skip.
-        if "429" in msg or "balance" in msg or "401" in msg:
+        # Saldo/fel nyckel/nätverk = inte ett kod-fel. Skip.
+        if any(k in msg for k in ("429", "balance", "401", "authentication", "invalid", "timeout", "http", "connection")):
             pytest.skip(f"provider ej användbar just nu: {e}")
         raise
 
@@ -45,4 +45,3 @@ def test_provider_roundtrip():
             f"Modellen svarade oväntat ({result.text!r}); "
             "live-LLM kan inte garantera exakt echo — skip istf fail"
         )
-

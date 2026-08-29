@@ -111,11 +111,9 @@ def test_theme_persistence_reloaded(tmp_path) -> None:
     from hund.config import HundConfig
     from hund.ui import theme
     cfg_file = tmp_path / "config.json"
-    cfg = HundConfig(theme="bone")
-    cfg.save(cfg_file)
-
-    loaded = HundConfig.load(cfg_file)
-    assert loaded.theme == "marshmallow"
+    for legacy_theme in ("bone", "nord", "synthwave", "unknown"):
+        HundConfig(theme=legacy_theme).save(cfg_file)
+        assert HundConfig.load(cfg_file).theme == "marshmallow"
 
     # Marshmallow is the single authoritative theme
     reloaded = HundConfig.load(cfg_file)

@@ -1,14 +1,18 @@
-"""File tools — read/search/write/delete, workspace-confined.
+"""File tools — read/search/write/delete/edit, workspace-confined.
 
 SECURITY: alla sökvägar resolvas mot workspace_root och kastar om utanför.
 PermissionEngine klassificerar; dubbel-check här = defense-in-depth.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+import difflib
 import fnmatch
 import os
+import threading
 import time
 from pathlib import Path
+from typing import Any
 
 # Ignoreras vid sökning — undviker att .venv/.git/AppData förorenar resultat eller orsakar oändliga sökningar.
 IGNORE_DIRS = {
@@ -18,6 +22,182 @@ IGNORE_DIRS = {
     "onedrive",
 }
 IGNORE_DIRS_LOWER = {d.lower() for d in IGNORE_DIRS}
+
+_EXT_LANG_MAP = {
+    ".py": "python",
+    ".js": "javascript",
+    ".ts": "typescript",
+    ".jsx": "javascript",
+    ".tsx": "typescript",
+    ".json": "json",
+    ".md": "markdown",
+    ".html": "html",
+    ".css": "css",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".ps1": "powershell",
+    ".toml": "toml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".rs": "rust",
+    ".go": "go",
+    ".c": "c",
+    ".cpp": "cpp",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".sql": "sql",
+    ".env": "text",
+    ".txt": "text",
+    ".xml": "xml",
+}
+
+_BINARY_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".webp", ".svgz",
+    ".exe", ".dll", ".so", ".dylib", ".bin",
+    ".zip", ".tar", ".gz", ".7z", ".bz2",
+    ".pdf", ".woff", ".woff2", ".ttf", ".eot",
+    ".pyc", ".pyd", ".db", ".sqlite", ".sqlite3",
+}
+
+
+def _detect_language(path: str) -> str:
+    ext = Path(path).suffix.lower()
+    return _EXT_LANG_MAP.get(ext, "text")
+
+
+def _is_binary(path: str, content: str) -> bool:
+    ext = Path(path).suffix.lower()
+    if ext in _BINARY_EXTENSIONS:
+        return True
+    if "\x00" in content:
+        return True
+    return False
+
+
+class FileChangeResult(str):
+    """Typed JSON-compatible file change result and string-compatible transport."""
+
+    operation: str
+    path: str
+    status: str
+    content_type_or_language: str
+    committed_content_or_diff: str
+    display_preview: str
+    truncated: bool
+    redacted: bool
+    binary: bool
+    error: str | None
+
+    def __new__(
+        cls,
+        operation: str,
+        path: str,
+        status: str,
+        content_type_or_language: str,
+        committed_content_or_diff: str,
+        display_preview: str,
+        truncated: bool = False,
+        redacted: bool = False,
+        binary: bool = False,
+        error: str | None = None,
+    ) -> FileChangeResult:
+        if status == "failed":
+            text = f"[error] {error or 'file operation failed'}"
+        elif status == "no_change":
+            text = f"inga ändringar i {path}"
+        elif status == "modified":
+            text = f"ändrade {path}"
+        else:
+            text = f"skrev {len(committed_content_or_diff)} bytes -> {path}"
+
+        instance = super().__new__(cls, text)
+        object.__setattr__(instance, "operation", str(operation))
+        object.__setattr__(instance, "path", str(path))
+        object.__setattr__(instance, "status", str(status))
+        object.__setattr__(instance, "content_type_or_language", str(content_type_or_language))
+        object.__setattr__(instance, "committed_content_or_diff", str(committed_content_or_diff))
+        object.__setattr__(instance, "display_preview", str(display_preview))
+        object.__setattr__(instance, "truncated", bool(truncated))
+        object.__setattr__(instance, "redacted", bool(redacted))
+        object.__setattr__(instance, "binary", bool(binary))
+        object.__setattr__(instance, "error", str(error) if error is not None else None)
+        return instance
+
+    def __repr__(self) -> str:
+        return (
+            f"FileChangeResult(operation={self.operation!r}, path={self.path!r}, "
+            f"status={self.status!r}, content_type_or_language={self.content_type_or_language!r}, "
+            f"truncated={self.truncated}, redacted={self.redacted}, binary={self.binary}, error={self.error!r})"
+        )
+
+    def __eq__(self, other: Any) -> bool:
+        if not isinstance(other, FileChangeResult):
+            return False
+        return (
+            self.operation == other.operation
+            and self.path == other.path
+            and self.status == other.status
+            and self.content_type_or_language == other.content_type_or_language
+            and self.committed_content_or_diff == other.committed_content_or_diff
+            and self.display_preview == other.display_preview
+            and self.truncated == other.truncated
+            and self.redacted == other.redacted
+            and self.binary == other.binary
+            and self.error == other.error
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "operation": self.operation,
+            "path": self.path,
+            "status": self.status,
+            "content_type_or_language": self.content_type_or_language,
+            "committed_content_or_diff": self.committed_content_or_diff,
+            "display_preview": self.display_preview,
+            "truncated": self.truncated,
+            "redacted": self.redacted,
+            "binary": self.binary,
+            "error": self.error,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> FileChangeResult:
+        return cls(
+            operation=data.get("operation", "write_file"),
+            path=data.get("path", ""),
+            status=data.get("status", "failed"),
+            content_type_or_language=data.get("content_type_or_language", ""),
+            committed_content_or_diff=data.get("committed_content_or_diff", ""),
+            display_preview=data.get("display_preview", ""),
+            truncated=bool(data.get("truncated", False)),
+            redacted=bool(data.get("redacted", False)),
+            binary=bool(data.get("binary", False)),
+            error=data.get("error"),
+        )
+
+
+_LATEST_FILE_CHANGE: dict[int, FileChangeResult] = {}
+_REGISTRY_LOCK = threading.Lock()
+
+
+def _record_latest_file_change(res: FileChangeResult) -> None:
+    with _REGISTRY_LOCK:
+        _LATEST_FILE_CHANGE[threading.get_ident()] = res
+
+
+def get_last_file_change_result() -> FileChangeResult | None:
+    with _REGISTRY_LOCK:
+        return _LATEST_FILE_CHANGE.get(threading.get_ident())
+
+
+def pop_last_file_change_result() -> FileChangeResult | None:
+    with _REGISTRY_LOCK:
+        tid = threading.get_ident()
+        res = _LATEST_FILE_CHANGE.pop(tid, None)
+        if res is None and _LATEST_FILE_CHANGE:
+            k = next(reversed(_LATEST_FILE_CHANGE))
+            return _LATEST_FILE_CHANGE.pop(k, None)
+        return res
 
 
 def _resolve(workspace: Path, path: str) -> Path:
@@ -92,17 +272,236 @@ def make_handlers(workspace: Path) -> dict:
 
         return "\n".join(hits) if hits else "(inga träffar)"
 
-    def write_file(args: dict) -> str:
-        p = _resolve(ws, args["path"])
+    def write_file(args: dict) -> FileChangeResult:
+        path_str = args.get("path", "")
+        content = args.get("content", "")
+        lang = _detect_language(path_str)
+
+        try:
+            p = _resolve(ws, path_str)
+        except Exception as exc:
+            res = FileChangeResult(
+                operation="write_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=f"invalid path: {exc}",
+            )
+            _record_latest_file_change(res)
+            return res
+
         builtins_dir = Path(__file__).resolve().parent.parent / "skills" / "builtins"
         try:
             p.resolve().relative_to(builtins_dir.resolve())
-            return f"[error] write blocked: {args['path']} is a protected builtin motor skill"
+            res = FileChangeResult(
+                operation="write_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=f"write blocked: {path_str} is a protected builtin motor skill",
+            )
+            _record_latest_file_change(res)
+            return res
         except ValueError:
             pass
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(args["content"], encoding="utf-8")
-        return f"skrev {len(args['content'])} bytes -> {args['path']}"
+
+        binary = _is_binary(path_str, content)
+        if binary:
+            file_existed = p.exists()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8", errors="replace")
+            res = FileChangeResult(
+                operation="write_file",
+                path=path_str,
+                status="created" if not file_existed else "modified",
+                content_type_or_language="binary",
+                committed_content_or_diff="",
+                display_preview=f"[binary content: {path_str}]",
+                binary=True,
+            )
+            _record_latest_file_change(res)
+            return res
+
+        file_existed = p.exists()
+        old_content = ""
+        if file_existed:
+            try:
+                old_content = p.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                old_content = ""
+
+        if file_existed and old_content == content:
+            status = "no_change"
+            committed_or_diff = ""
+            preview = ""
+        elif file_existed:
+            status = "modified"
+            diff_lines = list(difflib.unified_diff(
+                old_content.splitlines(),
+                content.splitlines(),
+                fromfile=f"a/{path_str}",
+                tofile=f"b/{path_str}",
+                lineterm="",
+            ))
+            committed_or_diff = "\n".join(diff_lines)
+            preview = committed_or_diff
+        else:
+            status = "created"
+            committed_or_diff = content
+            preview = content
+
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content, encoding="utf-8")
+        except Exception as exc:
+            res = FileChangeResult(
+                operation="write_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=str(exc),
+            )
+            _record_latest_file_change(res)
+            return res
+
+        # Truncation check for preview
+        truncated = False
+        lines = preview.splitlines()
+        if len(lines) > 80:
+            truncated = True
+            preview = "\n".join(lines[:60]) + f"\n[... truncated {len(lines) - 60} lines ...]"
+
+        # Redaction check for preview
+        from ..learning.redactor import redact_text
+        redacted_preview_res = redact_text(preview)
+        final_preview = redacted_preview_res.text
+        redacted = bool(redacted_preview_res.blocked_fields or "[REDACTED" in final_preview or final_preview != preview)
+
+        res = FileChangeResult(
+            operation="write_file",
+            path=path_str,
+            status=status,
+            content_type_or_language=lang,
+            committed_content_or_diff=committed_or_diff,
+            display_preview=final_preview,
+            truncated=truncated,
+            redacted=redacted,
+            binary=False,
+        )
+        _record_latest_file_change(res)
+        return res
+
+    def edit_file(args: dict) -> FileChangeResult:
+        path_str = args.get("path", "")
+        old_str = args.get("old_str", "")
+        new_str = args.get("new_str", "")
+        lang = _detect_language(path_str)
+
+        try:
+            p = _resolve(ws, path_str)
+        except Exception as exc:
+            res = FileChangeResult(
+                operation="edit_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=f"invalid path: {exc}",
+            )
+            _record_latest_file_change(res)
+            return res
+
+        builtins_dir = Path(__file__).resolve().parent.parent / "skills" / "builtins"
+        try:
+            p.resolve().relative_to(builtins_dir.resolve())
+            res = FileChangeResult(
+                operation="edit_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=f"edit blocked: {path_str} is a protected builtin motor skill",
+            )
+            _record_latest_file_change(res)
+            return res
+        except ValueError:
+            pass
+
+        if not p.exists() or not p.is_file():
+            res = FileChangeResult(
+                operation="edit_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=f"file not found: {path_str}",
+            )
+            _record_latest_file_change(res)
+            return res
+
+        old_content = p.read_text(encoding="utf-8", errors="replace")
+        if old_str not in old_content:
+            res = FileChangeResult(
+                operation="edit_file",
+                path=path_str,
+                status="failed",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+                error=f"target string not found in {path_str}",
+            )
+            _record_latest_file_change(res)
+            return res
+
+        new_content = old_content.replace(old_str, new_str, 1)
+        if new_content == old_content:
+            res = FileChangeResult(
+                operation="edit_file",
+                path=path_str,
+                status="no_change",
+                content_type_or_language=lang,
+                committed_content_or_diff="",
+                display_preview="",
+            )
+            _record_latest_file_change(res)
+            return res
+
+        diff_lines = list(difflib.unified_diff(
+            old_content.splitlines(),
+            new_content.splitlines(),
+            fromfile=f"a/{path_str}",
+            tofile=f"b/{path_str}",
+            lineterm="",
+        ))
+        diff_text = "\n".join(diff_lines)
+
+        p.write_text(new_content, encoding="utf-8")
+
+        from ..learning.redactor import redact_text
+        redacted_preview = redact_text(diff_text)
+        final_preview = redacted_preview.text
+        redacted = bool(redacted_preview.blocked_fields or "[REDACTED" in final_preview or final_preview != diff_text)
+
+        res = FileChangeResult(
+            operation="edit_file",
+            path=path_str,
+            status="modified",
+            content_type_or_language=lang,
+            committed_content_or_diff=diff_text,
+            display_preview=final_preview,
+            redacted=redacted,
+        )
+        _record_latest_file_change(res)
+        return res
 
     def delete_file(args: dict) -> str:
         p = _resolve(ws, args["path"])
@@ -121,6 +520,6 @@ def make_handlers(workspace: Path) -> dict:
         "read_file": read_file,
         "search_files": search_files,
         "write_file": write_file,
+        "edit_file": edit_file,
         "delete_file": delete_file,
     }
-

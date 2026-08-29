@@ -13,6 +13,7 @@ from ..paths import hund_home
 from ..stats import compute_all
 from ..stats.tiers import render_bar, render_stat
 from . import theme
+from .unicode_cells import cell_width, sanitize_display_line, slice_cells, wrap_cells
 
 _MASCOT_FLAG = "mascot_seen"
 
@@ -87,7 +88,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
     from ..skills.vault import SkillVault
 
     W = max(int(width), 24)
-    
+
     profile = getattr(rt, "profile", None)
     if profile is None:
         try:
@@ -147,7 +148,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
         "openai": "OpenAI",
     }
     provider_name = provider_names.get(provider_id.lower(), provider_id if provider_id else "DeepSeek")
-    model_name = getattr(provider_obj, "model", "deepseek-v4-pro")
+    model_name = getattr(provider_obj, "model", "deepseek-v4-flash")
     if "(" in model_name and ")" in model_name:
         model_display = model_name
     elif provider_name and model_name.lower().startswith(provider_name.lower()):
@@ -158,7 +159,9 @@ def build_startup_banner(rt, width: int = 80) -> str:
     # Always reload skills and stats dynamically
     try:
         vault = SkillVault()
-        active_skills = vault.get_active_skills()
+        active_skills = vault.get_active_skills(
+            workspace=getattr(rt, "workspace", None)
+        )
         core_skills = vault.get_core_skills()
         max_slots = vault.max_active
     except Exception:
@@ -226,7 +229,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
             skill_data.append((s_name, "Novice", 0))
 
     total_display_skills = len(active_domain_skills)
-    skills_header = f"── SPECIALIZATIONS ({total_display_skills}/{max_slots}) ──"
+    skills_header = f"── ACTIVE SKILLS ({total_display_skills}/{max_slots}) ──"
 
     commands_text = "commands: /skills · /stats · /theme · /model · /clear · /exit"
 
@@ -255,7 +258,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
             return "║  " + l[:col_left].ljust(col_left) + " │  " + r[:col_right].ljust(col_right) + "  ║"
 
         left_hdr = "── BASE STATS " + "─" * max(2, col_left - 14)
-        right_hdr = f"── SPECIALIZATIONS ({total_display_skills}/{max_slots}) " + "─" * max(2, col_right - len(f"── SPECIALIZATIONS ({total_display_skills}/{max_slots}) "))
+        right_hdr = f"── ACTIVE SKILLS ({total_display_skills}/{max_slots}) " + "─" * max(2, col_right - len(f"── ACTIVE SKILLS ({total_display_skills}/{max_slots}) "))
         lines.append(split_row(left_hdr, right_hdr))
         bar_w = 8 if W < 80 else 10
         max_rows = max(len(attr_data), len(skill_data) if skill_data else 2)
@@ -272,7 +275,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
                 r_str = f"{sname:<17} {bar} {pct}%"
             elif not skill_data:
                 if i == 0:
-                    r_str = "(no custom specializations)"
+                    r_str = "(no active skills)"
                 elif i == 1:
                     r_str = "(use /skills to equip)"
             lines.append(split_row(l_str, r_str))
@@ -290,7 +293,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
                 bar = _bar(pct, width=bar_w)
                 lines.append(row(f"{sname:<16} {bar} {pct}%"))
         else:
-            lines.append(row("(no custom specializations equipped)"))
+            lines.append(row("(no active skills)"))
             lines.append(row("(use /skills to equip)"))
 
     lines.extend([
@@ -309,15 +312,33 @@ def render_startup(console: Console, rt, *, force_mascot: bool = False) -> None:
     console.print(banner)
 
 
-def format_diff_block(diff_text: str, filename: str = "", width: int = 70) -> str:
-    """Format a diff block for streaming response box per TUI_FACIT.md §9.
+def normalize_language_alias(lang: str) -> str:
+    """Normalize language name or alias to canonical v1 identifier."""
+    raw = (lang or "").strip().lower()
+    if raw in ("python", "py"):
+        return "python"
+    if raw in ("powershell", "pwsh", "ps1"):
+        return "powershell"
+    if raw in ("json",):
+        return "json"
+    if raw in ("bash", "sh", "shell"):
+        return "bash"
+    if raw in ("diff", "patch"):
+        return "diff"
+    return raw
 
-    - Header: ── {filename} · changed ────────────────
-    - Line numbers shown if >= 3 lines, hidden if < 3 lines.
-    - Footer: ────────────────────────────────────────
-    """
+
+def _sanitize_block_label(value: str, max_cells: int) -> str:
+    """Return provider-controlled block metadata as safe, single-line display text."""
+    clean = sanitize_display_line(str(value)).replace("\r", " ").replace("\n", " ").strip()
+    clean = " ".join(clean.split())
+    return slice_cells(clean, max(max_cells, 0))[0]
+
+
+def format_diff_block(diff_text: str, filename: str = "", width: int = 70, is_open: bool = False) -> str:
+    """Format a diff block for streaming response box."""
     w = max(width, 24)
-    raw_lines = diff_text.strip("\n").splitlines()
+    raw_lines = diff_text.strip("\n").splitlines() if diff_text else []
 
     # Smart filename detection from first line comment if not provided
     if not filename and raw_lines:
@@ -367,27 +388,28 @@ def format_diff_block(diff_text: str, filename: str = "", width: int = 70) -> st
             else:
                 body_lines.append(f"  {text.rstrip()}")
 
-    if filename:
-        title_part = f"── {filename} · changed "
-        dashes = max(w - len(title_part), 2)
-        header = f"{title_part}{'─' * dashes}"
-    else:
-        title_part = "── diff "
-        dashes = max(w - len(title_part), 2)
-        header = f"{title_part}{'─' * dashes}"
+    filename = _sanitize_block_label(filename, max(w - cell_width("──  · changed ") - 2, 1))
+    label = f"{filename} · changed" if filename else "diff"
+    label = _sanitize_block_label(label, max(w - cell_width("──  ") - 2, 1)) or "diff"
+    title_part = f"── {label} "
+    title_w = cell_width(title_part)
+    dashes = max(w - title_w, 2)
+    header = f"{title_part}{'─' * dashes}"
 
+    if is_open:
+        return "\n".join([header] + body_lines)
     footer = "─" * w
     return "\n".join([header] + body_lines + [footer])
 
 
-def format_code_block(code: str, language: str = "", filename: str = "", width: int = 70) -> str:
+def format_code_block(code: str, language: str = "", filename: str = "", width: int = 70, is_open: bool = False) -> str:
     """Format a code block for streaming response box per TUI_FACIT.md §9.
 
     - Header: ── {filename/language} ────────────────────
-    - Footer: ────────────────────────────────────────
+    - Footer: ──────────────────────────────────────── (omitted if is_open)
     """
     w = max(width, 24)
-    raw_lines = code.strip("\n").splitlines()
+    raw_lines = code.strip("\n").splitlines() if code else []
 
     # Smart filename detection from first line comment if not provided
     if not filename and raw_lines:
@@ -397,12 +419,19 @@ def format_code_block(code: str, language: str = "", filename: str = "", width: 
             filename = m_fn.group(1).split("/")[-1].split("\\")[-1]
             raw_lines = raw_lines[1:]
 
-    label = filename or language or "code"
+    safe_language = _sanitize_block_label(language, max(w - cell_width("──  ") - 2, 1))
+    safe_filename = _sanitize_block_label(filename, max(w - cell_width("──  ") - 2, 1))
+    lang_canon = normalize_language_alias(safe_language)
+    label = safe_filename or lang_canon or "code"
+    label = _sanitize_block_label(label, max(w - cell_width("──  ") - 2, 1)) or "code"
     title_part = f"── {label} "
-    dashes = max(w - len(title_part), 2)
+    title_w = cell_width(title_part)
+    dashes = max(w - title_w, 2)
     header = f"{title_part}{'─' * dashes}"
 
     body_lines = [f"  {line}" for line in raw_lines]
+    if is_open:
+        return "\n".join([header] + body_lines)
     footer = "─" * w
     return "\n".join([header] + body_lines + [footer])
 
@@ -564,36 +593,14 @@ def render_character_card(
 
 # -- Response Box Side Rails & Deterministic Word-Wrap ----------------------
 
-import textwrap
-
 
 def wrap_content(text: str, content_width: int) -> list[str]:
-    """Deterministically word-wrap text to content_width using stdlib textwrap.
+    """Deterministically word-wrap text to content_width using unicode_cells.
 
     Empty lines are semantic content and are therefore preserved exactly.
     Long unbreakable words are hard-wrapped so the right box rail stays intact.
     """
-    if not text:
-        return []
-    cw = max(content_width, 1)
-    wrapped: list[str] = []
-    for raw_line in text.split("\n"):
-        if not raw_line.strip():
-            wrapped.append("")
-        else:
-            lines = textwrap.wrap(
-                raw_line,
-                width=cw,
-                # Long rulers, URLs and generated identifiers must never cross the
-                # right rail of the response box.
-                break_long_words=True,
-                break_on_hyphens=False,
-            )
-            if not lines:
-                wrapped.append("")
-            else:
-                wrapped.extend(lines)
-    return wrapped
+    return wrap_cells(text, content_width)
 
 
 def response_padding(width: int) -> int:
@@ -603,6 +610,12 @@ def response_padding(width: int) -> int:
     if width >= 48:
         return 2
     return 1
+
+
+def response_content_width(width: int) -> int:
+    """Return the exact inner content width for a response box at ``width``."""
+    box_w = max(width, 24)
+    return max(box_w - 2 - 2 * response_padding(box_w), 1)
 
 
 def box_top(width: int = 80) -> str:
@@ -637,7 +650,7 @@ def render_response_box(
     """
     box_w = max(terminal_width, 24)
     padding = response_padding(box_w)
-    cw = max(box_w - 2 - 2 * padding, 1)
+    cw = response_content_width(box_w)
 
     wrapped = wrap_content(text, cw)
 
@@ -650,12 +663,72 @@ def render_response_box(
 
     # Content rows
     for line in wrapped:
-        if len(line) <= cw:
-            lines.append(f"│{' ' * padding}{line:<{cw}}{' ' * padding}│")
-        else:
-            lines.append(f"│{' ' * padding}{line}{' ' * padding}│")
+        line_w = cell_width(line)
+        diff_pad = max(cw - line_w, 0)
+        lines.append(f"│{' ' * padding}{line}{' ' * diff_pad}{' ' * padding}│")
 
     # Bottom padding row (1 row)
     lines.append(f"│{' ' * (box_w - 2)}│")
     lines.append(box_bottom(box_w, meta))
     return "\n".join(lines)
+
+
+def render_response_box_from_segments(
+    segments: list[Any],
+    terminal_width: int = 80,
+    meta: str | None = None,
+) -> tuple[str, dict[int, tuple[str, str]]]:
+    """Render typed semantic segments into a formatted response box and return line metadata map.
+
+    Returns:
+      (rendered_box_string, line_segment_map)
+      where line_segment_map maps relative_box_line_index -> (segment_type, language)
+    """
+    box_w = max(terminal_width, 24)
+    padding = response_padding(box_w)
+    cw = response_content_width(box_w)
+
+    formatted_content_lines: list[tuple[str, str, str]] = []  # (text, segment_type, lang)
+
+    for seg in segments:
+        seg_type = getattr(seg, "type", "prose")
+        stype_str = seg_type.value if hasattr(seg_type, "value") else str(seg_type)
+        lang = _sanitize_block_label(getattr(seg, "language", ""), cw)
+        fn = _sanitize_block_label(getattr(seg, "filename", ""), cw)
+        is_open = getattr(seg, "is_open", False)
+        lines = getattr(seg, "lines", [])
+
+        if stype_str == "code":
+            block_str = format_code_block("\n".join(lines), language=lang, filename=fn, width=cw, is_open=is_open)
+            for l in block_str.split("\n"):
+                formatted_content_lines.append((sanitize_display_line(l), "code", lang))
+        elif stype_str == "diff":
+            block_str = format_diff_block("\n".join(lines), filename=fn, width=cw, is_open=is_open)
+            for l in block_str.split("\n"):
+                formatted_content_lines.append((sanitize_display_line(l), "diff", "diff"))
+        else:
+            prose_text = "\n".join(lines) if isinstance(lines, (list, tuple)) else str(lines)
+            wrapped = wrap_cells(prose_text, cw)
+            for l in wrapped:
+                formatted_content_lines.append((sanitize_display_line(l), "prose", ""))
+
+    lines = [box_top(box_w)]
+    line_metadata: dict[int, tuple[str, str]] = {}
+
+    # Line 1 is top padding
+    lines.append(f"│{' ' * (box_w - 2)}│")
+
+    current_idx = 2
+    for line_text, stype, slang in formatted_content_lines:
+        line_w = cell_width(line_text)
+        diff_pad = max(cw - line_w, 0)
+        lines.append(f"│{' ' * padding}{line_text}{' ' * diff_pad}{' ' * padding}│")
+        line_metadata[current_idx] = (stype, slang)
+        current_idx += 1
+
+    # Bottom padding row
+    lines.append(f"│{' ' * (box_w - 2)}│")
+    # Bottom border
+    lines.append(box_bottom(box_w, meta))
+
+    return "\n".join(lines), line_metadata

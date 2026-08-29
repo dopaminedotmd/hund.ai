@@ -6,8 +6,12 @@ import textwrap
 from datetime import date, timedelta
 from typing import Sequence
 
+from ..doctor import DoctorReport
 from ..providers.catalog import ModelOption, option_ready
+from ..secrets import get_credential_status
+from ..stats.environment_snapshot import EnvironmentSnapshot
 from ..stats.tiers import render_bar
+from .command_spec import get_categorized_commands
 from .snapshots import (
     SkillItem,
     SkillsSnapshot,
@@ -110,12 +114,16 @@ def modal_frame(
             rows.append(f"{v}  {_clip(wrapped, inner).ljust(inner)}  {v}")
     rows.append(v + " " * (modal_width - 2) + v)
     rows.append(bl + h * (modal_width - 2) + br)
-    rows.append(_clip(footer, modal_width))
+    if footer:
+        for f_segment in footer.splitlines():
+            for f_line in _wrap(f_segment, modal_width):
+                rows.append(_clip(f_line, modal_width))
     return "\n".join([top, *rows])
 
 
 def stats_lines(snapshot: StatsSnapshot, width: int) -> list[str]:
-    inner = max(width - 5, 16)
+    frame_w = max(20, width - 1)
+    inner = max(frame_w - 6, 16)
     stats = []
     for item in snapshot.stats:
         if item.value is None:
@@ -127,10 +135,9 @@ def stats_lines(snapshot: StatsSnapshot, width: int) -> list[str]:
             )
     specs = []
     for item in snapshot.specializations:
-        lock = " LCK" if item.locked else ""
+        lock = " LCK" if getattr(item, "locked", False) else ""
         specs.append(
-            f"{item.name:<18} Lv.{item.level} "
-            f"[{render_bar(item.percent, 8)}]{lock}"
+            f"{item.name:<18} [{getattr(item, 'vault_state', 'equipped')}]{lock}"
         )
     if not specs:
         specs = ["No data yet"]
@@ -138,9 +145,9 @@ def stats_lines(snapshot: StatsSnapshot, width: int) -> list[str]:
     lines: list[str] = [""]
     if width >= 72:
         left_w = max(31, (inner - 3) // 2)
-        right_w = inner - left_w - 3
+        right_w = max(10, inner - left_w - 3)
         lines.append(
-            _section("BASE STATS", left_w) + " │ " + _section("SPECIALIZATIONS", right_w)
+            _section("BASE STATS", left_w) + " │ " + _section("ACTIVE SKILLS", right_w)
         )
         count = max(len(stats), len(specs))
         for index in range(count):
@@ -148,7 +155,7 @@ def stats_lines(snapshot: StatsSnapshot, width: int) -> list[str]:
             right = specs[index] if index < len(specs) else ""
             lines.append(_clip(left, left_w).ljust(left_w) + " │ " + _clip(right, right_w))
     else:
-        lines.extend([_section("BASE STATS", inner), *stats, "", _section("SPECIALIZATIONS", inner), *specs])
+        lines.extend([_section("BASE STATS", inner), *stats, "", _section("ACTIVE SKILLS", inner), *specs])
 
     lines.extend(["", _section("7-DAY VELOCITY", inner)])
     if snapshot.has_activity:
@@ -171,9 +178,15 @@ def render_stats(
     snapshot: StatsSnapshot, *, width: int, height: int, scroll: int = 0,
     ascii_only: bool = False,
 ) -> str:
+    footer = (
+        "<- Back * [Esc/q] Close * ^v Scroll"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · ↑↓ Scroll"
+    )
     return fullscreen_frame(
         "STATS", stats_lines(snapshot, width), width=width, height=height,
-        meta=f"v{snapshot.version}", scroll=scroll, ascii_only=ascii_only,
+        meta=f"v{snapshot.version}", footer=footer,
+        scroll=scroll, ascii_only=ascii_only,
     )
 
 
@@ -189,9 +202,10 @@ def _skill_row(skill: SkillItem, selected: bool, compact: bool) -> str:
 
 def skills_lines(snapshot: SkillsSnapshot, width: int, selected: int) -> list[str]:
     all_skills = snapshot.equipped + snapshot.parked
+    inner_w = max(width - 5, 16)
     lines = ["", _section(
-        f"EQUIPPED SPECIALIZATIONS ({len(snapshot.equipped)}/{snapshot.max_active})",
-        max(width - 5, 16),
+        f"EQUIPPED SKILLS ({len(snapshot.equipped)}/{snapshot.max_active})",
+        inner_w,
     )]
     if snapshot.equipped:
         lines.extend(
@@ -199,8 +213,8 @@ def skills_lines(snapshot: SkillsSnapshot, width: int, selected: int) -> list[st
             for index, skill in enumerate(snapshot.equipped)
         )
     else:
-        lines.append("No domain skills equipped.")
-    lines.extend(["", _section(f"VAULT · PARKED ({len(snapshot.parked)})", max(width - 5, 16))])
+        lines.append("No skills equipped.")
+    lines.extend(["", _section(f"VAULT · PARKED ({len(snapshot.parked)})", inner_w)])
     offset = len(snapshot.equipped)
     if snapshot.parked:
         lines.extend(
@@ -208,24 +222,57 @@ def skills_lines(snapshot: SkillsSnapshot, width: int, selected: int) -> list[st
             for index, skill in enumerate(snapshot.parked)
         )
     else:
-        lines.append("No parked domain skills.")
+        lines.append("No parked skills.")
+    proposal_offset = offset + len(snapshot.parked)
+    lines.extend([
+        "",
+        _section(
+            f"SKILL SEEDS ({len(snapshot.proposals)} QUIET CANDIDATES)",
+            inner_w,
+        ),
+    ])
+    if snapshot.proposals:
+        for index, proposal in enumerate(snapshot.proposals):
+            marker = "❯" if proposal_offset + index == selected else " "
+            lines.append(
+                f"{marker} {_clip(proposal.name, 28):<28} "
+                f"[{proposal.state}] · {proposal.scope}"
+            )
+    else:
+        lines.append("No queued or suppressed proposals.")
     return lines
 
 
 def skill_detail_lines(skill: SkillItem) -> list[str]:
-    return [
+    lines = [
         "",
         _section(f"SKILL DETAIL · {skill.name}", 68),
+        f"Capability: {skill.capability_id or 'Unavailable'}",
+        f"Scope: {skill.scope} · Version: {skill.version}",
         f"Domain: {skill.domain or 'general'}",
-        f"Lifecycle: {skill.lifecycle_state} · Vault: {skill.vault_state}",
-        f"XP: {skill.xp} · Level {skill.level} · {skill.tier} · {skill.percent}%",
-        f"Safety level: {skill.safety_level}",
+        f"Lifecycle: {skill.lifecycle_state} · Vault: [{skill.vault_state}]",
+        f"XP: {skill.xp} · Level {skill.level} · [{skill.tier}] · {skill.percent}%",
+        f"Safety level: [{skill.safety_level}]",
         f"Triggers: {', '.join(skill.triggers) if skill.triggers else 'None declared'}",
         f"Tools: {', '.join(skill.tools) if skill.tools else 'None declared'}",
         f"Provenance: {', '.join(skill.provenance) if skill.provenance else 'Unavailable'}",
         "",
         skill.when_to_use or "No usage description.",
     ]
+    lines.extend(["", "Procedure:"])
+    lines.extend(
+        f"{index}. {step}" for index, step in enumerate(skill.steps, 1)
+    )
+    if not skill.steps:
+        lines.append("No procedure steps declared.")
+    lines.extend(["", "Verification:"])
+    lines.extend(f"- {rule}" for rule in skill.verification)
+    if not skill.verification:
+        lines.append("No verification rules declared.")
+    if skill.limitations:
+        lines.extend(["", "Limitations:"])
+        lines.extend(f"- {limitation}" for limitation in skill.limitations)
+    return lines
 
 
 def render_skills(
@@ -244,12 +291,22 @@ def render_skills(
     lines = skill_detail_lines(detail) if detail else skills_lines(snapshot, width, selected)
     if status:
         lines.extend(["", status])
-    footer = (
-        "[Esc] Back to chat · ↑↓ select · [e] equip · [p] park · Enter inspect"
-        if not detail else "[Esc] Back to specializations"
-    )
+
+    if detail:
+        footer = "[←] Back · [Esc/q] Close"
+    else:
+        offset = len(snapshot.equipped) + len(snapshot.parked)
+        if selected >= offset and (selected - offset) < len(snapshot.proposals):
+            prop = snapshot.proposals[selected - offset]
+            if prop.state in ("suppressed", "deferred", "declined"):
+                footer = "[←] Back · [Esc/q] Close · ↑↓ Select · [u] Unsuppress"
+            else:
+                footer = "[←] Back · [Esc/q] Close · ↑↓ Select"
+        else:
+            footer = "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect"
+
     return fullscreen_frame(
-        "SPECIALIZATIONS", lines, width=width, height=height,
+        "SKILLS", lines, width=width, height=height,
         meta=f"[{len(snapshot.equipped)}/{snapshot.max_active} slots]",
         footer=footer, scroll=scroll, ascii_only=ascii_only,
     )
@@ -262,7 +319,7 @@ def tool_detail_lines(tool: ToolItem) -> list[str]:
         tool.description,
         "",
         f"Category: {tool.category or 'Unavailable'}",
-        f"Safety level: {tool.safety_level}",
+        f"Safety level: [{tool.safety_level}]",
         f"Context mode: {tool.context_mode}",
         f"Dispatch: {tool.dispatch_description or 'Unavailable'}",
         "",
@@ -287,15 +344,16 @@ def tools_lines(snapshot: ToolsSnapshot, width: int, selected: int) -> list[str]
         lines.append("TOOL                 CATEGORY       SAFETY LEVEL      DISPATCH")
     for index, tool in enumerate(snapshot.tools):
         marker = "❯" if index == selected else " "
+        safety_badge = f"[{tool.safety_level}]"
         if width >= 72:
             lines.append(
                 f"{marker} {_clip(tool.name, 19):<19} "
                 f"{_clip(tool.category or '—', 13):<13} "
-                f"{_clip(tool.safety_level, 17):<17} "
+                f"{_clip(safety_badge, 17):<17} "
                 f"{tool.dispatch_description or '—'}"
             )
         else:
-            lines.append(f"{marker} {_clip(tool.name, 18):<18} {tool.safety_level}")
+            lines.append(f"{marker} {_clip(tool.name, 18):<18} {safety_badge}")
     if not snapshot.tools:
         lines.append("No tools registered.")
     return lines
@@ -314,8 +372,9 @@ def render_tools(
     detail = next((tool for tool in snapshot.tools if tool.name == detail_name), None)
     lines = tool_detail_lines(detail) if detail else tools_lines(snapshot, width, selected)
     footer = (
-        "[Esc] Back to tools" if detail
-        else "[Esc] Back to chat · ↑↓ scroll tools · Enter inspect schema"
+        "[←] Back · [Esc/q] Close"
+        if detail
+        else "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect Schema"
     )
     return fullscreen_frame(
         "TOOLS", lines, width=width, height=height,
@@ -391,7 +450,7 @@ def render_usage(
 ) -> str:
     return fullscreen_frame(
         "USAGE", usage_lines(snapshot, width), width=width, height=height,
-        scroll=scroll, ascii_only=ascii_only,
+        footer="[←] Back · [Esc/q] Close · ↑↓ Scroll", scroll=scroll, ascii_only=ascii_only,
     )
 
 
@@ -414,8 +473,14 @@ def render_theme_modal(
     lines.extend(["", f"Active: {active} · Saved on selection"])
     return modal_frame(
         "SELECT THEME", lines, width=68, terminal_width=terminal_width,
-        footer="[Esc] cancel · ↑↓ browse · Enter select", ascii_only=ascii_only,
+        footer="[←] Back · [Esc/q] Close · ↑↓ Browse · Enter Select", ascii_only=ascii_only,
     )
+
+
+def _format_modal_ctx(ctx: int) -> str:
+    if ctx >= 1_000_000:
+        return f"{ctx // 1_000_000}M"
+    return f"{ctx // 1000}k"
 
 
 def render_model_modal(
@@ -428,40 +493,185 @@ def render_model_modal(
     local_ready: bool | None = None,
 ) -> str:
     lines = []
-    active = next((item for item in options if item.model_id == active_model), None)
-    for index, option in enumerate(options):
-        marker = "❯ ●" if index == selected else "  ○"
-        if option.is_local:
-            ready = option_ready(option) if local_ready is None else local_ready
-            status = "[Ready]" if ready else "[Unavailable]"
-        else:
-            status = "[Key OK]" if option_ready(option) else "[Key missing]"
-        if terminal_width < 48:
-            lines.append(f"{marker} {_clip(option.model_id, 16):<16} {status}")
-        elif terminal_width < 72:
-            lines.append(
-                f"{marker} {_clip(option.model_id, 20):<20} {option.context_window // 1000:>3}k · {status}"
-            )
-        else:
-            lines.append(
-                f"{marker} {_clip(option.model_id, 24):<24} "
-                f"{option.provider_name:<10} · {option.context_window // 1000:>3}k · {status}"
-            )
-    if active:
-        lines.extend([
-            "",
-            f"Active: {active.provider_name} / {active.model_id}",
-            f"Context: {active.context_window:,} tokens",
-        ])
+    if options:
+        for index, option in enumerate(options):
+            marker = "❯ ●" if index == selected else "  ○"
+            is_active = (option.model_id == active_model)
+            prov_tag = f"{option.provider_name} · Active" if is_active else option.provider_name
+            if terminal_width < 50:
+                lines.append(f"{marker} {_clip(option.model_id, 16):<16} {_clip(prov_tag, 14)}")
+            else:
+                lines.append(f"{marker} {_clip(option.model_id, 24):<24} {prov_tag}")
     else:
+        lines.append("No configured providers found.")
+        lines.append("Press [a] to add a provider.")
+
+    if active_model and not any(o.model_id == active_model for o in options):
         lines.extend([
             "",
-            f"Active: {active_model} · Custom configuration",
+            f"Warning: Active model '{active_model}' has no credential.",
         ])
+
+    lines.extend([
+        "",
+        "Configured providers only",
+    ])
+
+    footer = (
+        "<- Back * [Esc/q] Close * ^v Browse * Enter Select\n[a] Add provider * [k] Replace selected provider key"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · ↑↓ Browse · Enter Select\n[a] Add provider · [k] Replace selected provider key"
+    )
     return modal_frame(
         "CHOOSE ACTIVE MODEL", lines, width=74, terminal_width=terminal_width,
-        footer="[Esc] cancel · ↑↓ browse · Enter select · [e] custom · [k] set key",
-        ascii_only=ascii_only,
+        footer=footer, ascii_only=ascii_only,
+    )
+
+
+def render_auth_modal(
+    selected: int,
+    terminal_width: int,
+    *,
+    ascii_only: bool = False,
+) -> str:
+    choices = (
+        ("Add provider", "Connect API keys or custom endpoints"),
+        ("Manage providers", "View status, replace or remove stored keys"),
+    )
+    lines = []
+    for index, (title, desc) in enumerate(choices):
+        marker = "❯ ●" if index == selected else "  ○"
+        lines.append(f"{marker} {_clip(title, 20):<20} {_clip(desc, 38)}")
+    footer = (
+        "<- Back * [Esc/q] Close * ^v Browse * Enter Select"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · ↑↓ Browse · Enter Select"
+    )
+    return modal_frame(
+        "AUTHENTICATION & PROVIDERS", lines, width=68, terminal_width=terminal_width,
+        footer=footer, ascii_only=ascii_only,
+    )
+
+
+def render_auth_add_modal(
+    presets: Sequence[Any],
+    selected: int,
+    terminal_width: int,
+    *,
+    ascii_only: bool = False,
+) -> str:
+    lines = []
+    for index, preset in enumerate(presets):
+        marker = "❯ ●" if index == selected else "  ○"
+        lines.append(f"{marker} {_clip(preset.name, 18):<18} {_clip(preset.description, 40)}")
+    footer = (
+        "<- Back * [Esc/q] Close * ^v Browse * Enter Continue"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · ↑↓ Browse · Enter Continue"
+    )
+    return modal_frame(
+        "ADD PROVIDER", lines, width=72, terminal_width=terminal_width,
+        footer=footer, ascii_only=ascii_only,
+    )
+
+
+def render_auth_manage_modal(
+    entries: Sequence[tuple[str, str, str, str]],  # (name, model, status, detail)
+    selected: int,
+    terminal_width: int,
+    status: str = "",
+    *,
+    ascii_only: bool = False,
+) -> str:
+    lines = []
+    for index, (name, model_info, state_badge, detail) in enumerate(entries):
+        marker = "❯ ●" if index == selected else "  ○"
+        lines.append(f"{marker} {_clip(name, 16):<16} {_clip(model_info, 20):<20} {state_badge}")
+    if not entries:
+        lines.append("No providers configured.")
+    if selected < len(entries):
+        curr = entries[selected]
+        if curr[3]:  # info detail (e.g. environment variable notice)
+            lines.extend(["", curr[3]])
+    if status:
+        lines.extend(["", status])
+    footer = (
+        "<- Back * [Esc/q] Close * ^v Browse * [r] Replace * [d] Forget"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · ↑↓ Browse · [r] Replace · [d] Forget"
+    )
+    return modal_frame(
+        "MANAGE PROVIDERS", lines, width=72, terminal_width=terminal_width,
+        footer=footer, ascii_only=ascii_only,
+    )
+
+
+def render_auth_custom_wizard_modal(
+    step: int,
+    wizard_data: dict[str, str],
+    current_input: str,
+    terminal_width: int,
+    status: str = "",
+    *,
+    ascii_only: bool = False,
+) -> str:
+    step_titles = (
+        "Step 1/5 · Provider Name",
+        "Step 2/5 · Base URL",
+        "Step 3/5 · Model ID",
+        "Step 4/5 · Context Window",
+        "Step 5/5 · API Key",
+    )
+    step_prompts = (
+        "Enter a display name (e.g. Local vLLM):",
+        "Enter HTTP(S) Base URL (e.g. http://localhost:8000/v1):",
+        "Enter Model ID (e.g. mistralai/Mistral-7B-Instruct-v0.3):",
+        "Enter context window token limit (e.g. 32768):",
+        "Paste API Key (required for OpenAICompatibleClient):",
+    )
+    lines = [
+        step_titles[min(step, len(step_titles) - 1)],
+        "",
+        step_prompts[min(step, len(step_prompts) - 1)],
+        "",
+    ]
+    if step == 4:  # API key step -> masked
+        lines.append(f"> {'•' * len(current_input)}")
+    else:
+        lines.append(f"> {current_input}")
+
+    if status:
+        lines.extend(["", status])
+    footer = (
+        "<- Back * [Esc/q] Close * Enter Next" if step < 4 else "<- Back * [Esc/q] Close * Enter Save"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · Enter Next" if step < 4 else "[←] Back · [Esc/q] Close · Enter Save"
+    )
+    return modal_frame(
+        "CUSTOM ENDPOINT WIZARD", lines, width=74, terminal_width=terminal_width,
+        footer=footer, ascii_only=ascii_only,
+    )
+
+
+def render_auth_forget_modal(
+    provider_name: str,
+    terminal_width: int,
+    *,
+    ascii_only: bool = False,
+) -> str:
+    lines = [
+        f"Are you sure you want to forget credential for {provider_name}?",
+        "",
+        "The API key will be deleted from Windows Credential Manager.",
+    ]
+    footer = (
+        "<- Back * [Esc/q] Close * [y] Confirm * [n] Cancel"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · [y] Confirm · [n] Cancel"
+    )
+    return modal_frame(
+        "CONFIRM FORGET CREDENTIAL", lines, width=68, terminal_width=terminal_width,
+        footer=footer, ascii_only=ascii_only,
     )
 
 
@@ -477,7 +687,7 @@ def render_model_custom_modal(
         lines.extend(["", status])
     return modal_frame(
         "CUSTOM MODEL", lines, width=74, terminal_width=terminal_width,
-        footer="[Esc] back · Enter apply", ascii_only=ascii_only,
+        footer="[←] Back · [Esc/q] Close · Enter Apply", ascii_only=ascii_only,
     )
 
 
@@ -500,5 +710,154 @@ def render_model_key_modal(
         lines.extend(["", status])
     return modal_frame(
         "SET API KEY", lines, width=68, terminal_width=terminal_width,
-        footer="[Esc] back · Enter save", ascii_only=ascii_only,
+        footer="[←] Back · [Esc/q] Close · Enter Save", ascii_only=ascii_only,
+    )
+
+
+def render_help_inline(
+    width: int = 80,
+    *,
+    ascii_only: bool = False,
+) -> str:
+    """Render canonical inline /help guide with HOW HUND GROWS frame and open categorized list."""
+    frame_width = min(max(width - 2, 34), 72)
+    inner = frame_width - 4
+    if ascii_only:
+        tl, tr, bl, br, h, v = "+", "+", "+", "+", "-", "|"
+    else:
+        tl, tr, bl, br, h, v = "╭", "╮", "╰", "╯", "─", "│"
+
+    title_text = " HOW HUND GROWS "
+    top = tl + h + title_text + h * max(0, frame_width - 3 - len(title_text)) + tr
+    base_stats_lines = [
+        "CLR  Clarity      Clear, focused and usable outcomes",
+        "PRC  Precision    Correct work verified against evidence",
+        "EFF  Efficiency   Useful results without avoidable waste",
+        "END  Endurance    Verified completion of sustained tasks",
+        "MAS  Mastery      Breadth and proven reusable capability",
+        "",
+        "Stats change only from recorded outcomes. Use /stats for",
+        "evidence, trends and progression details.",
+    ]
+    frame_rows = [f"{v} {_clip(line, inner).ljust(inner)} {v}" for line in base_stats_lines]
+    bottom = bl + h * (frame_width - 2) + br
+    output_lines: list[str] = [top, *frame_rows, bottom, ""]
+
+    categorized = get_categorized_commands()
+    for category, specs in categorized.items():
+        output_lines.append(f"  {category}")
+        for spec in specs:
+            name_str = f"/{spec.name}"
+            if width >= 60:
+                output_lines.append(f"  {name_str:<14} {spec.short_description}")
+            else:
+                output_lines.append(f"  {name_str}")
+                output_lines.append(f"    {spec.short_description}")
+        output_lines.append("")
+
+    tip = (
+        "  Type a command for details * Tab completes commands"
+        if ascii_only
+        else "  Type a command for details · Tab completes commands"
+    )
+    output_lines.append(tip)
+    return "\n".join(output_lines)
+
+
+def render_system(
+    snapshot: EnvironmentSnapshot,
+    width: int = 80,
+    height: int = 24,
+    *,
+    ascii_only: bool = False,
+    changes_only: bool = False,
+) -> str:
+    """Render known machine and environment snapshot fullscreen screen."""
+    lines: list[str] = []
+    if changes_only:
+        lines.append(_section("ENVIRONMENT CHANGES", width - 6))
+        lines.append("")
+        for ch in snapshot.changes_since(None):
+            lines.append(f"  • {ch}")
+        lines.append("")
+    else:
+        lines.append(_section("HARDWARE", width - 6))
+        lines.append(f"CPU      {snapshot.processor}  {snapshot.cpu_count} cores")
+        gpu_name = snapshot.gpu_model or "Integrated"
+        vram_info = f"{snapshot.gpu_vram_mb} MiB dedicated" if snapshot.gpu_vram_mb else "Integrated/shared"
+        lines.append(f"GPU      {gpu_name}")
+        lines.append(f"RAM      {snapshot.total_ram_gb:.1f} GiB total")
+        lines.append(f"VRAM     {vram_info}")
+        lines.append("")
+
+        lines.append(_section("STORAGE", width - 6))
+        for vol in snapshot.volumes:
+            lines.append(f"{vol.mount_point:<8} {vol.total_gb:.1f} GiB total  {vol.free_gb:.1f} GiB free")
+        lines.append("")
+
+        lines.append(_section("ENVIRONMENT", width - 6))
+        os_info = snapshot.os_caption or f"{snapshot.os} {snapshot.os_version}"
+        tools = [t for t, ok in [("PowerShell", snapshot.has_powershell), ("Python", snapshot.has_python), ("uv", snapshot.has_uv), ("Git", snapshot.has_git), ("Node", snapshot.has_node)] if ok]
+        tools_str = " · ".join(tools) if tools else "Standard runtimes"
+        lines.append(f"{os_info} · {snapshot.shell}")
+        lines.append(f"{tools_str}")
+
+    footer = (
+        "<- Back * [Esc/q] Close * [r] Refresh"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · [r] Refresh"
+    )
+    meta = f"observed {snapshot.observation_time_display}"
+    return fullscreen_frame(
+        "SYSTEM",
+        lines,
+        width=width,
+        height=height,
+        footer=footer,
+        meta=meta,
+        ascii_only=ascii_only,
+    )
+
+
+def render_doctor(
+    report: DoctorReport,
+    width: int = 80,
+    height: int = 24,
+    *,
+    ascii_only: bool = False,
+    review_fixes: bool = False,
+) -> str:
+    """Render structured read-only diagnostics report fullscreen screen."""
+    lines: list[str] = [""]
+    for c in report.checks:
+        if ascii_only:
+            glyph = "[OK]" if c.status == "pass" else ("[X]" if c.status == "fail" else "[!]")
+        else:
+            glyph = "✓" if c.status == "pass" else ("✗" if c.status == "fail" else "!")
+        lines.append(f"  {glyph}  {c.name:<26} {c.detail}")
+
+    lines.append("")
+    lines.append(f"  {report.summary_text}")
+    lines.append("")
+
+    if review_fixes and report.fix_plan:
+        lines.append(_section("RECOMMENDED REPAIR ACTIONS (READ-ONLY)", width - 6))
+        lines.append("")
+        for item in report.fix_plan:
+            lines.append(f"  • {item}")
+        lines.append("")
+        lines.append("  (Execute proposed commands individually to apply fixes)")
+
+    footer = (
+        "<- Back * [Esc/q] Close * [f] Review fixes"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · [f] Review fixes"
+    )
+    return fullscreen_frame(
+        "DOCTOR",
+        lines,
+        width=width,
+        height=height,
+        footer=footer,
+        ascii_only=ascii_only,
     )

@@ -17,6 +17,12 @@ from .ledger import append_event, enqueue_job, get_event, get_job
 from .redactor import redact_text
 from .worker import process_pending_learning_jobs
 from .machine_lifecycle import MachineLifecycle
+from .destination_router import CompletedTurnObservation
+from .skill_need import ShadowSkillNeedEngine
+from .skill_proposals import SkillProposalStore
+
+
+_SKILL_NEED_SHADOW = ShadowSkillNeedEngine()
 
 
 _RECEIPT_SCHEMA = """
@@ -156,8 +162,69 @@ def receipt_detail_lines(
 class RuntimeLearningAdapter:
     """Extract allowed turn evidence and wake the durable worker asynchronously."""
 
-    def __init__(self, db_path: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path | str | None = None,
+        *,
+        skill_observation_enabled: bool | None = None,
+        skill_proposals_enabled: bool | None = None,
+        skill_need_engine: Any = None,
+    ) -> None:
         self.db_path = db_path
+        if skill_observation_enabled is None or skill_proposals_enabled is None:
+            from ..config import HundConfig
+            cfg = HundConfig.load()
+            if skill_observation_enabled is None:
+                skill_observation_enabled = cfg.enable_skill_observation
+            if skill_proposals_enabled is None:
+                skill_proposals_enabled = cfg.enable_skill_proposals
+        self.skill_observation_enabled = bool(skill_observation_enabled)
+        self.skill_proposals_enabled = bool(skill_proposals_enabled)
+        if skill_need_engine is not None:
+            self.skill_need_engine = skill_need_engine
+        elif self.skill_observation_enabled and self.skill_proposals_enabled:
+            self.skill_need_engine = SkillProposalStore(db_path)
+        else:
+            self.skill_need_engine = _SKILL_NEED_SHADOW
+
+    def _observe_skill_need(
+        self, session_id: str, turn_id: str, run_id: str, workspace_id: str, sink: Any
+    ) -> None:
+        if not self.skill_observation_enabled:
+            return
+        from ..agent.sessions import messages_for_run
+
+        messages = messages_for_run(session_id, run_id)
+        user_text = "\n".join(text for role, text in messages if role == "user")
+        assistant_text = "\n".join(text for role, text in messages if role == "assistant")
+        if not user_text or not assistant_text:
+            return
+        clean_user = redact_text(user_text).text
+        clean_assistant = redact_text(assistant_text).text
+        trace = list_events_by_run(run_id, db_path=Path(self.db_path) if self.db_path else None)
+        verified = any(
+            event.event_type == "verification_completed"
+            and event.payload_redacted.get("passed") is True
+            for event in trace
+        )
+        candidate = self.skill_need_engine.observe(CompletedTurnObservation(
+            session_id=session_id,
+            turn_id=turn_id,
+            run_id=run_id,
+            workspace_id=workspace_id,
+            user_text=clean_user,
+            assistant_text=clean_assistant,
+            tool_names=tuple(sorted({e.tool_name for e in trace if e.tool_name})),
+            verified=verified,
+            scope="project" if workspace_id and workspace_id != "global" else "global",
+        ))
+        if (
+            candidate is not None
+            and self.skill_proposals_enabled
+            and sink is not None
+            and hasattr(sink, "skill_seed")
+        ):
+            sink.skill_seed(candidate)
 
     def recover(self) -> None:
         """Requeue interrupted jobs and wake a worker after process restart."""
@@ -185,6 +252,10 @@ class RuntimeLearningAdapter:
         workspace_id: str,
         sink: Any = None,
     ) -> str | None:
+        try:
+            self._observe_skill_need(session_id, turn_id, run_id, workspace_id, sink)
+        except Exception:
+            pass
         lifecycle = MachineLifecycle(self.db_path)
         lifecycle.record_task_completion("machine", turn_id, session_id)
         lifecycle.record_task_completion(f"workspace:{workspace_id}", turn_id, session_id)

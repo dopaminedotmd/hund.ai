@@ -31,7 +31,7 @@ def supports_truecolor() -> bool:
     return False
 
 
-# -- 3 Named Skins (Marshmallow / Nord / Synthwave) ------------------------
+# -- Hund signature skin ---------------------------------------------------
 
 SKINS: dict[str, dict[str, Any]] = {
     "marshmallow": {
@@ -39,9 +39,9 @@ SKINS: dict[str, dict[str, Any]] = {
         "pygments": "one-dark",
         "tokens": {
             "primary": "#FFFFFF",
-            "secondary": "#3E4451",
+            "secondary": "#7E889B",
             "accent": "#4EBCD5",
-            "meta_accent": "#785a7c",
+            "meta_accent": "#D896C7",
             "logo": "#FFFFFF",
             "user": "#50FA7B",
             "success": "#50FA7B",
@@ -50,14 +50,20 @@ SKINS: dict[str, dict[str, Any]] = {
             "tool": "#C792EA",
             "thinking": "#7DC8D8",
             "learning": "#E6C07B",
+            "growth_gold": "#E6C07B",
+            "growth_cream": "#F0E6D2",
+            "growth_ochre": "#D19A66",
+            "growth_brass": "#C8A96B",
+            "skill_seed": "#A985B3",
             "add": "#78B88A",
-            "del": "#C56D73",
+            "del": "#E07A82",
             "add_bg": "#1E3A2B",
             "add_fg": "#A3D9B0",
             "del_bg": "#3D1E24",
-            "del_fg": "#F4ACB7",
+            "del_fg": "#F8BCC6",
             "mascot": "#FFFFFF",
-            "mascot_status": "#737985",
+            "mascot_status": "#959EAE",
+            "modal_footer": "#A2ABC0",
         },
         "ansi": {
             "primary": "ansiwhite",
@@ -72,6 +78,10 @@ SKINS: dict[str, dict[str, Any]] = {
             "tool": "ansimagenta",
             "thinking": "ansibrightcyan",
             "learning": "ansiyellow",
+            "growth_gold": "ansiyellow",
+            "growth_ochre": "ansibrightyellow",
+            "growth_brass": "ansiyellow",
+            "skill_seed": "ansimagenta",
             "add": "ansigreen",
             "del": "ansired",
             "mascot": "ansiwhite",
@@ -85,14 +95,10 @@ THEMES = SKINS  # Alias for backward compatibility
 
 # Code-level compatibility only.
 SKINS["bone"] = SKINS["marshmallow"]
-SKINS["nord"] = SKINS["marshmallow"]
-SKINS["synthwave"] = SKINS["marshmallow"]
 
 PYGMENTS_THEMES: dict[str, str] = {
     "marshmallow": "one-dark",
     "bone": "one-dark",
-    "nord": "one-dark",
-    "synthwave": "one-dark",
 }
 
 
@@ -121,14 +127,16 @@ def make_pt_style(skin_name: str | None = None) -> Style:
     skin = get_skin(skin_name)
     tokens = skin["tokens"]
     add_style = f"bg:{tokens.get('add_bg', '#1E3A2B')} fg:{tokens.get('add_fg', '#A3D9B0')}"
-    del_style = f"bg:{tokens.get('del_bg', '#3D1E24')} fg:{tokens.get('del_fg', '#F4ACB7')}"
+    del_style = f"bg:{tokens.get('del_bg', '#3D1E24')} fg:{tokens.get('del_fg', '#F8BCC6')}"
     base_style = Style.from_dict(
         {
             "": tokens["primary"],
             "primary": tokens["primary"],
             "secondary": tokens["secondary"],
             "dim": tokens["secondary"],
-            "backdrop": "#3E4451",
+            "backdrop": "#545B6B",
+            "selected": "bg:#FFFFFF fg:#000000 bold",
+            "selection": "bg:#FFFFFF fg:#000000 bold",
             "accent": tokens["accent"],
             "meta_accent": "bold " + tokens["meta_accent"],
             "meta-accent": "bold " + tokens["meta_accent"],
@@ -138,6 +146,11 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "tool": tokens["tool"],
             "thinking": tokens["thinking"],
             "learning": tokens["learning"],
+            "growth_gold": tokens["growth_gold"],
+            "growth_cream": tokens.get("growth_cream", "#F0E6D2"),
+            "growth_ochre": tokens["growth_ochre"],
+            "growth_brass": "bold " + tokens["growth_brass"],
+            "skill_seed": tokens["skill_seed"],
             "add": add_style,
             "del": del_style,
             "mascot": tokens["mascot"],
@@ -157,6 +170,8 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "completion-menu.meta.completion.current": "noinherit bg:default noreverse fg:" + tokens["primary"],
             "scrollbar.background": "bg:ansiblack",
             "scrollbar.button": "bg:" + tokens["secondary"],
+            "modal_footer": tokens.get("modal_footer", "#A2ABC0"),
+            "modal-footer": tokens.get("modal_footer", "#A2ABC0"),
         }
     )
 
@@ -175,7 +190,7 @@ def make_pt_style(skin_name: str | None = None) -> Style:
 # -- Core Design Tokens (Hex + 16-ANSI fallback) ---------------------------
 COLOR_TOKENS: dict[str, dict[str, str]] = {
     "text":     {"hex": "#E3E3E4", "rich": "white",          "pt": "ansiwhite"},
-    "dim":      {"hex": "#3E4451", "rich": "bright_black",   "pt": "ansibrightblack"},
+    "dim":      {"hex": "#7E889B", "rich": "bright_black",   "pt": "ansibrightblack"},
     "cyan":     {"hex": "#4EBCD5", "rich": "cyan",           "pt": "ansicyan"},
     "green":    {"hex": "#50FA7B", "rich": "green",          "pt": "ansigreen"},
     "yellow":   {"hex": "#F1FA8C", "rich": "bright_yellow",   "pt": "ansibrightyellow"},
@@ -183,10 +198,11 @@ COLOR_TOKENS: dict[str, dict[str, str]] = {
     "thinking": {"hex": "#7DC8D8", "rich": "bright_cyan",    "pt": "ansibrightcyan"},
     "learning": {"hex": "#E6C07B", "rich": "yellow",         "pt": "ansiyellow"},
     "tool":     {"hex": "#C792EA", "rich": "magenta",        "pt": "ansimagenta"},
+    "modal_footer": {"hex": "#A2ABC0", "rich": "bright_black", "pt": "ansibrightblack"},
 }
 
 HUND_TEXT = "#E3E3E4"    # Primary bone white text
-HUND_DIM = "#3E4451"     # Muted structural borders & metadata
+HUND_DIM = "#7E889B"     # Muted structural borders & metadata
 HUND_CYAN = "#4EBCD5"    # Accent / Hund identity
 HUND_GREEN = "#50FA7B"   # User prompt & positive confirmation
 HUND_YELLOW = "#F1FA8C"  # Master prestige / warnings

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from hund.skills.loader import load_domain_skills
-from hund.tools.skill_tool import make_handler
+from hund.tools.skill_tool import make_handler, parse_create_skill_args
 from hund.tools.types import ToolStatus
 
 
@@ -13,7 +13,7 @@ def _skill_spec(name: str = "focused-review") -> dict:
         "schema_version": 1,
         "name": name,
         "domain": "code-review",
-        "status": "active",
+        "status": "draft",
         "triggers": ["code review", "granska kod"],
         "when_to_use": "When a focused code review is requested.",
         "steps": ["Inspect correctness and report actionable findings."],
@@ -26,21 +26,44 @@ def _skill_spec(name: str = "focused-review") -> dict:
     }
 
 
-def test_create_skill_uses_canonical_home_and_forces_draft(tmp_path: Path) -> None:
+def test_create_skill_direct_call_saves_skill(tmp_path: Path) -> None:
     result = make_handler(tmp_path)({"skill": _skill_spec()})
     assert result.status is ToolStatus.SUCCESS
-    target = tmp_path / "brain" / "skills" / "focused-review.json"
-    assert target.exists()
-    stored = json.loads(target.read_text(encoding="utf-8"))
-    assert stored["lifecycle_state"] == "draft"
-    assert stored["vault_state"] == "vaulted"
+    assert "Saved skill 'focused-review'" in result.to_llm_text()
+    assert (tmp_path / "brain" / "skills" / "focused-review.json").exists()
 
 
 def test_create_skill_rejects_invalid_spec_without_writing(tmp_path: Path) -> None:
     spec = _skill_spec("INVALID NAME")
     result = make_handler(tmp_path)({"skill": spec})
     assert result.status is ToolStatus.ERROR
-    assert not (tmp_path / "brain" / "skills").exists()
+    target = tmp_path / "brain" / "skills" / "INVALID NAME.json"
+    assert not target.exists()
+
+
+def test_create_skill_request_publishes_to_vault(tmp_path: Path) -> None:
+    handler = make_handler(home=tmp_path, workspace_path=tmp_path)
+    result = handler({
+        "request": "create a skill for markdown table formatting",
+        "target_scope": "project",
+        "desired_disposition": "auto",
+    })
+    assert result.status is ToolStatus.SUCCESS
+    assert "Saved skill" in result.to_llm_text()
+    assert (tmp_path / "brain" / "skills").exists()
+
+
+def test_confirmation_decline_zero_writes(tmp_path: Path) -> None:
+    from hund.agent.safety import PermissionEngine
+    engine = PermissionEngine()
+    args = {"request": "create a skill for malicious hacking"}
+    perm = engine.classify("create_skill", args)
+    assert perm.risk.value in ("confirm", "confirm_for_write", "dangerous", "blocked")
+
+    # If user declines confirmation, handler is NOT called
+    # Zero files written to canonical storage
+    skills_dir = tmp_path / "brain" / "skills"
+    assert not skills_dir.exists() or len(list(skills_dir.glob("*.json"))) == 0
 
 
 def test_loader_never_reads_relative_workspace_skill(

@@ -39,7 +39,7 @@ async def _amain() -> int:
         return 1
 
     state = PromptState()
-    model_name = getattr(getattr(rt.cfg, "provider", None), "model", "deepseek-v4-pro")
+    model_name = getattr(getattr(rt.cfg, "provider", None), "model", "deepseek-v4-flash")
     state.theme_name = getattr(rt.cfg, "theme", "marshmallow")
     state.extra["model"] = model_name
     state.extra["token_limit"] = getattr(rt.cfg.provider, "context_window", 64_000)

@@ -7,7 +7,17 @@ verifiering. Ingen skill får höja permissions eller kringgå PermissionEngine.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Optional
+
+from .contracts import (
+    CURRENT_SCHEMA_VERSION,
+    MAX_SUPPORTED_SCHEMA_VERSION,
+    MIN_SUPPORTED_SCHEMA_VERSION,
+    PUBLICATION_STATUS_PUBLISHED,
+    VALID_PUBLICATION_STATUSES,
+    ResearchMetadata,
+    compute_legacy_lineage_id,
+)
 
 # safety_level: hur mycket mänsklig bekräftelse ett steg i skillen kräver.
 SAFETY_LEVELS = frozenset({"read_only", "confirm", "confirm_for_write"})
@@ -62,6 +72,15 @@ class Skill:
     last_used_at: Optional[str] = None
     health: float = 1.0
     revalidation_required: bool = False
+    personal_skill_xp: int = 0
+    # Phase 2 D47 canonical identity & versioning
+    lineage_id: str = ""
+    artifact_version: int = 1
+    publication_status: str = PUBLICATION_STATUS_PUBLISHED
+    publication_receipt_id: Optional[str] = None
+    parent_lineage_ref: Optional[str] = None
+    parent_version_ref: Optional[int] = None
+    research_metadata: ResearchMetadata = ResearchMetadata()
 
     def __post_init__(self) -> None:
         lifecycle = self.lifecycle_state
@@ -84,12 +103,44 @@ class Skill:
         # Deprecated field remains serialized for old readers, but means lifecycle only.
         object.__setattr__(self, "status", lifecycle)
 
+        # Canonical identity validation
+        if self.artifact_version < 1:
+            raise ValueError(f"artifact_version must be a positive integer (>= 1), got {self.artifact_version}")
+
+        pub_status = self.publication_status.strip().casefold() if self.publication_status else PUBLICATION_STATUS_PUBLISHED
+        if pub_status not in VALID_PUBLICATION_STATUSES:
+            raise ValueError(f"Invalid publication_status: {self.publication_status!r}. Must be one of {sorted(VALID_PUBLICATION_STATUSES)}")
+        object.__setattr__(self, "publication_status", pub_status)
+
+        cap_id = self.capability_id.strip() or self.name.strip()
+        object.__setattr__(self, "capability_id", cap_id)
+
+        lin_id = self.lineage_id.strip()
+        if not lin_id:
+            lin_id = compute_legacy_lineage_id(cap_id, self.scope)
+        object.__setattr__(self, "lineage_id", lin_id)
+
+        # Normalize research_metadata if passed as dict or None
+        r_meta = self.research_metadata
+        if isinstance(r_meta, dict):
+            object.__setattr__(self, "research_metadata", ResearchMetadata.from_dict(r_meta))
+        elif r_meta is None:
+            object.__setattr__(self, "research_metadata", ResearchMetadata())
+
     def summary(self) -> str:
         """Kompakt rad för prompt-injektion (ej full skill-dump)."""
         return f"[{self.name}] ({self.domain}) {self.when_to_use}"
 
     def to_dict(self) -> dict:
-        d = {
+        r_meta = self.research_metadata
+        if hasattr(r_meta, "to_dict"):
+            r_meta_dict = r_meta.to_dict()
+        elif isinstance(r_meta, dict):
+            r_meta_dict = r_meta
+        else:
+            r_meta_dict = None
+
+        d: dict[str, Any] = {
             "schema_version": self.schema_version,
             "name": self.name,
             "domain": self.domain,
@@ -120,6 +171,14 @@ class Skill:
             "last_used_at": self.last_used_at,
             "health": self.health,
             "revalidation_required": self.revalidation_required,
+            "personal_skill_xp": self.personal_skill_xp,
+            "lineage_id": self.lineage_id,
+            "artifact_version": self.artifact_version,
+            "publication_status": self.publication_status,
+            "publication_receipt_id": self.publication_receipt_id,
+            "parent_lineage_ref": self.parent_lineage_ref,
+            "parent_version_ref": self.parent_version_ref,
+            "research_metadata": r_meta_dict,
         }
         if self.immutable:
             d["immutable"] = True
@@ -127,6 +186,12 @@ class Skill:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Skill":
+        raw_schema_v = int(d.get("schema_version", 1))
+        if raw_schema_v > MAX_SUPPORTED_SCHEMA_VERSION:
+            raise ValueError(
+                f"Unsupported future schema_version: {raw_schema_v}. Current max supported is {MAX_SUPPORTED_SCHEMA_VERSION}."
+            )
+
         raw_forbidden = set(str(a) for a in d.get("forbidden_actions", []))
         forbidden = tuple(sorted(raw_forbidden | BANNED_ACTIONS))
 
@@ -166,8 +231,13 @@ class Skill:
         raw_tools = d.get("required_tools")
         if raw_tools is None:
             raw_tools = d.get("tools", [])
+
+        # Research metadata deserialization
+        r_meta_raw = d.get("research_metadata")
+        r_meta = ResearchMetadata.from_dict(r_meta_raw) if isinstance(r_meta_raw, dict) else ResearchMetadata()
+
         return cls(
-            schema_version=int(d.get("schema_version", 0)),
+            schema_version=raw_schema_v,
             name=str(d.get("name", "")).strip(),
             domain=str(d.get("domain", "")).strip(),
             status=lifecycle,
@@ -195,4 +265,15 @@ class Skill:
             last_used_at=d.get("last_used_at"),
             health=float(d.get("health", 1.0)),
             revalidation_required=bool(d.get("revalidation_required", False)),
+            personal_skill_xp=int(d.get("personal_skill_xp", 0)),
+            lineage_id=str(d.get("lineage_id", "")),
+            artifact_version=int(d.get("artifact_version", 1)),
+            publication_status=str(d.get("publication_status", PUBLICATION_STATUS_PUBLISHED)),
+            publication_receipt_id=d.get("publication_receipt_id"),
+            parent_lineage_ref=d.get("parent_lineage_ref"),
+            parent_version_ref=int(d["parent_version_ref"]) if d.get("parent_version_ref") is not None else None,
+            research_metadata=r_meta,
         )
+
+
+from_dict = Skill.from_dict

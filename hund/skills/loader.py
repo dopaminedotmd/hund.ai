@@ -1,8 +1,7 @@
-"""Skill-loader — läs giltiga skills från brain/skills/ + paketerade builtins.
+"""Skill loader — reads valid skills from brain/skills/ + packaged builtins.
 
-Lagringsformat v1: JSON-filer, en skill per fil (`<name>.json`). Paketet skeppar
-inbyggda skills i `builtins/`; användare kan lägga egna i HundHome/brain/skills/
-(fas 9.5 Del C) som skuggar builtins med samma namn.
+Supports builtins, global domain skills, and workspace-scoped project skills.
+Reserved directories (.drafts/, .history/) are never loaded as active skills.
 """
 from __future__ import annotations
 
@@ -10,6 +9,7 @@ import json
 from pathlib import Path
 
 from .model import Skill
+from .scope import compute_workspace_key
 from .validator import validate
 
 
@@ -34,7 +34,7 @@ def _read_skill_file(path: Path) -> Skill | None:
 
 
 def load_builtins() -> list[Skill]:
-    """Ladda enbart inbyggda konstitutionella kärn-instinkter."""
+    """Load only built-in constitutional core instincts."""
     bdir = _builtins_dir()
     if not bdir.exists():
         return []
@@ -46,49 +46,93 @@ def load_builtins() -> list[Skill]:
     return skills
 
 
-def load_domain_skills(home: Path | None = None) -> list[Skill]:
-    """Load user-created domain skills only from canonical HundHome storage."""
+def load_domain_skills_for_scope_key(
+    home: Path | None = None, *, workspace_key: str = "global"
+) -> list[Skill]:
+    """Load domain skills using an already-derived workspace scope key."""
     by_name: dict[str, Skill] = {}
-
-    # 1. Globala skills i HundHome/brain/skills/
     udir = skills_dir(home)
+
     if udir.exists():
         for f in sorted(udir.glob("*.json")):
             sk = _read_skill_file(f)
             if sk:
                 by_name[sk.name] = sk
 
+    if workspace_key != "global":
+        pdir = udir / "projects" / workspace_key
+        if pdir.exists():
+            for f in sorted(pdir.glob("*.json")):
+                sk = _read_skill_file(f)
+                if sk:
+                    by_name[sk.name] = sk
+
     return list(by_name.values())
 
 
-def load_skills(home: Path | None = None) -> list[Skill]:
-    """Alla giltiga skills: builtins + HundHome, namnunika (HundHome vinner)."""
+def load_domain_skills(
+    home: Path | None = None, workspace: Path | str | None = None
+) -> list[Skill]:
+    """Load user-created domain skills for a workspace filesystem path.
+
+    Workspace project skills take precedence over global domain skills.
+    Reserved directories (.drafts, .history) are excluded.
+    """
+    workspace_key = compute_workspace_key(workspace)
+    return load_domain_skills_for_scope_key(home, workspace_key=workspace_key)
+
+
+def load_skills(home: Path | None = None, workspace: Path | str | None = None) -> list[Skill]:
+    """Load all valid skills: builtins + global + workspace-scoped domain skills."""
     by_name: dict[str, Skill] = {}
 
     for sk in load_builtins():
         by_name[sk.name] = sk
 
-    for sk in load_domain_skills(home):
+    for sk in load_domain_skills(home, workspace=workspace):
         by_name[sk.name] = sk
 
     return list(by_name.values())
 
 
-def get_skill(name: str, home: Path | None = None) -> Skill | None:
-    return next((s for s in load_skills(home) if s.name == name), None)
+def get_skill(name: str, home: Path | None = None, workspace: Path | str | None = None) -> Skill | None:
+    """Get a specific skill with precedence: project -> global -> builtin."""
+    # 1. Project precedence
+    if workspace is not None:
+        ws_key = compute_workspace_key(workspace)
+        if ws_key != "global":
+            pfile = skills_dir(home) / "projects" / ws_key / f"{name}.json"
+            if pfile.exists():
+                sk = _read_skill_file(pfile)
+                if sk and sk.name == name:
+                    return sk
+
+    # 2. Global domain precedence
+    gfile = skills_dir(home) / f"{name}.json"
+    if gfile.exists():
+        sk = _read_skill_file(gfile)
+        if sk and sk.name == name:
+            return sk
+
+    # 3. Builtin fallback
+    for s in load_builtins():
+        if s.name == name:
+            return s
+
+    return None
 
 
 def load_file(path: Path) -> tuple[Skill | None, list[str]]:
-    """Ladda + validera en specifik fil (för `skills validate`/`add`)."""
+    """Load and validate a specific file."""
     try:
         skill = Skill.from_dict(json.loads(path.read_text(encoding="utf-8")))
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-        return None, [f"ogiltig JSON/struktur: {e}"]
+        return None, [f"invalid JSON/structure: {e}"]
     return skill, validate(skill)
 
 
 def add_skill(path: Path, home: Path | None = None) -> tuple[Skill | None, list[str]]:
-    """Kopiera en giltig skill-fil till brain/skills/. Return (skill, errors)."""
+    """Copy a valid skill file to brain/skills/. Return (skill, errors)."""
     skill, errors = load_file(path)
     if errors or skill is None:
         return None, errors

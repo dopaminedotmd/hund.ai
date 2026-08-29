@@ -56,7 +56,7 @@ def test_help_lists_commands() -> None:
     assert "/stats" in out
     assert "/skills" in out
     assert "/exit" in out
-    assert "/trace last" in out
+    assert "/trace" in out
 
 
 def test_trace_last_shows_only_latest_run(monkeypatch) -> None:
@@ -184,8 +184,9 @@ def test_doctor_command() -> None:
     ctx = _ctx()
     dispatch_command("/doctor", ctx)
     out = ctx.console.file.getvalue()
-    assert "Doctor" in out
-    assert "analyzing" in out
+    assert "DOCTOR" in out
+    assert "Environment snapshot" in out
+    assert "passed" in out
 
 
 def test_compress_command() -> None:

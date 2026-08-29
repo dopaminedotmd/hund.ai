@@ -43,16 +43,11 @@ def is_slash(user_input: str) -> bool:
 # -- handlers ---------------------------------------------------------------
 
 def cmd_help(ctx: CommandContext, args: list[str]) -> None:
-    t = Table(show_header=True, header_style="bold cyan", box=None)
-    t.add_column("Command", style="bold")
-    t.add_column("Description")
-    for cmd, desc in HELP_ROWS:
-        t.add_row(cmd, desc)
-    ctx.console.print(t)
-    ctx.console.print()
-    from .keys import format_keymap_summary
-    for line in format_keymap_summary():
-        ctx.console.print(line)
+    from .screen_render import render_help_inline
+
+    width = getattr(ctx.console, "width", 80) or 80
+    help_text = render_help_inline(width=width)
+    ctx.console.print(help_text, markup=False, highlight=False)
 
 
 def cmd_trace(ctx: CommandContext, args: list[str]) -> None:
@@ -86,6 +81,7 @@ def cmd_trace(ctx: CommandContext, args: list[str]) -> None:
 
 
 def cmd_stats(ctx: CommandContext, args: list[str]) -> None:
+    workspace = getattr(ctx.rt, "workspace", None)
     if args and args[0] == "velocity":
         _print_velocity(ctx.console)
         return
@@ -101,7 +97,7 @@ def cmd_stats(ctx: CommandContext, args: list[str]) -> None:
         from .screen_render import render_stats
         from .snapshots import collect_stats
 
-        snapshot = collect_stats()
+        snapshot = collect_stats(workspace=workspace)
         ctx.console.print("CHARACTER SHEET", markup=False, highlight=False)
         ctx.console.print(
             render_stats(
@@ -137,6 +133,7 @@ def _print_velocity(console: Console) -> None:
 
 
 def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
+    from ..skills.scope import ScopedSkillId, compute_workspace_key
     from ..skills.vault import SkillVault
     from .skills_view import render_skill_detail, render_skills_panel
 
@@ -148,6 +145,23 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
         return
 
     vault = SkillVault()
+    workspace = getattr(ctx.rt, "workspace", None)
+    workspace_key = compute_workspace_key(workspace)
+
+    def scoped_item(name: str) -> ScopedSkillId:
+        skill = next(
+            (
+                item
+                for item in vault.get_domain_skills(workspace=workspace)
+                if item.name == name
+            ),
+            None,
+        )
+        if skill is None:
+            return ScopedSkillId("global", "", name)
+        scope_key = workspace_key if skill.scope == "project" else "global"
+        capability_id = skill.capability_id or f"{skill.domain}/{skill.name}"
+        return ScopedSkillId(scope_key, capability_id, skill.name)
     subcmd = args[0].lower() if args else "all"
 
     if subcmd in ("info", "inspect", "show"):
@@ -182,7 +196,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
         return
 
     if subcmd in ("vault", "vaulted", "list-vault"):
-        vaulted = vault.list_vaulted()
+        vaulted = vault.list_vaulted(workspace=workspace)
         lines: list[str] = []
         if not vaulted:
             lines.append("[dim](vault is empty — all skills equipped)[/dim]")
@@ -208,7 +222,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
             ctx.console.print("[yellow]Usage: /skills equip <skill_name>[/yellow]")
             return
         target = args[1]
-        ok, msg = vault.equip(target)
+        ok, msg = vault.equip(scoped_item(target))
         if ok:
             ctx.console.print(f"[green]{msg}[/green]")
         else:
@@ -220,7 +234,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
             ctx.console.print("[yellow]Usage: /skills park <skill_name>[/yellow]")
             return
         target = args[1]
-        ok, msg = vault.park(target)
+        ok, msg = vault.park(scoped_item(target))
         if ok:
             ctx.console.print(f"[green]{msg}[/green]")
         else:
@@ -232,7 +246,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
             ctx.console.print("[yellow]Usage: /skills swap <old_skill> <new_skill>[/yellow]")
             return
         old_name, new_name = args[1], args[2]
-        ok, msg = vault.swap(old_name, new_name)
+        ok, msg = vault.swap(scoped_item(old_name), scoped_item(new_name))
         if ok:
             ctx.console.print(f"[green]{msg}[/green]")
         else:
@@ -244,7 +258,7 @@ def cmd_skills(ctx: CommandContext, args: list[str]) -> None:
     from .snapshots import collect_skills
 
     panel = render_skills(
-        collect_skills(), width=getattr(ctx.console, "width", 80),
+        collect_skills(workspace=workspace), width=getattr(ctx.console, "width", 80),
         height=24,
     )
     ctx.console.print(panel, markup=False, highlight=False)
@@ -307,12 +321,10 @@ def cmd_learning(ctx: CommandContext, args: list[str]) -> None:
 
 
 def cmd_profile(ctx: CommandContext, args: list[str]) -> None:
-    profile = getattr(ctx.rt, "profile", None)
-    if profile is None:
-        ctx.console.print("[dim](profile unavailable)[/dim]")
-        return
-    summary = profile.summary() if hasattr(profile, "summary") else str(profile)
-    ctx.console.print(summary)
+    """ /profile           system info migration notice """
+    ctx.console.print("[bold cyan]System information has moved to /system[/bold cyan]")
+    ctx.console.print("  Run [bold]/system[/bold] to inspect host hardware, storage, and runtimes.")
+    ctx.console.print("  [dim](Named context profiles are planned for a future release)[/dim]")
 
 
 def cmd_tools(ctx: CommandContext, args: list[str]) -> None:
@@ -799,17 +811,35 @@ def cmd_usage(ctx: CommandContext, args: list[str]) -> None:
     ctx.console.print(card, markup=False, highlight=False)
 
 
+def cmd_system(ctx: CommandContext, args: list[str]) -> None:
+    """ /system [refresh|changes]    view known machine and environment snapshot """
+    from ..stats.environment_snapshot import create_environment_snapshot
+    from .screen_render import render_system
+
+    force_fresh = bool(args and args[0].lower() in ("refresh", "-r", "--refresh"))
+    changes_only = bool(args and args[0].lower() in ("changes", "-c", "--changes"))
+
+    snapshot = create_environment_snapshot(force_fresh=force_fresh)
+    width = getattr(ctx.console, "width", 80) or 80
+    rendered = render_system(snapshot, width=width, height=24, changes_only=changes_only)
+    ctx.console.print(rendered, markup=False, highlight=False)
+
+
 def cmd_doctor(ctx: CommandContext, args: list[str]) -> None:
-    """ /doctor            run hardware and system environment diagnosis """
-    from ..doctor import profile_environment
-    ctx.console.print("[bold cyan][Doctor][/bold cyan] analyzing hardware and system environment...")
-    try:
-        profile = profile_environment()
-        ctx.rt.profile = profile
-        card = theme.boxify("SYSTEM DOCTOR", str(profile).splitlines(), width=70, border_style="cyan", title_style="bold cyan")
-        ctx.console.print(card)
-    except Exception as e:
-        ctx.console.print(f"[red]diagnosis failed: {e}[/red]")
+    """ /doctor [--fix|providers|learning|ui]    run read-only health checks """
+    from ..doctor import diagnose_system
+    from .screen_render import render_doctor
+
+    review_fixes = bool(args and any(arg.lower() in ("--fix", "-f", "fix") for arg in args))
+    report = diagnose_system(ctx.rt, getattr(ctx.rt, "workspace", None))
+    width = getattr(ctx.console, "width", 80) or 80
+    rendered = render_doctor(report, width=width, height=24, review_fixes=review_fixes)
+    ctx.console.print(rendered, markup=False, highlight=False)
+
+
+def cmd_retry(ctx: CommandContext, args: list[str]) -> None:
+    """ /retry             regenerate last assistant response """
+    ctx.console.print("[dim](retry is handled interactively in active turn)[/dim]")
 
 
 def cmd_compress(ctx: CommandContext, args: list[str]) -> None:
@@ -865,6 +895,13 @@ def cmd_undo(ctx: CommandContext, args: list[str]) -> None:
     ctx.console.print("  to restore uncommitted git changes: [bold]git restore <file>[/bold]")
 
 
+def cmd_auth(ctx: CommandContext, args: list[str]) -> None:
+    """ /auth               manage model providers and credentials """
+    ctx.console.print("[bold cyan]Authentication & Providers[/bold cyan]")
+    ctx.console.print("  In fullscreen TUI, /auth opens the interactive provider manager.")
+    ctx.console.print("  In CLI mode, configure API keys via environment variables or Windows Credential Manager.")
+
+
 def cmd_reset(ctx: CommandContext, args: list[str]) -> None:
     """ /reset             reset all learned progression & data """
     from ..reset import reset_all_progress
@@ -874,16 +911,27 @@ def cmd_reset(ctx: CommandContext, args: list[str]) -> None:
         ctx.console.print(f"  • {r}")
 
 
-# -- dispatch ---------------------------------------------------------------
+def cmd_exit(ctx: CommandContext, args: list[str]) -> None:
+    """ /exit              exit session """
+    ctx.console.print("[dim]exiting session...[/dim]")
+
 
 COMMANDS = {
     "help": cmd_help,
+    "?": cmd_help,
+    "system": cmd_system,
+    "sys": cmd_system,
+    "env": cmd_system,
+    "doctor": cmd_doctor,
+    "diag": cmd_doctor,
+    "health": cmd_doctor,
+    "profile": cmd_profile,
+    "auth": cmd_auth,
     "reset": cmd_reset,
     "stats": cmd_stats,
     "sheet": cmd_stats,
     "character": cmd_stats,
     "skills": cmd_skills,
-    "profile": cmd_profile,
     "tools": cmd_tools,
     "history": cmd_history,
     "export": cmd_export,
@@ -892,7 +940,6 @@ COMMANDS = {
     "model": cmd_model,
     "usage": cmd_usage,
     "cost": cmd_usage,
-    "doctor": cmd_doctor,
     "compress": cmd_compress,
     "compact": cmd_compress,
     "diff": cmd_diff,
@@ -903,45 +950,26 @@ COMMANDS = {
     "mascot": cmd_mascot,
     "memory": cmd_memory,
     "lessons": cmd_lessons,
+    "feedback": cmd_lessons,
     "learning": cmd_learning,
     "trace": cmd_trace,
-    "feedback": cmd_lessons,
     "notifications": cmd_notifications,
     "clear": cmd_clear,
+    "cls": cmd_clear,
     "restore": cmd_restore,
+    "retry": cmd_retry,
+    "exit": cmd_exit,
+    "quit": cmd_exit,
+    "q": cmd_exit,
 }
 
-HELP_ROWS = [
-    ("/help", "list available commands"),
-    ("/stats [velocity|compact]", "RPG character sheet, base stats & trend"),
-    ("/model [name]", "view or switch active LLM model"),
-    ("/usage", "token & resource consumption"),
-    ("/doctor", "run hardware and system environment diagnosis"),
-    ("/compress", "compress context to save tokens"),
-    ("/diff", "view working tree modifications"),
-    ("/undo", "file backup & restore information"),
-    ("/skills [vault|core|equip|swap]", "inspect & manage equipped skills"),
-    ("/lessons", "view learned lessons & feedback"),
-    ("/learning [receipt-id]", "inspect durable learning receipts"),
-    ("/trace last", "inspect the last run's redacted tool trace"),
-    ("/profile", "user profile + environment"),
-    ("/tools", "available tools + risk levels"),
-    ("/history [search <q> | <id>]", "session messages / search"),
-    ("/export [file]", "export session to .md"),
-    ("/session", "session stats (time, messages, tokens)"),
-    ("/restore [id]", "restore previous or specified session"),
-    ("/config [set <k> <v>]", "view/update settings"),
-    ("/theme [name]", "switch theme (colors)"),
-    ("/domains", "domains + confidence"),
-    ("/progress", "domain progress bars"),
-    ("/memory [add <text>]", "persistent memory (user.md + environment.md)"),
-    ("/notifications [on|off]", "toggle notifications on/off"),
-    ("/mascot", "display pixel hound"),
-    ("/clear", "clear screen"),
-    ("/exit", "exit session"),
-    ("/retry", "regenerate last assistant response"),
-]
+from .command_spec import COMMAND_REGISTRY, suggest_similar_command
 
+HELP_ROWS: list[tuple[str, str]] = [
+    (spec.usage or f"/{spec.name}", spec.short_description)
+    for spec in COMMAND_REGISTRY
+    if not spec.is_hidden and not spec.is_planned
+]
 
 
 def dispatch_command(user_input: str, ctx: CommandContext) -> bool:
@@ -949,11 +977,15 @@ def dispatch_command(user_input: str, ctx: CommandContext) -> bool:
     parts = user_input.strip().split()
     if not parts or not parts[0].startswith("/"):
         return False
-    cmd = parts[0][1:]
+    cmd = parts[0][1:].lower()
     args = parts[1:]
     handler = COMMANDS.get(cmd)
     if handler is None:
-        ctx.console.print(f"[red]unknown command: /{cmd}. type /help for list.[/red]")
+        suggestion = suggest_similar_command(cmd)
+        if suggestion:
+            ctx.console.print(f"[red]unknown command: /{cmd}. Did you mean [bold]/{suggestion}[/bold]?[/red]")
+        else:
+            ctx.console.print(f"[red]unknown command: /{cmd}. Type /help for available commands.[/red]")
         return True
     handler(ctx, args)
     return True

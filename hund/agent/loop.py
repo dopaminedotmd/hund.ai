@@ -8,7 +8,9 @@ Varje request loggas till SQLite. Iteration-cap mot oändlig tool-loop.
 """
 from __future__ import annotations
 
+import json
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +19,7 @@ from rich.console import Console
 from .. import __version__
 from ..config import HundConfig
 from ..doctor import profile_environment
-from ..persona import load_persona
+from ..persona import load_runtime_persona
 from ..providers.base import Message
 from ..providers.openai_compatible import OpenAICompatibleClient
 from ..secrets import load_api_key
@@ -44,11 +46,11 @@ def _safe_policy_rules() -> list[str]:
         return []
 
 
-def _safe_skills() -> list:
+def _safe_skills(workspace: Path | str | None = None) -> list:
     try:
         from ..skills.loader import load_skills
 
-        return load_skills()
+        return load_skills(workspace=workspace)
     except Exception:
         return []
 
@@ -133,8 +135,32 @@ def _dynamic_context_message(
             sections.append("## Relevant minneskontext (obetrodd data)")
             sections.extend(f"- {line}" for line in resolved.prompt_bullets)
     except Exception:
-        # Memory application is fail-closed: never fall back to raw user.md.
         pass
+    try:
+        from .capability_self_model import find_matching_capabilities, render_capability_context
+        from .task_policy import classify_task
+        from .task_brief import TaskType
+        from .turn_context import resolve_typed_state
+
+        brief = classify_task(user_text, workspace=Path(workspace_id) if workspace_id else None)
+        matched_caps = find_matching_capabilities(user_text, max_results=2)
+        if matched_caps:
+            cap_text = render_capability_context(matched_caps)
+            if cap_text:
+                sections.append(cap_text)
+
+        if brief.task_type == TaskType.CURRENT_STATE and brief.relevant_command:
+            try:
+                from ..skills.vault import SkillVault
+                vault = SkillVault(workspace=workspace_id or None)
+                state_text = resolve_typed_state(brief.relevant_command, vault=vault)
+                if state_text:
+                    sections.append(state_text)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     if not sections:
         return None
     content = (
@@ -190,7 +216,7 @@ def _init_runtime():
     engine = PermissionEngine(workspace_root=workspace)
 
     profile = profile_environment(workspace=workspace)
-    persona = load_persona()
+    persona = load_runtime_persona()
     # Domain-detection styr knowledge top-K (Fas 4). Offline, ingen provider.
     try:
         from ..domains import detector as ddet
@@ -264,6 +290,135 @@ def _stats_text() -> str:
         f"tokens in/out: {tin}/{tout} · total latency: {lat}ms"
     )
 
+
+@dataclass(frozen=True)
+class AuthoringRuntimeOutcome:
+    handled: bool
+    outputs: tuple[str, ...] = ()
+    view: object | None = None
+    receipt: object | None = None
+
+
+def _run_authoring_runtime(
+    user_text: str,
+    *,
+    session_id: str,
+    workspace: Path,
+    engine: PermissionEngine,
+    console: Console,
+    client=None,
+    width: int = 80,
+    ascii_only: bool = False,
+    hooks=None,
+    run_id: str | None = None,
+    authoring_action=None,
+    transient: bool = False,
+) -> AuthoringRuntimeOutcome:
+    """Run one typed authoring turn through the central tool dispatcher."""
+    from ..skills.authoring_runtime import (
+        complete_authoring_research,
+        handle_authoring_action,
+        handle_authoring_turn,
+    )
+
+    tool_names = {tool.name for tool in registry.all_tools()}
+    if authoring_action is None:
+        result = handle_authoring_turn(
+            user_text,
+            session_id=session_id,
+            workspace=workspace,
+            registered_tools=tool_names,
+            width=width,
+            ascii_only=ascii_only,
+            shaping_client=client,
+        )
+    else:
+        result = handle_authoring_action(
+            authoring_action,
+            session_id=session_id,
+            workspace=workspace,
+            registered_tools=tool_names,
+            width=width,
+            ascii_only=ascii_only,
+        )
+    if not result.handled:
+        return AuthoringRuntimeOutcome(False)
+
+    is_terminal_notice = result.rendered.startswith(
+        ("Skill authoring cancelled.", "Skill authoring stopped:")
+    )
+    outputs = [result.rendered] if result.rendered and (
+        not transient or is_terminal_notice
+    ) else []
+    current_view = result.view
+    turn_id = uuid.uuid4().hex
+    tool_context = ToolCallContext(
+        session_id=session_id,
+        turn_id=turn_id,
+        workspace=workspace,
+        url_provenance=get_url_provenance_store(session_id),
+    )
+    if result.research_queries:
+        summaries: list[str] = []
+        for query in result.research_queries:
+            outcome = dispatch_tool_call(
+                {"function": {"name": "web_search", "arguments": json.dumps({"query": query})}},
+                engine,
+                console,
+                hooks=hooks,
+                run_id=run_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                tool_context=tool_context,
+            )
+            if not outcome.startswith(("[error]", "[blocked]", "[declined")):
+                summaries.append(outcome)
+        if summaries:
+            completed = complete_authoring_research(
+                session_id=session_id,
+                summaries=summaries,
+                workspace=workspace,
+                registered_tools=tool_names,
+                width=width,
+                ascii_only=ascii_only,
+            )
+            if completed.rendered:
+                if not transient:
+                    outputs.append(completed.rendered)
+                current_view = completed.view
+        else:
+            outputs.append("Research did not complete. Choose local authoring or approve research again.")
+
+    publication_outcome = ""
+    if result.publication_args is not None:
+        outcome = dispatch_tool_call(
+            {"function": {"name": "create_skill", "arguments": json.dumps(result.publication_args)}},
+            engine,
+            console,
+            hooks=hooks,
+            run_id=run_id,
+            session_id=session_id,
+            turn_id=turn_id,
+            tool_context=tool_context,
+        )
+        publication_outcome = outcome
+        if not transient:
+            outputs.append(outcome)
+
+    from ..skills.authoring import get_authoring_registry
+
+    session = get_authoring_registry().get(session_id)
+    receipt = session.publication_receipt if session is not None else None
+    if receipt is not None:
+        current_view = None
+    elif transient and publication_outcome:
+        outputs.append(publication_outcome)
+    return AuthoringRuntimeOutcome(
+        True,
+        tuple(outputs),
+        view=current_view,
+        receipt=receipt,
+    )
 
 def run_repl() -> int:
     console = Console()
@@ -378,6 +533,29 @@ def run_repl() -> int:
             console.print("[yellow]användning: /sessions [search <q> | resume <id> | new][/yellow]")
             continue
 
+        authoring_run_id = uuid.uuid4().hex
+        authoring_outcome = _run_authoring_runtime(
+            user,
+            session_id=session_id,
+            workspace=workspace,
+            engine=engine,
+            console=console,
+            client=client,
+            width=console.width,
+            run_id=authoring_run_id,
+        )
+        if authoring_outcome.handled:
+            authoring_outputs = list(authoring_outcome.outputs)
+            messages.append(Message(role="user", content=user))
+            _session_save(session_id, "user", user, run_id=authoring_run_id)
+            for output in authoring_outputs:
+                console.print(output, markup=False)
+            assistant_text = "\n\n".join(authoring_outputs)
+            if assistant_text:
+                messages.append(Message(role="assistant", content=assistant_text))
+                _session_save(session_id, "assistant", assistant_text, run_id=authoring_run_id)
+            continue
+
         from .user_context import expand_user_context
         expanded_context = expand_user_context(user, workspace)
         messages.append(Message(role="user", content=expanded_context.prompt))
@@ -408,6 +586,7 @@ def run_repl() -> int:
             console.print(
                 f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
             )
+        skills = _safe_skills(workspace=workspace)
         dynamic_msg = _dynamic_context_message(
             skills=skills,
             user_text=user,
@@ -527,7 +706,7 @@ def _runtime_learning_hook(
     except Exception:
         pass
 def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, sink=None, run_id: str | None = None) -> None:
-    """Kör agenten (streaming) tills text-svar eller iteration-cap.
+    """Kör agenten tills validerat text-svar eller iteration-cap.
 
     sink (valfritt, duck-typed UI-sink). Givet → streaming/thinking/fel och
     tool-anrop styrs via sink (se sink-protokollet nedan). Saknas → exakt dagens
@@ -536,8 +715,8 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
     Sink-protokoll:
       sink.thinking(msg=...)      innan första token (startar prick-animation)
       sink.clear_thinking()       vid första token / fel (stoppar animation)
-      sink.chunk(text)            strömmad assistant-token
-      sink.end_assistant()        newline efter strömmad text
+      sink.chunk(text)            validerat assistant-svar
+      sink.end_assistant()        newline efter svaret
       sink.error(markup)          felrad
     Dessutom agerar sink som tool-hooks mot dispatch_tool_call (tool_start,
     confirm, tool_result, blocked, declined) när det givet.
@@ -637,9 +816,7 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                         if first:
                             sink.clear_thinking()
                             first = False
-                        sink.chunk(chunk)
-                    else:
-                        console.print(chunk, end="", markup=False, highlight=False)
+
                 break  # lyckades
             except (RuntimeError, Exception) as e:
                 msg_str = str(e)
@@ -667,10 +844,24 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
         result = client.last_result
         assert result is not None
         result.text = "".join(parts)
-        if parts and sink is not None:
+
+        # Buffer provider output until this provider-independent boundary has
+        # validated it. Streaming raw chunks would leak the text before repair.
+        if result.text:
+            from .language import detect_language
+            from .narrative_validation import validate_and_repair_response
+
+            repaired_text, _ = validate_and_repair_response(
+                result.text,
+                language=detect_language(current_user_message),
+            )
+            result.text = repaired_text
+
+        if result.text and sink is not None:
+            sink.chunk(result.text)
             sink.end_assistant()
-        elif parts:
-            console.print()  # newline efter live-text
+        elif result.text:
+            console.print(result.text, markup=False, highlight=False)
 
         if not result.tool_calls:
             messages.append(Message(role="assistant", content=result.text))
