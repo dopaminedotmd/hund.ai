@@ -10,6 +10,7 @@ from typing import Any
 from rich.console import Console
 
 from ..paths import hund_home
+from ..skills.projection import project_active_skill_xp
 from ..stats import compute_all
 from ..stats.tiers import render_bar, render_stat
 from . import theme
@@ -20,6 +21,15 @@ _MASCOT_FLAG = "mascot_seen"
 
 def _bar(progress: int, width: int = theme.BAR_WIDTH) -> str:
     return render_bar(progress, width=width)
+
+
+def _fit_cell_label(text: str, width: int) -> str:
+    """Truncate and pad a display label to an exact terminal-cell width."""
+    clean = sanitize_display_line(text)
+    if cell_width(clean) > width:
+        clipped, _ = slice_cells(clean, max(width - 1, 0))
+        clean = f"{clipped}…" if width else ""
+    return clean + " " * max(width - cell_width(clean), 0)
 
 
 def stats_bar_segments(stats: dict[str, dict[str, Any]] | None = None):
@@ -80,7 +90,7 @@ def mascot() -> str:
 
 
 
-def build_startup_banner(rt, width: int = 80) -> str:
+def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
     """Build the fullscreen startup banner per TUI_FACIT.md §4 with clean telemetry and responsive layout."""
     import re
     from ..doctor import profile_environment
@@ -135,6 +145,7 @@ def build_startup_banner(rt, width: int = 80) -> str:
         gpu_str = getattr(profile, "shell", "PowerShell")
 
     cfg = getattr(rt, "cfg", None)
+    ascii_only = getattr(cfg, "ascii_ui", False) is True
     provider_obj = getattr(cfg, "provider", None)
     provider_id = (
         getattr(provider_obj, "provider_id", "")
@@ -163,38 +174,58 @@ def build_startup_banner(rt, width: int = 80) -> str:
             workspace=getattr(rt, "workspace", None)
         )
         core_skills = vault.get_core_skills()
-        max_slots = vault.max_active
     except Exception:
         active_skills = []
         core_skills = []
-        max_slots = 6
 
     try:
         stats = compute_all()
     except Exception:
         stats = {}
 
-    bottom = "╚" + "═" * (W - 2) + "╝"
-    empty = "║" + " " * (W - 2) + "║"
+    top_left, top_right, bottom_left, bottom_right, horizontal, vertical = (
+        ("+", "+", "+", "+", "-", "|") if ascii_only else ("╔", "╗", "╚", "╝", "═", "║")
+    )
+    column_divider = "|" if ascii_only else "│"
+    bottom = bottom_left + horizontal * (W - 2) + bottom_right
+    empty = vertical + " " * (W - 2) + vertical
+
+    def display_text(content: str) -> str:
+        clean = sanitize_display_line(content)
+        return clean.encode("ascii", "replace").decode("ascii") if ascii_only else clean
 
     def row(content: str) -> str:
-        c = content[: W - 6]
-        return "║  " + c.ljust(W - 6) + "  ║"
+        c, cells = slice_cells(display_text(content), W - 6)
+        return vertical + "  " + c + " " * (W - 6 - cells) + "  " + vertical
 
-    LOGO_LINES = [
-        "▄▄                   ▄▄",
-        "██                   ██",
-        "████▄ ██ ██ ████▄ ▄████",
-        "██ ██ ██ ██ ██ ██ ██ ██",
-        "██ ██ ▀██▀█ ██ ██ ▀████ ██",
-    ]
+    def fixed_cells(content: str, cells: int) -> str:
+        clipped, used = slice_cells(display_text(content), cells)
+        return clipped + " " * (cells - used)
 
-    if W >= 34:
+    def progress_bar(progress: int, cells: int) -> str:
+        if not ascii_only:
+            return _bar(progress, width=cells)
+        filled = min(cells, max(0, round((progress / 100) * cells)))
+        return "#" * filled + "-" * (cells - filled)
+
+    LOGO_LINES = (
+        ["hund"]
+        if ascii_only
+        else [
+            "▄▄                   ▄▄",
+            "██                   ██",
+            "████▄ ██ ██ ████▄ ▄████",
+            "██ ██ ██ ██ ██ ██ ██ ██",
+            "██ ██ ▀██▀█ ██ ██ ▀████ ██",
+        ]
+    )
+
+    if W >= 34 and not ascii_only:
         logo_0 = LOGO_LINES[0]
         top = "╔═ " + logo_0 + " " + "═" * (W - 5 - len(logo_0)) + "╗"
         logo_rest = LOGO_LINES[1:]
     else:
-        top = "╔" + "═" * (W - 2) + "╗"
+        top = top_left + horizontal * (W - 2) + top_right
         logo_rest = LOGO_LINES
 
     # Attribute data
@@ -211,27 +242,22 @@ def build_startup_banner(rt, width: int = 80) -> str:
         pct = int(s.get("progress", 0) or 0)
         attr_data.append((abbr, name, pct))
 
-    # Skill and Domain XP data — only show active custom domain skills
-    active_domain_skills = list(active_skills)
-    skill_data: list[tuple[str, str, int]] = []
+    # Only audited Skill XP is eligible for atomic-skill proficiency display.
     try:
-        from hund.domains.xp import get_xp
-        for s in active_domain_skills[:6]:
-            s_name = getattr(s, "name", str(s))[:17]
-            s_domain = getattr(s, "domain", "") or s_name
-            xp_info = get_xp(s_domain)
-            if xp_info["xp"] == 0 and s_name != s_domain:
-                xp_info = get_xp(s_name)
-            skill_data.append((s_name, xp_info["tier"], xp_info["progress_pct"]))
+        skill_data = project_active_skill_xp(
+            active_skills,
+            db_path=db_path,
+            limit=5,
+        )
     except Exception:
-        for s in active_domain_skills[:6]:
-            s_name = getattr(s, "name", str(s))[:17]
-            skill_data.append((s_name, "Novice", 0))
+        skill_data = ()
 
-    total_display_skills = len(active_domain_skills)
-    skills_header = f"── ACTIVE SKILLS ({total_display_skills}/{max_slots}) ──"
+    rule = "--" if ascii_only else "──"
+    skills_header = f"{rule} ACTIVE SKILLS {rule}"
+    specialisations_header = f"{rule} SPECIALISATIONS (0/6) {rule}"
 
-    commands_text = "commands: /skills · /stats · /theme · /model · /clear · /exit"
+    command_separator = " * " if ascii_only else " · "
+    commands_text = command_separator.join(("commands: /skills", "/stats", "/theme", "/model", "/clear", "/exit"))
 
     lines = [
         top,
@@ -249,52 +275,58 @@ def build_startup_banner(rt, width: int = 80) -> str:
         empty,
     ])
 
-    # Keep the modern two-column identity at ordinary compact terminal widths.
-    if W >= 60:
+    # Two columns need enough room for labels, bars, and percentages.
+    if W >= 80:
         col_left = (W - 6 - 4) // 2
         col_right = (W - 6 - 4) - col_left
 
         def split_row(l: str, r: str) -> str:
-            return "║  " + l[:col_left].ljust(col_left) + " │  " + r[:col_right].ljust(col_right) + "  ║"
+            return vertical + "  " + fixed_cells(l, col_left) + f" {column_divider}  " + fixed_cells(r, col_right) + "  " + vertical
 
-        left_hdr = "── BASE STATS " + "─" * max(2, col_left - 14)
-        right_hdr = f"── ACTIVE SKILLS ({total_display_skills}/{max_slots}) " + "─" * max(2, col_right - len(f"── ACTIVE SKILLS ({total_display_skills}/{max_slots}) "))
+        header_fill = "-" if ascii_only else "─"
+        left_hdr = f"{rule} BASE STATS " + header_fill * max(2, col_left - len(f"{rule} BASE STATS "))
+        right_hdr = f"{rule} ACTIVE SKILLS " + header_fill * max(2, col_right - len(f"{rule} ACTIVE SKILLS "))
         lines.append(split_row(left_hdr, right_hdr))
-        bar_w = 8 if W < 80 else 10
-        max_rows = max(len(attr_data), len(skill_data) if skill_data else 2)
+        bar_w = 10
+        display_skills = skill_data[:5]
+        max_rows = max(len(attr_data), len(display_skills) if display_skills else 2)
         for i in range(max_rows):
             l_str = ""
             if i < len(attr_data):
                 abbr, name, pct = attr_data[i]
-                bar = _bar(pct, width=bar_w)
+                bar = progress_bar(pct, bar_w)
                 l_str = f"{abbr} {name:<10} {bar} {pct}%"
             r_str = ""
-            if skill_data and i < len(skill_data):
-                sname, stier, pct = skill_data[i]
-                bar = _bar(pct, width=bar_w)
-                r_str = f"{sname:<17} {bar} {pct}%"
-            elif not skill_data:
+            if display_skills and i < len(display_skills):
+                skill_row = display_skills[i]
+                bar = progress_bar(skill_row.progress_percent, bar_w)
+                label = _fit_cell_label(skill_row.display_name, 12)
+                r_str = f"{label} L{skill_row.level} {bar} {skill_row.progress_percent}%"
+            elif not display_skills:
                 if i == 0:
                     r_str = "(no active skills)"
                 elif i == 1:
                     r_str = "(use /skills to equip)"
             lines.append(split_row(l_str, r_str))
+        lines.extend([empty, row(specialisations_header), row("No active specialisations")])
     else:
         # Preserve the wide view's ten-cell XP geometry whenever it fits.
         bar_w = max(4, min(10, W - 27))
-        lines.append(row("── BASE STATS ──"))
+        lines.append(row(f"{rule} BASE STATS {rule}"))
         for abbr, name, pct in attr_data:
-            bar = _bar(pct, width=bar_w)
+            bar = progress_bar(pct, bar_w)
             lines.append(row(f"{abbr} {name:<9} {bar} {pct}%"))
         lines.append(empty)
         lines.append(row(skills_header))
         if skill_data:
-            for sname, stier, pct in skill_data[:4]:
-                bar = _bar(pct, width=bar_w)
-                lines.append(row(f"{sname:<16} {bar} {pct}%"))
+            for skill_row in skill_data[:5]:
+                bar = progress_bar(skill_row.progress_percent, bar_w)
+                label = _fit_cell_label(skill_row.display_name, 10)
+                lines.append(row(f"{label} L{skill_row.level} {bar} {skill_row.progress_percent}%"))
         else:
             lines.append(row("(no active skills)"))
             lines.append(row("(use /skills to equip)"))
+        lines.extend([empty, row(specialisations_header), row("No active specialisations")])
 
     lines.extend([
         empty,

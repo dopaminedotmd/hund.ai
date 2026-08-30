@@ -389,7 +389,7 @@ def test_failed_publication_retains_staged_draft(tmp_path: Path):
     assert draft_file.exists()
 
 
-def test_vault_slot_capacity_pin_protection(tmp_path: Path):
+def test_vault_unlimited_inventory_preserves_pin_protection(tmp_path: Path):
     vault = SkillVault(home=tmp_path, max_active=2)
 
     s1 = _make_valid_skill("s1")
@@ -414,10 +414,10 @@ def test_vault_slot_capacity_pin_protection(tmp_path: Path):
     assert len(active) == 2
     assert any(s.name == "s1" for s in active)
 
-    # Attempting to equip 3rd skill when capacity is 2 should fail
+    # Equipping a third atomic skill remains explicit but has no capacity ceiling.
     ok, msg = vault.equip("s3")
-    assert not ok
-    assert "capacity reached" in msg.lower()
+    assert ok
+    assert "capacity" not in msg.lower()
 
     # Parking pinned skill without force should fail
     ok_p, msg_p = vault.park("s1")

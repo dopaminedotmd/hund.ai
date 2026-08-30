@@ -1,8 +1,11 @@
 """Unit tests for the fullscreen startup banner per TUI_FACIT.md §4."""
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 from hund.ui.render import build_startup_banner
 from hund.ui.fullscreen import _lex_banner_line, _OutputLexer
+from hund.skills.projection import SkillXPProjectionRow
 from prompt_toolkit.document import Document
+from hund.ui.unicode_cells import cell_width
 
 
 def test_build_startup_banner_structure_and_width() -> None:
@@ -126,6 +129,162 @@ def test_banner_responsive_widths() -> None:
         lines = banner.splitlines()
         for i, line in enumerate(lines):
             assert len(line) == test_w, f"W={test_w}, line {i}: {len(line)} != {test_w}"
+
+
+def test_startup_layout_stacks_truthful_specialisations_and_defensively_caps_projection(monkeypatch) -> None:
+    stats = {name: {"progress": 0} for name in ("clarity", "precision", "efficiency", "endurance", "mastery")}
+    rows = tuple(
+        SkillXPProjectionRow(
+            capability_id=f"cap-{index}",
+            display_name=f"Skill {index}",
+            total_xp=100 - index,
+            level=2,
+            tier="Apprentice",
+            progress_percent=50,
+            xp_into_level=50,
+            xp_to_next_level=50,
+            last_used_at=None,
+        )
+        for index in range(6)
+    )
+    monkeypatch.setattr("hund.stats.compute_all", lambda: stats)
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_active_skills", lambda self, workspace=None: [])
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_core_skills", lambda self: [])
+    monkeypatch.setattr("hund.ui.render.project_active_skill_xp", lambda skills, **kwargs: rows)
+    rt = SimpleNamespace(profile=SimpleNamespace(), cfg=None, workspace=None)
+
+    for width in (120, 80, 60, 42):
+        banner = build_startup_banner(rt, width=width)
+        assert all(cell_width(line) == width for line in banner.splitlines())
+        assert "SPECIALISATIONS (0/6)" in banner
+        assert "No active specialisations" in banner
+        assert "Skill 0" in banner and "Skill 4" in banner
+        assert "Skill 5" not in banner
+        base_index = banner.index("── BASE STATS")
+        skills_index = banner.index("── ACTIVE SKILLS")
+        specialisations_index = banner.index("SPECIALISATIONS (0/6)")
+        assert base_index < skills_index < specialisations_index
+        if width < 80:
+            assert " │  " not in banner[base_index:specialisations_index]
+        else:
+            assert " │  " in banner[base_index:specialisations_index]
+
+
+def test_startup_banner_is_cell_safe_for_wide_unicode_telemetry_and_ascii_no_color(monkeypatch) -> None:
+    stats = {name: {"progress": 0} for name in ("clarity", "precision", "efficiency", "endurance", "mastery")}
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr("hund.stats.compute_all", lambda: stats)
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_active_skills", lambda self, workspace=None: [])
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_core_skills", lambda self: [])
+    monkeypatch.setattr(
+        "hund.ui.render.project_active_skill_xp",
+        lambda skills, **kwargs: (
+            SkillXPProjectionRow("cap", "技能開発👩‍💻e\u0301" * 5, 50, 1, "Novice", 50, 25, 25, None),
+        ),
+    )
+    profile = SimpleNamespace(hostname="漢字" * 40)
+    rt = SimpleNamespace(profile=profile, cfg=SimpleNamespace(ascii_ui=True), workspace=None)
+
+    banner = build_startup_banner(rt, width=42)
+
+    assert all(cell_width(line) == 42 for line in banner.splitlines())
+    assert "\x1b" not in banner
+    assert all(ord(char) < 128 for char in banner)
+
+
+def test_startup_ascii_mode_requires_an_explicit_true_flag() -> None:
+    """An unspecified mock configuration must retain the Unicode startup contract."""
+    rt = SimpleNamespace(profile=SimpleNamespace(), cfg=MagicMock(), workspace=None)
+
+    banner = build_startup_banner(rt, width=80)
+
+    assert "── BASE STATS" in banner
+    assert "╔" in banner
+
+
+def test_banner_breakpoint_preserves_full_percentages(monkeypatch) -> None:
+    stats = {
+        name: {"progress": 100}
+        for name in ("clarity", "precision", "efficiency", "endurance", "mastery")
+    }
+    skill = SimpleNamespace(
+        name="code-surgeon",
+        domain="code",
+        capability_id="code-surgeon",
+        lifecycle_state="active",
+        vault_state="equipped",
+    )
+    monkeypatch.setattr("hund.stats.compute_all", lambda: stats)
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_active_skills", lambda self, workspace=None: [skill])
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_core_skills", lambda self: [])
+    monkeypatch.setattr(
+        "hund.ui.render.project_active_skill_xp",
+        lambda skills, **kwargs: (
+            SkillXPProjectionRow("code-surgeon", "code-surgeon", 100, 2, "Apprentice", 100, 50, 0, None),
+        ),
+        raising=False,
+    )
+    rt = SimpleNamespace(profile=SimpleNamespace(), cfg=None, workspace=None)
+
+    for width in (42, 50, 59, 60, 72, 79, 80, 120):
+        banner = build_startup_banner(rt, width=width)
+        assert all(cell_width(line) == width for line in banner.splitlines())
+        assert banner.count("100%") == 6, f"W={width}\n{banner}"
+        stats_section = banner.split("── BASE STATS", 1)[1]
+        if width < 80:
+            assert " │  " not in stats_section
+        else:
+            assert " │  " in stats_section
+
+
+def test_startup_uses_canonical_skill_xp_projection_and_limits_to_five(monkeypatch) -> None:
+    stats = {name: {"progress": 0} for name in ("clarity", "precision", "efficiency", "endurance", "mastery")}
+    skills = [SimpleNamespace(name=f"legacy-{index}", domain="legacy") for index in range(6)]
+    rows = tuple(
+        SkillXPProjectionRow(
+            capability_id=f"cap-{index}",
+            display_name=f"Skill {index}",
+            total_xp=100 - index,
+            level=2,
+            tier="Apprentice",
+            progress_percent=50,
+            xp_into_level=50,
+            xp_to_next_level=50,
+            last_used_at=None,
+        )
+        for index in range(5)
+    )
+    monkeypatch.setattr("hund.stats.compute_all", lambda: stats)
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_active_skills", lambda self, workspace=None: skills)
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_core_skills", lambda self: [])
+    monkeypatch.setattr("hund.ui.render.project_active_skill_xp", lambda value, **kwargs: rows, raising=False)
+
+    banner = build_startup_banner(SimpleNamespace(profile=SimpleNamespace(), cfg=None, workspace=None), width=80)
+
+    assert "ACTIVE SKILLS (" not in banner
+    assert "Skill 0" in banner and "Skill 4" in banner
+    assert "legacy-5" not in banner
+    assert "L2" in banner
+
+
+def test_startup_truncates_long_skill_names_before_the_shared_progress_column(monkeypatch) -> None:
+    stats = {name: {"progress": 0} for name in ("clarity", "precision", "efficiency", "endurance", "mastery")}
+    rows = (
+        SkillXPProjectionRow("cap-1", "b2b-outreach-migration", 4, 1, "Novice", 50, 25, 25, None),
+        SkillXPProjectionRow("cap-2", "kundsupport", 4, 1, "Novice", 50, 25, 25, None),
+        SkillXPProjectionRow("cap-3", "marketing", 4, 1, "Novice", 50, 25, 25, None),
+    )
+    monkeypatch.setattr("hund.stats.compute_all", lambda: stats)
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_active_skills", lambda self, workspace=None: [])
+    monkeypatch.setattr("hund.skills.vault.SkillVault.get_core_skills", lambda self: [])
+    monkeypatch.setattr("hund.ui.render.project_active_skill_xp", lambda value, **kwargs: rows)
+
+    banner = build_startup_banner(SimpleNamespace(profile=SimpleNamespace(), cfg=None, workspace=None), width=80)
+    skill_lines = [line for line in banner.splitlines() if "L1" in line]
+
+    assert "b2b-outreach-migration" not in banner
+    assert "…" in skill_lines[0]
+    assert len({line.index("█████") for line in skill_lines}) == 1
 
 
 def test_spec_labels_tokenization() -> None:

@@ -10,6 +10,7 @@ from hund.ui.commands import CommandContext, cmd_skills
 from hund.ui.skills_view import render_skill_detail, render_skills_panel
 from hund.ui.screen_render import skill_detail_lines
 from hund.ui.snapshots import SkillItem
+from hund.skills.projection import SkillXPProjectionRow
 
 
 @pytest.fixture
@@ -29,7 +30,7 @@ def test_render_skills_panel_structure(skills_home: Path) -> None:
     assert "╔" in panel and "╗" in panel
     assert "╚" in panel and "╝" in panel
     assert "SKILLS" in panel
-    assert "slots]" in panel
+    assert "slots]" not in panel
 
     # 2. Motor Skills section
     assert "MOTOR SKILLS" in panel
@@ -37,10 +38,45 @@ def test_render_skills_panel_structure(skills_home: Path) -> None:
     assert "shell-command-safety" in panel
     assert "context-condenser" in panel
 
-    # 3. Domain Skills & Vault sections
-    assert "DOMAIN SKILLS" in panel
+    # 3. Active Skill-XP and Vault sections
+    assert "ACTIVE SKILLS" in panel
+    assert "Skill XP" in panel
     assert "VAULT" in panel
     assert "commands:" in panel
+
+
+def test_render_skills_panel_uses_shared_skill_xp_projection(monkeypatch, skills_home: Path) -> None:
+    vault = SkillVault(home=skills_home)
+    skill = Skill(
+        schema_version=1,
+        name="domain-name-must-not-drive-proficiency",
+        domain="domain-with-unrelated-xp",
+        status="active",
+        triggers=("test",),
+        when_to_use="When testing.",
+        steps=("Verify.",),
+        required_tools=(),
+        forbidden_actions=(),
+        safety_level="read_only",
+        verification=("Verify.",),
+        capability_id="canonical-capability",
+        lifecycle_state="active",
+        vault_state="equipped",
+    )
+    monkeypatch.setattr(vault, "get_active_skills", lambda workspace=None: [skill])
+    monkeypatch.setattr(
+        "hund.ui.skills_view.project_active_skill_xp",
+        lambda skills, **kwargs: (
+            SkillXPProjectionRow("canonical-capability", "Canonical display", 42, 1, "Novice", 84, 42, 8, None),
+        ),
+        raising=False,
+    )
+
+    panel = render_skills_panel(vault=vault, width=100)
+
+    assert "Canonical display" in panel
+    assert "42 Skill XP" in panel
+    assert "Lvl 1" in panel
 
 
 def test_render_skill_detail_view(skills_home: Path) -> None:

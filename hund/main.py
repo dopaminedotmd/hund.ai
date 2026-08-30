@@ -200,6 +200,23 @@ def setup_font(
         console.print("Your existing terminal profiles were not modified.")
 
 
+@app.command("setup-desktop")
+def setup_desktop() -> None:
+    """Create the lowercase hund.lnk desktop shortcut for the Hund profile."""
+    from .font_setup import ensure_installed_icon
+    from .desktop import create_desktop_shortcut
+
+    try:
+        icon = ensure_installed_icon()
+        link = create_desktop_shortcut(icon=icon)
+    except (OSError, RuntimeError) as exc:
+        console.print(f"[red]Desktop setup failed:[/red] {exc}")
+        raise typer.Exit(1) from exc
+
+    console.print(f"[green]Created {link.name} on the Desktop.[/green]")
+    console.print("It opens the [bold]hund[/bold] Windows Terminal profile.")
+
+
 @app.command()
 def propose() -> None:
     """Hund sammanfattar öppna gaps till ett DEKLARATIVT förslag (ej kod).

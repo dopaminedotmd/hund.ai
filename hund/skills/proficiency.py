@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
+import sqlite3
 from typing import Any, Optional
 
 from ..domains.xp import calculate_level_and_tier
@@ -117,6 +118,7 @@ class SkillProficiencyStore:
             conn.commit()
         finally:
             conn.close()
+
 
     def get_or_create_record(
         self,
@@ -366,3 +368,45 @@ def record_skill_run_outcome(
         error_msg=error_msg,
         now=now,
     )
+
+
+def read_skill_xp_records(
+    capability_ids: set[str],
+    *,
+    db_path: Path | str | None = None,
+) -> dict[str, SkillXPRecord]:
+    """Read audited Skill-XP records without creating a database or schema."""
+    if not capability_ids:
+        return {}
+
+    from ..paths import db_path as default_db_path
+
+    path = Path(db_path) if db_path is not None else default_db_path()
+    if not path.exists():
+        return {}
+
+    records: dict[str, SkillXPRecord] = {}
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+    except sqlite3.OperationalError:
+        return {}
+
+    try:
+        columns = (
+            "capability_id, domain, version_lineage, xp, level, tier, use_count, "
+            "successful_use_count, failure_count, cross_session_success, last_used_at, health, updated_at"
+        )
+        ordered_ids = sorted(capability_ids)
+        for start in range(0, len(ordered_ids), 500):
+            batch = ordered_ids[start:start + 500]
+            placeholders = ", ".join("?" for _ in batch)
+            rows = connection.execute(
+                f"SELECT {columns} FROM {SKILL_XP_TABLE} WHERE capability_id IN ({placeholders})",
+                batch,
+            ).fetchall()
+            records.update({row[0]: SkillXPRecord(*row) for row in rows})
+    except sqlite3.OperationalError:
+        return {}
+    finally:
+        connection.close()
+    return records

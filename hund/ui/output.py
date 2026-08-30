@@ -35,6 +35,7 @@ from .phrases import select_thinking_phrase
 from .activity import describe_tool
 from .render import box_bottom, box_top, response_padding
 from ..agent.types import ConfirmRequest, ConfirmVerdict
+from ..learning.redactor import redact_text
 from .confirmation import confirmation_options, prompt_edits
 
 _APPROVE_ONCE = {"y", "yes", "j", "ja", "approve"}
@@ -434,19 +435,31 @@ def _confirm_title(request: ConfirmRequest) -> str:
 
 
 def _confirm_detail(request: ConfirmRequest) -> str:
-    """Derive a detail line from a ConfirmRequest."""
+    """Derive a bounded, redacted detail line from a confirmation request."""
     args = request.args
     if request.tool_name == "terminal":
-        return f"$ {args.get('command', '')}"
+        raw = f"$ {args.get('command', '')}"
+        return _safe_confirmation_text(raw, 160)
     if request.tool_name in ("read_file", "write_file", "delete_file"):
-        return str(args.get("path", ""))
+        return _safe_confirmation_text(str(args.get("path", "")), 160)
     if request.tool_name == "search_files":
-        return str(args.get("pattern", "*"))
+        return _safe_confirmation_text(str(args.get("pattern", "*")), 160)
     try:
         s = json.dumps(args, ensure_ascii=False)
     except (TypeError, ValueError):
-        s = str(args)
-    return s if len(s) <= 55 else s[:52] + "..."
+        s = "[unavailable arguments]"
+    return _safe_confirmation_text(s, 160)
+
+
+def _safe_confirmation_text(value: str, limit: int) -> str:
+    """Redact secrets and force untrusted display text onto one bounded line."""
+    clean = redact_text(value).text.replace("\r", " ").replace("\n", " ")
+    return clean if len(clean) <= limit else clean[: limit - 3] + "..."
+
+
+def _confirm_reason(request: ConfirmRequest) -> str:
+    """Return the policy explanation rendered beside confirmation details."""
+    return _safe_confirmation_text(request.reason or "Approval required", 160)
 
 
 _CONFIRM_COLORS = {
@@ -481,12 +494,18 @@ def tool_thinking_phrase(name: str, args: dict | None = None) -> tuple[str, str]
 
 def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
     """Render interactive arrow-key selection menu for tool confirmation."""
-    options = [(v, label, _CONFIRM_COLORS[v]) for v, label in confirmation_options(request.tool_name)]
+    options = [
+        (v, label, _CONFIRM_COLORS[v])
+        for v, label in confirmation_options(
+            request.tool_name, session_allowable=request.session_allowable
+        )
+    ]
     selected = [0]
     width = 72
     inner_width = width - 4
     title = _confirm_title(request)
     detail = _confirm_detail(request)
+    reason = _confirm_reason(request)
 
     def get_formatted_text():
         lines = []
@@ -504,6 +523,11 @@ def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
         lines.append(("class:border fg:ansiyellow", " │\n"))
 
         lines.append(("class:border fg:ansiyellow", "│ " + " " * inner_width + " │\n"))
+
+        reason_display = reason[:inner_width - 3] + "..." if len(reason) > inner_width else reason
+        lines.append(("class:border fg:ansiyellow", "│ "))
+        lines.append(("fg:ansibrightblack", f"  Why: {reason_display:<{inner_width - 7}}"))
+        lines.append(("class:border fg:ansiyellow", " │\n"))
 
         for idx, (verdict, label, color) in enumerate(options):
             lines.append(("class:border fg:ansiyellow", "│ "))
@@ -767,7 +791,10 @@ class StreamingSink:
             # Fallback for non-interactive / piped environments
             title = _confirm_title(request)
             detail = _confirm_detail(request)
-            policy_options = confirmation_options(request.tool_name)
+            reason = _confirm_reason(request)
+            policy_options = confirmation_options(
+                request.tool_name, session_allowable=request.session_allowable
+            )
             shortcut = {
                 ConfirmVerdict.APPROVE_ONCE: "y",
                 ConfirmVerdict.EDIT: "e",
@@ -781,6 +808,7 @@ class StreamingSink:
             options = [
                 f"[bold white]{title}[/bold white]",
                 f"  [bold cyan]{detail}[/bold cyan]",
+                f"  [dim]Why: {reason}[/dim]",
                 "",
                 "Options:",
                 *option_lines,

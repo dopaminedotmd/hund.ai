@@ -78,6 +78,7 @@ from .input import (
 from .output import (
     StreamingMarkdownFilter,
     _confirm_detail,
+    _confirm_reason,
     _confirm_title,
     parse_confirm_input,
     parse_semantic_segments,
@@ -1312,8 +1313,13 @@ _CONFIRM_COLORS = {
 }
 
 
-def _confirm_options(tool_name: str):
-    return [(v, label, _CONFIRM_COLORS[v]) for v, label in confirmation_options(tool_name)]
+def _confirm_options(tool_name: str, *, session_allowable: bool = True):
+    return [
+        (v, label, _CONFIRM_COLORS[v])
+        for v, label in confirmation_options(
+            tool_name, session_allowable=session_allowable
+        )
+    ]
 
 
 def _discard_console(width: int = 100) -> Console:
@@ -1581,6 +1587,8 @@ def create_fullscreen_app(
         row("", "class:secondary")
         detail = _confirm.get("detail", "")
         row(f"  {detail}", "class:accent")
+        reason = _confirm.get("reason", "Approval required")
+        row(f"  Why: {reason}", "class:secondary")
         row("", "class:secondary")
         for i, (_code, label, color) in enumerate(_confirm["options"]):
             if i == _confirm["selected"]:
@@ -2224,6 +2232,21 @@ def create_fullscreen_app(
         def set_turn_snapshot(self, snapshot) -> None:
             self._snapshot = snapshot
 
+        def clear_presentation_state(self) -> None:
+            """Drop transient render state without touching conversation history."""
+            self._cancel_timers()
+            self._box_open = False
+            self._box_start_marker = None
+            self._tool_marker = None
+            self._activity.clear()
+            self._activity_marker = None
+            self._activity_end = None
+            self._activity_prefix = ""
+            self._active_tool_event_id = None
+            self._pending_confirmation_tool = None
+            self._learning_markers.clear()
+            self._md = StreamingMarkdownFilter()
+
         def _cancel_timers(self) -> None:
             if self._pending_past_timer is not None:
                 try:
@@ -2497,8 +2520,11 @@ def create_fullscreen_app(
             if len(detail) > 58:
                 detail = detail[:55] + "..."
             _confirm["title"] = title
-            _confirm["options"] = _confirm_options(request.tool_name)
+            _confirm["options"] = _confirm_options(
+                request.tool_name, session_allowable=request.session_allowable
+            )
             _confirm["detail"] = detail
+            _confirm["reason"] = _confirm_reason(request)
             _confirm["selected"] = 0
             _confirm["answer"] = ConfirmVerdict.DENY
             _confirm["active"] = True
@@ -2664,6 +2690,23 @@ def create_fullscreen_app(
                 append(f"  ┊ ✗ declined {name} — {clean_reason}\n")
 
     sink = _Sink()
+
+    def clear_screen() -> str | None:
+        """Atomically clear visible transcript state while preserving messages."""
+        if turn_running[0]:
+            return "Wait for the active turn to finish before clearing."
+        with _append_lock:
+            block_registry.clear()
+            payload_by_id.clear()
+            response_payloads.clear()
+            active_response[0] = None
+            authoring_anchor[0] = None
+            authoring_span[0] = None
+            tail_following[0] = False
+            sink.clear_presentation_state()
+            _set_output("", follow_tail=False)
+            output_window.vertical_scroll = 0
+        return None
 
     def _replace_skill_seed(replacement: str) -> None:
         previous = rendered_skill_seed[0]
@@ -2842,7 +2885,12 @@ def create_fullscreen_app(
         buf = io.StringIO()
         app_w = _content_width()
         console = Console(file=buf, color_system=None, force_terminal=False, width=app_w)
-        ctx = CommandContext(console=console, rt=rt, state=state)
+        ctx = CommandContext(
+            console=console,
+            rt=rt,
+            state=state,
+            clear_screen=clear_screen,
+        )
         dispatch_command(user_text, ctx)
         out = buf.getvalue()
         if out:
@@ -4165,6 +4213,8 @@ def create_fullscreen_app(
         "block_registry": block_registry,
         "payload_by_id": payload_by_id,
         "response_payloads": response_payloads,
+        "clear_screen": clear_screen,
+        "turn_running": turn_running,
         "authoring_view": authoring_view,
         "authoring_selected": authoring_selected,
         "authoring_anchor": authoring_anchor,

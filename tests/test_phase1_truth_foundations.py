@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -99,25 +99,19 @@ def test_endurance_v2_collecting_evidence_below_threshold(tmp_path: Path) -> Non
     assert stat.get("status_text") == "Collecting evidence"
 
 
-def test_endurance_v2_with_sufficient_sustained_tasks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # Mock sessions database returning 3 sustained tasks (>= 4 messages)
-    mock_rows = [
-        ("sess_1", 10),
-        ("sess_2", 8),
-        ("sess_3", 6),
-    ]
-    mock_cursor = MagicMock()
-    mock_cursor.fetchall.return_value = mock_rows
-    mock_conn = MagicMock()
-    mock_conn.execute.return_value = mock_cursor
+def test_endurance_v3_messages_alone_never_grant_progress(tmp_path: Path) -> None:
+    from hund.agent import sessions
 
-    from hund.agent import sessions as S
-    monkeypatch.setattr(S, "_connect", lambda *a, **kw: mock_conn)
+    for _ in range(3):
+        session_id = sessions.create(home=tmp_path)
+        for role in ("user", "assistant", "user", "assistant"):
+            sessions.add_message(session_id, role, "message", home=tmp_path)
 
     stat = compute_endurance(home=tmp_path, min_sample_threshold=3)
-    assert stat["value"] == 100.0
-    assert stat["sample_count"] == 3
-    assert stat["tier"] == "Master"
+
+    assert stat["value"] is None
+    assert stat["progress"] == 0
+    assert stat["status_text"] == "Collecting evidence"
 
 
 # --- 4. Progression Receipt Reasons Tests ---

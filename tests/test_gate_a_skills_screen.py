@@ -52,7 +52,7 @@ class TestSkillsScreenTruthfulLabels:
                 state="deferred",
             ),
         )
-        return SkillsSnapshot(equipped=equipped, parked=parked, max_active=6, proposals=proposals)
+        return SkillsSnapshot(equipped=equipped, parked=parked, proposals=proposals)
 
     def test_screen_title_is_skills_not_specializations(self):
         snap = self._create_snapshot()

@@ -175,7 +175,11 @@ def test_sink_confirm_yes(monkeypatch) -> None:
     from hund.agent.types import ConfirmRequest, ConfirmVerdict
     monkeypatch.setattr("builtins.input", lambda *a, **k: "j")
     sink = StreamingSink(Console(force_terminal=False, width=120, file=StringIO()))
-    req = ConfirmRequest(tool_name="terminal", args={"command": "ls"})
+    req = ConfirmRequest(
+        tool_name="terminal",
+        args={"command": "git push"},
+        session_allowable=True,
+    )
     assert sink.confirm(req) == ConfirmVerdict.APPROVE_ONCE
 
 
@@ -191,7 +195,11 @@ def test_sink_confirm_allow_all(monkeypatch) -> None:
     from hund.agent.types import ConfirmRequest, ConfirmVerdict
     monkeypatch.setattr("builtins.input", lambda *a, **k: "a")
     sink = StreamingSink(Console(force_terminal=False, width=120, file=StringIO()))
-    req = ConfirmRequest(tool_name="terminal", args={"command": "ls"})
+    req = ConfirmRequest(
+        tool_name="terminal",
+        args={"command": "git push"},
+        session_allowable=True,
+    )
     assert sink.confirm(req) == ConfirmVerdict.ALLOW_SESSION
 
 

@@ -37,7 +37,7 @@ def _snapshots():
             tuple(today - timedelta(days=n) for n in range(6, -1, -1)),
             (), False,
         ),
-        SkillsSnapshot((), (), 8),
+        SkillsSnapshot((), ()),
         ToolsSnapshot((), ()),
         UsageSnapshot((), date(2026, 2, 1), today, None, SessionUsage(None, None, None)),
     )

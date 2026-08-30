@@ -1,11 +1,16 @@
-"""Tester for Approval Fatigue Mitigation (Session Allowlist)."""
+"""Tests for policy-scoped, per-session approval fatigue mitigation."""
+import json
 from unittest.mock import MagicMock, patch
+
 import pytest
 
-from hund.agent.safety import PermissionEngine, RiskLevel
-from hund.agent.tool_dispatch import dispatch_tool_call, _SESSION_ALLOWLIST
+from hund.agent.safety import PermissionEngine
+from hund.agent.tool_dispatch import _SESSION_ALLOWLIST, dispatch_tool_call
 from hund.agent.types import ConfirmRequest, ConfirmVerdict
+from hund.ui.confirmation import confirmation_options
+from hund.ui.output import _confirm_detail, _confirm_reason
 from hund.tools.default_tools import register_defaults
+from hund.tools.types import ToolKind, create_success_result
 
 
 @pytest.fixture(autouse=True)
@@ -15,91 +20,139 @@ def clear_allowlist():
     _SESSION_ALLOWLIST.clear()
 
 
-def test_confirm_gets_session_allowlisted(tmp_path):
-    """Om användaren väljer ALLOW_SESSION på ett CONFIRM-verktyg, ska nästa anrop auto-tillåtas."""
+def _terminal_call(command: str) -> dict:
+    return {
+        "id": "1",
+        "function": {
+            "name": "terminal",
+            "arguments": json.dumps({"command": command}),
+        },
+    }
+
+
+def _dispatch(tc, engine, console, hooks, session_id):
+    with patch(
+        "hund.agent.tool_dispatch.registry.call_typed",
+        return_value=create_success_result(ToolKind.EXECUTION, "ok"),
+    ):
+        return dispatch_tool_call(
+            tc, engine, console, hooks=hooks, session_id=session_id
+        )
+
+
+def test_confirm_policy_gets_session_allowlisted(tmp_path):
     register_defaults(tmp_path)
     engine = PermissionEngine(tmp_path)
     console = MagicMock()
     hooks = MagicMock()
     hooks.confirm.return_value = ConfirmVerdict.ALLOW_SESSION
-    
-    tc = {"id": "1", "function": {"name": "terminal", "arguments": '{"command": "dir"}'}}
-    
-    # Första anropet: confirm anropas EN gång och returnerar ALLOW_SESSION
-    res1 = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-1")
-    assert res1 != "[declined by user]"
-    assert _SESSION_ALLOWLIST.is_allowed("sess-1", "terminal")
-    assert "terminal" in _SESSION_ALLOWLIST
-    hooks.confirm.assert_called_once()
-    
-    # Andra anropet ska inte anropa confirm alls (auto-tillåtet via session allowlist)
+    tc = _terminal_call("git push origin feature")
+
+    assert _dispatch(tc, engine, console, hooks, "sess-1") == "ok"
+    request = hooks.confirm.call_args.args[0]
+    assert request.policy_id == "terminal.git_push"
+    assert request.session_allowable is True
+    assert _SESSION_ALLOWLIST.is_allowed("sess-1", "terminal", "terminal.git_push")
+
     hooks.confirm.reset_mock()
     hooks.confirm.side_effect = AssertionError("Should not prompt user")
-    
-    res2 = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-1")
-    assert res2 != "[declined by user]"
+    assert _dispatch(tc, engine, console, hooks, "sess-1") == "ok"
     hooks.confirm.assert_not_called()
 
 
-def test_dangerous_cannot_be_allowlisted(tmp_path):
-    """DANGEROUS verktyg får aldrig läggas till i session-allowlist även om ALLOW_SESSION returneras."""
+def test_allowlist_is_policy_and_session_scoped(tmp_path):
+    register_defaults(tmp_path)
+    engine = PermissionEngine(tmp_path)
+    console = MagicMock()
+    hooks = MagicMock()
+    hooks.confirm.side_effect = [ConfirmVerdict.ALLOW_SESSION, ConfirmVerdict.DENY]
+
+    assert _dispatch(_terminal_call("git push origin feature"), engine, console, hooks, "sess-1") == "ok"
+    assert _dispatch(_terminal_call("pip install sample-package"), engine, console, hooks, "sess-1") == "[declined by user]"
+
+    hooks.confirm.reset_mock()
+    hooks.confirm.side_effect = None
+    hooks.confirm.return_value = ConfirmVerdict.DENY
+    assert _dispatch(_terminal_call("git push origin feature"), engine, console, hooks, "sess-2") == "[declined by user]"
+    hooks.confirm.assert_called_once()
+
+
+def test_unknown_command_cannot_be_allowlisted(tmp_path):
     register_defaults(tmp_path)
     engine = PermissionEngine(tmp_path)
     console = MagicMock()
     hooks = MagicMock()
     hooks.confirm.return_value = ConfirmVerdict.ALLOW_SESSION
-    
-    tc = {"id": "1", "function": {"name": "delete_file", "arguments": '{"path": "x.txt"}'}}
-    
-    (tmp_path / "x.txt").write_text("x", encoding="utf-8")
-    
-    res1 = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-1")
-    assert res1 != "[declined by user]"
-    # DANGEROUS ska inte finnas i allowlist
-    assert not _SESSION_ALLOWLIST.is_allowed("sess-1", "delete_file")
-    assert "delete_file" not in _SESSION_ALLOWLIST
-    hooks.confirm.assert_called_once()
-    
-    # Nästa anrop av delete_file ska fortfarande prompta användaren
+    tc = _terminal_call("custom-release-script --ship")
+
+    assert _dispatch(tc, engine, console, hooks, "sess-1") == "ok"
+    request = hooks.confirm.call_args.args[0]
+    assert request.policy_id == "terminal.unknown"
+    assert request.session_allowable is False
+    assert not _SESSION_ALLOWLIST.is_allowed("sess-1", "terminal", "terminal.unknown")
+
     hooks.confirm.reset_mock()
     hooks.confirm.return_value = ConfirmVerdict.DENY
-    (tmp_path / "x.txt").write_text("x", encoding="utf-8")
-    
-    res2 = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-1")
-    assert res2 == "[declined by user]"
+    assert _dispatch(tc, engine, console, hooks, "sess-1") == "[declined by user]"
     hooks.confirm.assert_called_once()
 
 
 def test_confirm_edit_without_editor_cancels_safely(tmp_path):
-    """A legacy EDIT verdict without edited arguments must cancel safely."""
     register_defaults(tmp_path)
     engine = PermissionEngine(tmp_path)
     console = MagicMock()
     hooks = MagicMock()
     hooks.confirm.return_value = ConfirmVerdict.EDIT
-    
-    tc = {"id": "1", "function": {"name": "terminal", "arguments": '{"command": "echo test"}'}}
-    
-    res = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-1")
-    assert res == "[declined: edit cancelled]"
-    hooks.confirm.assert_called_once()
+
+    result = _dispatch(_terminal_call("git push origin feature"), engine, console, hooks, "sess-1")
+    assert result == "[declined: edit cancelled]"
     hooks.declined.assert_called_once_with("terminal", "edit cancelled")
 
 
-def test_single_confirm_runs_and_allowlists_no_second_prompt(tmp_path):
-    """Verifiera att exakt EN confirm-prompt körs och verktyget allowlistas och körs."""
+def test_missing_session_id_cannot_create_allowlist_entry(tmp_path):
     register_defaults(tmp_path)
     engine = PermissionEngine(tmp_path)
     console = MagicMock()
     hooks = MagicMock()
     hooks.confirm.return_value = ConfirmVerdict.ALLOW_SESSION
-    
-    tc = {"id": "1", "function": {"name": "terminal", "arguments": '{"command": "echo hi"}'}}
-    
-    res = dispatch_tool_call(tc, engine, console, hooks=hooks, session_id="sess-test")
-    assert hooks.confirm.call_count == 1
-    req = hooks.confirm.call_args[0][0]
-    assert isinstance(req, ConfirmRequest)
-    assert req.tool_name == "terminal"
-    assert req.args == {"command": "echo hi"}
-    assert _SESSION_ALLOWLIST.is_allowed("sess-test", "terminal")
+
+    assert _dispatch(_terminal_call("git push origin feature"), engine, console, hooks, None) == "ok"
+    assert not _SESSION_ALLOWLIST.is_allowed(None, "terminal", "terminal.git_push")
+
+
+def test_confirmation_request_contains_policy_reason(tmp_path):
+    register_defaults(tmp_path)
+    engine = PermissionEngine(tmp_path)
+    console = MagicMock()
+    hooks = MagicMock()
+    hooks.confirm.return_value = ConfirmVerdict.DENY
+
+    _dispatch(_terminal_call("git push"), engine, console, hooks, "sess-test")
+
+    request = hooks.confirm.call_args.args[0]
+    assert isinstance(request, ConfirmRequest)
+    assert request.tool_name == "terminal"
+    assert request.risk == "confirm"
+    assert request.reason
+    assert request.policy_id == "terminal.git_push"
+    assert request.session_allowable is True
+
+
+def test_non_allowable_request_hides_session_option():
+    options = confirmation_options("terminal", session_allowable=False)
+    assert ConfirmVerdict.ALLOW_SESSION not in {verdict for verdict, _ in options}
+
+
+def test_confirmation_display_redacts_and_bounds_untrusted_text():
+    request = ConfirmRequest(
+        tool_name="terminal",
+        args={"command": "deploy --token=super-secret-value\nsecond line" + "x" * 300},
+        reason="Policy check\nwith untrusted input",
+    )
+
+    detail = _confirm_detail(request)
+    reason = _confirm_reason(request)
+    assert "super-secret-value" not in detail
+    assert "\n" not in detail
+    assert len(detail) <= 160
+    assert "\n" not in reason

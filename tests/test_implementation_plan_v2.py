@@ -98,7 +98,7 @@ def test_edited_blocked_arguments_are_never_executed(tmp_path: Path) -> None:
 
     hooks = Hooks()
     outcome = dispatch_tool_call(
-        _call("write_file", '{"path":"ok.txt","content":"safe"}'),
+        _call("write_file", '{"path":".env","content":"safe"}'),
         PermissionEngine(tmp_path),
         _console(),
         hooks=hooks,

@@ -20,6 +20,19 @@ FONT_FILES = (
 )
 PROFILE_GUID = "{ca840a7c-6cc8-5d4b-a8df-788955160ee9}"
 
+ICON_ASSET_PATH = Path(__file__).resolve().parent / "assets" / "mascot" / "hund.ico"
+
+
+def bundled_icon_path() -> Path:
+    """Bundled single-frame mascot icon shipped with the package."""
+    return ICON_ASSET_PATH
+
+
+def installed_icon_path(local_app_data: Path | None = None) -> Path:
+    """Stable per-user icon target: %LOCALAPPDATA%\\Hund\\hund.ico."""
+    root = local_app_data or Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    return root / "Hund" / "hund.ico"
+
 
 def terminal_fragment_path(local_app_data: Path | None = None) -> Path:
     root = local_app_data or Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
@@ -42,8 +55,9 @@ def terminal_profile_fragment() -> dict[str, Any]:
         "profiles": [
             {
                 "guid": PROFILE_GUID,
-                "name": "Hund",
+                "name": "hund",
                 "commandline": "hund",
+                "icon": str(installed_icon_path()),
                 "font": {"face": FONT_FAMILY},
             }
         ]
@@ -79,9 +93,10 @@ def _same_content(left: Path, right: Path) -> bool:
     return digest(left) == digest(right)
 
 
-def _read_manifest() -> dict[str, Any]:
+def _read_manifest(path: Path | None = None) -> dict[str, Any]:
+    manifest_path = path or ownership_manifest_path()
     try:
-        payload = json.loads(ownership_manifest_path().read_text(encoding="utf-8"))
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         return payload if isinstance(payload, dict) else {}
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
@@ -94,6 +109,33 @@ def _broadcast_font_change() -> None:
         )
     except Exception:
         pass
+
+
+def ensure_installed_icon(local_app_data: Path | None = None) -> Path:
+    """Copy the bundled icon to %LOCALAPPDATA%\\Hund\\hund.ico, idempotently.
+
+    Refuses to overwrite a different file at the target unless the ownership
+    manifest proves Hund wrote it.
+    """
+    source = bundled_icon_path()
+    if not source.is_file():
+        raise FileNotFoundError(f"Bundled icon is missing: {source}")
+    target = installed_icon_path(local_app_data)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path = ownership_manifest_path(local_app_data)
+    if target.exists():
+        if _same_content(source, target):
+            return target
+        if "hund.ico" not in _read_manifest(manifest_path).get("owned_icons", []):
+            raise FileExistsError(f"A different file already exists at {target}")
+    shutil.copy2(source, target)
+    manifest = _read_manifest(manifest_path)
+    owned_icons = list(manifest.get("owned_icons", []))
+    if "hund.ico" not in owned_icons:
+        owned_icons.append("hund.ico")
+    manifest["owned_icons"] = owned_icons
+    _atomic_json_write(manifest_path, manifest)
+    return target
 
 
 def install_terminal_font_profile() -> tuple[Path, ...]:
@@ -136,6 +178,7 @@ def install_terminal_font_profile() -> tuple[Path, ...]:
                     owned_registry_values.append(label)
             installed.append(target)
 
+    icon = ensure_installed_icon()
     fragment = terminal_fragment_path()
     _atomic_json_write(fragment, terminal_profile_fragment())
     _atomic_json_write(
@@ -143,11 +186,13 @@ def install_terminal_font_profile() -> tuple[Path, ...]:
         {
             "owned_fonts": owned_fonts,
             "owned_registry_values": owned_registry_values,
+            "owned_icons": _read_manifest().get("owned_icons", []),
             "fragment": str(fragment),
         },
     )
     _broadcast_font_change()
     installed.append(fragment)
+    installed.append(icon)
     return tuple(installed)
 
 

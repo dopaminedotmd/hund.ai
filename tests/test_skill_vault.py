@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 import pytest
 
-from hund.skills.model import MAX_ACTIVE_SKILLS, Skill
+from hund.skills.model import Skill
 from hund.skills.vault import SkillVault
 
 
@@ -50,34 +50,38 @@ def test_vault_domain_skills_management(tmp_path: Path):
     active = vault.get_active_skills()
     vaulted = vault.list_vaulted()
 
-    # First 6 equipped, 7th vaulted
-    assert len(active) == 6
-    assert len(vaulted) == 1
-    assert vaulted[0].name == "custom-skill-7"
-    assert vaulted[0].status == "active"
-    assert vaulted[0].vault_state == "vaulted"
+    # Every lifecycle-active atomic skill remains explicitly equipped.
+    assert len(active) == 7
+    assert len(vaulted) == 0
 
     # Park one skill
     ok, msg = vault.park("custom-skill-1")
     assert ok is True
-    assert len(vault.get_active_skills()) == 5
-    assert len(vault.list_vaulted()) == 2
+    assert len(vault.get_active_skills()) == 6
+    assert len(vault.list_vaulted()) == 1
 
     # Equip vaulted skill
-    ok_equip, _ = vault.equip("custom-skill-7")
+    ok_equip, msg_equip = vault.equip("custom-skill-1")
     assert ok_equip is True
-    assert len(vault.get_active_skills()) == 6
+    assert len(vault.get_active_skills()) == 7
+    assert "slot" not in msg_equip.lower()
 
-    # Capacity full rejection
-    ok_full, msg_full = vault.equip("custom-skill-1")
-    assert ok_full is False
-    assert "capacity reached" in msg_full.lower()
 
-    # Swap skills
-    ok_swap, msg_swap = vault.swap("custom-skill-7", "custom-skill-1")
-    assert ok_swap is True
-    assert any(s.name == "custom-skill-1" for s in vault.get_active_skills())
-    assert any(s.name == "custom-skill-7" for s in vault.list_vaulted())
+def test_vault_preserves_more_than_six_equipped_skills_across_reload(tmp_path: Path):
+    skills_dir = tmp_path / "brain" / "skills"
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    for i in range(8):
+        name = f"unlimited-skill-{i}"
+        (skills_dir / f"{name}.json").write_text(
+            json.dumps(_make_domain_skill(name)), encoding="utf-8"
+        )
+
+    first = SkillVault(home=tmp_path)
+    second = SkillVault(home=tmp_path)
+
+    assert len(first.get_active_skills()) == 8
+    assert len(second.get_active_skills()) == 8
+    assert second.list_vaulted() == []
 
 
 def test_vault_cleans_legacy_builtins_from_state_file(tmp_path: Path):

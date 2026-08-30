@@ -23,7 +23,7 @@ class TaskType(str, Enum):
 
 class ResponseFormat(str, Enum):
     """Target presentation structure for response rendering."""
-    PROSE = "prose"   # 1-4 lines natural prose (default)
+    PROSE = "prose"   # Natural prose with task-adaptive length (default)
     LIST = "list"     # Bulleted/numbered list (only for >=3 items or sequential steps)
     TABLE = "table"   # Markdown table (only for multi-entity comparisons)
     CODE = "code"     # Prose introduction + fenced code snippet

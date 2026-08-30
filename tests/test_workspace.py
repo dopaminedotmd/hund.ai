@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 
+import hund.workspace as workspace_module
 from hund.workspace import (
     clear_workspace_cache,
     workspace_id,
@@ -89,11 +90,15 @@ def test_git_local_without_remote(tmp_path: Path) -> None:
     assert ws1 == ws2
 
 
-def test_non_git_directory(tmp_path: Path) -> None:
+def test_non_git_directory(tmp_path: Path, monkeypatch) -> None:
     clear_workspace_cache()
 
     dir_a = tmp_path / "plain_dir"
     dir_a.mkdir(parents=True)
+
+    # The test runner may place tmp_path under the repository itself.  Make
+    # the intended non-git condition explicit, independent of that layout.
+    monkeypatch.setattr(workspace_module, "_find_git_dir", lambda _path: None)
 
     ws1 = workspace_id(dir_a)
     assert ws1.startswith("ws_dir_")

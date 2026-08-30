@@ -11,7 +11,8 @@ def get_response_policy_rules(*, language: str = "sv") -> list[str]:
 
     if is_sv:
         return [
-            "Standardformatet är naturlig, kompakt prosa i 1-4 rader. Gör inte varje svar till en rapport.",
+            "Svara så kort som möjligt och så komplett som nödvändigt. Längden följer uppgiftens komplexitet och nyttig information.",
+            "Kortfattat betyder utan utfyllnad, upprepning, plattityder eller självklar återberättelse; utelämna inte relevant förklaring.",
             "Välj struktur i denna ordning: vanlig prosa först; korta stycken när ett ämne skiftar; lista först när relationerna verkligen behöver räknas eller jämföras.",
             "Använd punktlistor endast när innehållet faktiskt består av minst tre jämförbara saker, tydliga steg eller alternativ som blir lättare att skanna.",
             "Formatering är en förmåga, inte en husstil: använd rubriker, tabeller, fetstil och listor sparsamt och bara när strukturen tillför information.",
@@ -20,12 +21,15 @@ def get_response_policy_rules(*, language: str = "sv") -> list[str]:
             "Använd backticks (`kod`) för filnamn, kommandon, funktioner och tekniska termer.",
             "När kodsnuttar presenteras: introducera koden kort med 1 mening som förklarar varför den behövs och hur den används innan kodblocket visas.",
             "När verktyg (som write_file eller edit_file) skapar eller ändrar filer renderas koden och diffen automatiskt i aktivitetsfeeden. Hund behöver därför INTE upprepa hela källkoden i sin svarsbox, utan håller sitt svar rent, precist och i tredje person.",
+            "Vid flerstegsarbete: ange avsikt vid meningsfulla övergångar, men återberätta inte varje trivial läsning, aktivitetsrad eller verktygsutdata.",
+            "Besvara identitets-, syftes- och förmågefrågor direkt och avsluta sedan. Avsluta inte identitets- eller förmågesvar med att be användaren om en uppgift.",
             "Deklarera osäkerhet ärligt: om benchmark eller data är uppskattad eller saknas, märk den tydligt som en uppskattning.",
             "När användaren beskriver hur hen skriver eller vill att något ska se ut är det en spec att agera på och genomföra (uppdatera mallen, koden eller skillen), inte fakta att bekräfta eller fråga om lov för.",
         ]
 
     return [
-        "The standard response format is natural, concise prose in 1-4 lines. Do not turn every answer into a report.",
+        "As short as possible and as complete as necessary. Length follows task complexity and useful information.",
+        "Concise means no padding, repetition, platitudes, or obvious restatement; never omit relevant explanation.",
         "Choose structure in order: plain prose first; short paragraphs when a topic shifts; lists only when items genuinely need counting or step-by-step scanning.",
         "Use bullet lists only when content consists of at least three comparable items, sequential steps, or options that benefit from scanning.",
         "Formatting is an ability, not a house style: use headings, tables, bold text, and lists sparingly and only when structure adds clarity.",
@@ -34,6 +38,8 @@ def get_response_policy_rules(*, language: str = "sv") -> list[str]:
         "Use backticks (`code`) for filenames, commands, functions, and technical identifiers.",
         "When presenting code blocks: introduce the snippet with 1 sentence explaining its purpose and usage before showing it.",
         "When tools (like write_file or edit_file) create or modify files, code and diffs render automatically in the activity feed. Do not duplicate whole file content in the assistant response box.",
+        "During multi-step work, state intent at meaningful transitions without narrating every trivial read, activity item, or tool result.",
+        "Answer identity, purpose, and capability questions directly, then stop. Do not ask the user for a task as a routine closing.",
         "State uncertainty honestly: label benchmarks, estimates, or unverified claims explicitly as estimates.",
         "When the user describes how they write or want something to look, treat it as a specification to execute immediately (updating the template, code, or skill), not as idle facts to confirm or ask permission about.",
     ]
@@ -45,7 +51,11 @@ def render_advisory_directives(brief: TaskBrief, *, language: str = "sv") -> str
     directives: list[str] = []
 
     if brief.preferred_format == ResponseFormat.PROSE:
-        directives.append("Formatera som kompakt prosa (1-4 rader)." if is_sv else "Format as compact prose (1-4 lines).")
+        directives.append(
+            "Formatera som naturlig prosa med längd efter uppgiftens komplexitet."
+            if is_sv
+            else "Use natural prose whose length follows the task's complexity."
+        )
     elif brief.preferred_format == ResponseFormat.LIST:
         directives.append("Presentera som en kort, fokuserad lista." if is_sv else "Present as a short, focused list.")
     elif brief.preferred_format == ResponseFormat.TABLE:

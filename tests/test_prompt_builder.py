@@ -89,7 +89,7 @@ def test_web_rules_injected_into_prompt():
 def test_output_formatting_is_adaptive_not_bullet_default():
     prompt = build_system_prompt("P", _prof())
     low = prompt.lower()
-    assert "the standard response format is natural, concise prose" in low
+    assert "as short as possible and as complete as necessary" in low
     assert "use bullet lists only when" in low
     assert "formatting is an ability, not a house style" in low
     assert "plain prose first" in low

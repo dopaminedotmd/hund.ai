@@ -32,8 +32,10 @@ def test_safe_tool_runs_auto(tmp_path):
 
 def test_write_declined_noninteractive(tmp_path):
     register_defaults(tmp_path)
+    # Sensitive paths stay CONFIRM and decline in noninteractive mode; ordinary
+    # workspace writes are SAFE and auto-run (see test_write_file_policy).
     out = dispatch_tool_call(
-        _tc("write_file", '{"path": "x.txt", "content": "y"}'),
+        _tc("write_file", '{"path": ".env", "content": "y"}'),
         PermissionEngine(tmp_path),
         _console(),
         noninteractive=True,

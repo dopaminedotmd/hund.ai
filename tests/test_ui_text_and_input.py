@@ -400,7 +400,7 @@ def test_all_screens_have_standard_back_and_close_footer() -> None:
         (), False,
     )
     usage_snap = UsageSnapshot((), date(2026, 2, 1), today, None, SessionUsage(None, None, None))
-    skills_snap = SkillsSnapshot((), (), 8)
+    skills_snap = SkillsSnapshot((), ())
     tools_snap = ToolsSnapshot((), ())
 
     # Stats

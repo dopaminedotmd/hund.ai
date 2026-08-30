@@ -268,6 +268,19 @@ def register_defaults(workspace: Path) -> None:
         handler=manage_cron,
     ))
 
+    from ..desktop import make_desktop_handler
+
+    registry.register(registry.Tool(
+        name="create_desktop_shortcut",
+        description=(
+            "Create the Hund desktop shortcut (hund.lnk) that opens the Hund "
+            "Windows Terminal profile. Idempotent and safe to re-run."
+        ),
+        parameters={"type": "object", "properties": {}},
+        base_risk="confirm",
+        handler=make_desktop_handler(),
+    ))
+
     ui_metadata = {
         "read_file": ("Filesystem", "PermissionEngine classified"),
         "search_files": ("Filesystem", "PermissionEngine classified"),
@@ -282,6 +295,7 @@ def register_defaults(workspace: Path) -> None:
         "delegate_task": ("Agents", "Restricted child runtime"),
         "session_search": ("Memory", "Local read-only search"),
         "cronjob": ("Scheduling", "Confirmation gated"),
+        "create_desktop_shortcut": ("System", "Confirmation gated"),
     }
     for tool in registry.all_tools():
         metadata = ui_metadata.get(tool.name)
