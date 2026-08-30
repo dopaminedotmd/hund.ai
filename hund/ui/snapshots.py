@@ -76,7 +76,6 @@ class SkillProposalItem:
 class SkillsSnapshot:
     equipped: tuple[SkillItem, ...]
     parked: tuple[SkillItem, ...]
-    max_active: int
     proposals: tuple[SkillProposalItem, ...] = ()
 
 
@@ -251,20 +250,32 @@ def collect_skills(
     workspace: Path | str | None = None,
     include_proposals: bool = False,
 ) -> SkillsSnapshot:
-    from ..domains.xp import get_xp
+    from ..skills.projection import project_active_skill_xp
     from ..skills.vault import SkillVault
 
     vault = SkillVault(home=home)
+    equipped_skills = tuple(vault.get_active_skills(workspace=workspace))
+    projection_by_capability = {
+        row.capability_id: row
+        for row in project_active_skill_xp(
+            equipped_skills,
+            db_path=_home_db(home, "hund.db"),
+        )
+    }
 
     def convert(skill: Any) -> SkillItem:
-        xp = get_xp(skill.domain or skill.name, db_path=_home_db(home, "hund.db"))
+        projection = projection_by_capability.get(skill.capability_id)
         provenance = tuple(
             f"{ref.knowledge_id}@{ref.version}" for ref in skill.source_knowledge_refs
         ) + tuple(skill.created_from_event_ids)
         research = getattr(skill, "research_metadata", None)
         return SkillItem(
-            skill.name, skill.domain, int(xp["xp"]), int(xp["level"]),
-            str(xp["tier"]), int(xp["progress_pct"]), skill.lifecycle_state,
+            skill.name, skill.domain,
+            projection.total_xp if projection is not None else 0,
+            projection.level if projection is not None else 1,
+            projection.tier if projection is not None else "Novice",
+            projection.progress_percent if projection is not None else 0,
+            skill.lifecycle_state,
             skill.vault_state, tuple(skill.triggers), tuple(skill.required_tools),
             skill.safety_level, provenance, skill.when_to_use,
             skill.capability_id,
@@ -275,9 +286,7 @@ def collect_skills(
             tuple(getattr(research, "limitations", ()) or ()),
         )
 
-    equipped = tuple(
-        convert(skill) for skill in vault.get_active_skills(workspace=workspace)
-    )
+    equipped = tuple(convert(skill) for skill in equipped_skills)
     parked = tuple(
         convert(skill) for skill in vault.list_vaulted(workspace=workspace)
     )
@@ -299,7 +308,7 @@ def collect_skills(
                 proposal_states
             )
         )
-    return SkillsSnapshot(equipped, parked, vault.max_active, proposals)
+    return SkillsSnapshot(equipped, parked, proposals)
 
 
 def collect_tools() -> ToolsSnapshot:

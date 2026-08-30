@@ -59,6 +59,22 @@ def test_match_returns_max_top3_and_only_active(tmp_path):
     assert "dis" not in {h.name for h in hits}
 
 
+def test_match_requires_equipped_disposition_and_eligible_lifecycle():
+    equipped = _valid_skill(name="equipped", vault_state="equipped")
+    vaulted = _valid_skill(name="vaulted", vault_state="vaulted")
+    parked = _valid_skill(name="parked", vault_state="parked")
+    proven = _valid_skill(
+        name="proven", status="proven", lifecycle_state="proven", vault_state="equipped"
+    )
+    quarantined = _valid_skill(
+        name="quarantined", status="quarantined", lifecycle_state="quarantined", vault_state="equipped"
+    )
+
+    hits = match([equipped, vaulted, parked, proven, quarantined], "kör pytest")
+
+    assert [skill.name for skill in hits] == ["equipped", "proven"]
+
+
 def test_match_scores_higher_trigger_count_first():
     a = _valid_skill(name="a", triggers=("pytest",))
     b = _valid_skill(name="b", triggers=("pytest", "pyproject.toml"))

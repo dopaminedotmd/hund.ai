@@ -5,10 +5,10 @@ from pathlib import Path
 import shutil
 from typing import Any, Optional
 
-from ..domains.xp import get_xp
 from ..skills.loader import load_builtins
 from ..skills.model import Skill
 from ..skills.proficiency import SkillXPRecord
+from ..skills.projection import project_active_skill_xp
 from ..skills.vault import SkillVault
 from ..stats.tiers import render_bar
 
@@ -28,8 +28,8 @@ def render_skills_panel(
     """Render the 2-layer fullscreen skills panel per TUI_FACIT.md §12.
 
     Top layer: Motor skills (12 builtins, immutable, always on).
-    Middle layer: Equipped domain skills with XP bars, tiers, and levels.
-    Bottom layer: Vaulted/parked skills with slot capacity.
+    Middle layer: Equipped atomic skills with audited Skill-XP progression.
+    Bottom layer: Parked atomic skills without a proficiency projection.
     """
     term_cols = shutil.get_terminal_size((80, 24)).columns
     W = max(width if width is not None else min(term_cols, 80), 40)
@@ -50,8 +50,6 @@ def render_skills_panel(
         active_skills = vault.get_active_skills(workspace=workspace)
 
     vaulted_skills = vault.list_vaulted(workspace=workspace)
-    max_slots = vault.max_active
-    slot_info = f"[{len(active_skills)}/{max_slots} slots]"
 
     top = "╔" + "═" * (W - 2) + "╗"
     bottom = "╚" + "═" * (W - 2) + "╝"
@@ -65,8 +63,7 @@ def render_skills_panel(
 
     # Title header line
     header_left = "SKILLS"
-    header_line = f"{header_left}{' ' * max(inner_w - len(header_left) - len(slot_info), 2)}{slot_info}"
-    lines.append(row(header_line))
+    lines.append(row(header_left))
     lines.append(empty)
 
     # Section 1: Motor Skills (Always on, immutable)
@@ -85,7 +82,7 @@ def render_skills_panel(
     lines.append(empty)
 
     # Section 2: Domain Skills (Equipped)
-    sec2_title = "── DOMAIN SKILLS · equipped "
+    sec2_title = "── ACTIVE SKILLS · equipped · Skill XP "
     sec2_dashes = inner_w - len(sec2_title)
     lines.append(row(f"{sec2_title}{'─' * max(sec2_dashes, 2)}"))
 
@@ -93,17 +90,13 @@ def render_skills_panel(
         lines.append(row("(no domain skills equipped — use /skills equip <name>)"))
     else:
         bar_w = 8 if W < 80 else 10
-        for s in active_skills:
-            dom = s.domain or s.name
-            xp_info = get_xp(dom, db_path=db_path)
-            tier = xp_info["tier"]
-            lvl = xp_info["level"]
-            pct = xp_info["progress_pct"]
-            bar = render_bar(pct, width=bar_w)
-
-            # Format row
-            name_col = _truncate_pad(s.name, 18)
-            row_str = f"{name_col} {bar}  {tier:<8} {pct:>3}%  (Lvl {lvl})"
+        for projection in project_active_skill_xp(active_skills, db_path=db_path):
+            bar = render_bar(projection.progress_percent, width=bar_w)
+            name_col = _truncate_pad(projection.display_name, 18)
+            row_str = (
+                f"{name_col} {bar}  {projection.total_xp} Skill XP  "
+                f"(Lvl {projection.level})"
+            )
             lines.append(row(row_str))
 
     lines.append(empty)
@@ -116,13 +109,9 @@ def render_skills_panel(
     if not vaulted_skills:
         lines.append(row("(vault is empty — all custom skills equipped)"))
     else:
-        for s in vaulted_skills:
-            dom = s.domain or s.name
-            xp_info = get_xp(dom, db_path=db_path)
-            tier = xp_info["tier"]
-            lvl = xp_info["level"]
-            name_col = _truncate_pad(s.name, 18)
-            row_str = f"{name_col} {tier:<8} (Lvl {lvl})                       [equip]"
+        for skill in vaulted_skills:
+            name_col = _truncate_pad(skill.name, 18)
+            row_str = f"{name_col} parked                                      [equip]"
             lines.append(row(row_str))
 
     lines.append(empty)
@@ -169,9 +158,6 @@ def render_skill_detail(
         return f"Skill '{skill_name}' not found."
 
     is_motor = skill.name in motor_map
-    dom = skill.domain or skill.name
-    xp_info = get_xp(dom, db_path=db_path)
-
     top = "╔" + "═" * (W - 2) + "╗"
     bottom = "╚" + "═" * (W - 2) + "╝"
     empty = "║" + " " * (W - 2) + "║"
@@ -195,9 +181,19 @@ def render_skill_detail(
     _add_field("Status", skill.status or ("active" if is_motor else "vaulted"))
     _add_field("Safety Level", str(getattr(skill, "safety_level", "low")))
 
-    # XP & Progression
-    bar = render_bar(xp_info["progress_pct"], width=12)
-    xp_str = f"{bar}  {xp_info['tier']} ({xp_info['progress_pct']}%) · {xp_info['xp']} XP Total (Level {xp_info['level']})"
+    # Atomic-skill proficiency may only use the audited Skill-XP projection.
+    projection = project_active_skill_xp((skill,), db_path=db_path)
+    if projection:
+        skill_xp = projection[0]
+        bar = render_bar(skill_xp.progress_percent, width=12)
+        xp_str = (
+            f"{bar}  {skill_xp.total_xp} Skill XP · {skill_xp.tier} "
+            f"({skill_xp.progress_percent}%) · Level {skill_xp.level}"
+        )
+    elif is_motor:
+        xp_str = "Motor instinct — not tracked in Skill XP"
+    else:
+        xp_str = "Not equipped — Skill XP projection unavailable"
     _add_field("Mastery / XP", xp_str)
 
     # Dependencies & Tools

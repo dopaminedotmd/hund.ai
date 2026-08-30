@@ -1,12 +1,4 @@
-"""Tool dispatch — säkerhetscirkeln kring varje tool-anrop.
-
-Flöde per tool_call:
-  1. PermissionEngine.classify(tool, args)
-  2. BLOCKED  -> alltid nekad (aldrig fråga, aldrig kör)
-  3. SAFE     -> auto-tillåten (kan stängas av)
-  4. annat    -> fråga användare; nej = declined
-  5. approved  -> kör handler, returnera resultat
-"""
+"""Dispatch every tool call through the central safety boundary."""
 from __future__ import annotations
 
 import json
@@ -22,38 +14,42 @@ from .types import ConfirmRequest, ConfirmResponse, ConfirmVerdict, normalize_co
 from ..trace.events import create_event, write_event
 
 class SessionAllowlist:
-    """Per-session tool allowlist. Thread-safe via dict isolation.
-
-    SECURITY: prevents cross-session and cross-thread allowlist leakage.
-    A tool approved in session A must never be auto-approved in session B.
-    """
+    """Store narrowly scoped policy approvals for one live session."""
 
     def __init__(self) -> None:
-        self._allowed: dict[str, set[str]] = {}
+        self._allowed: dict[str, set[tuple[str, str]]] = {}
 
-    def is_allowed(self, session_id: str | None, tool: str) -> bool:
-        sid = session_id or "_default"
-        return tool in self._allowed.get(sid, set())
+    def is_allowed(
+        self, session_id: str | None, tool: str, policy_id: str | None
+    ) -> bool:
+        if not session_id or not policy_id:
+            return False
+        return (tool, policy_id) in self._allowed.get(session_id, set())
 
-    def allow(self, session_id: str | None, tool: str) -> None:
-        sid = session_id or "_default"
-        self._allowed.setdefault(sid, set()).add(tool)
+    def allow(
+        self, session_id: str | None, tool: str, decision: Decision
+    ) -> bool:
+        if (
+            not session_id
+            or decision.risk is not RiskLevel.CONFIRM
+            or not decision.policy_id
+            or not decision.session_allowable
+        ):
+            return False
+        self._allowed.setdefault(session_id, set()).add((tool, decision.policy_id))
+        return True
 
     def clear_session(self, session_id: str | None) -> None:
-        sid = session_id or "_default"
-        self._allowed.pop(sid, None)
+        if session_id:
+            self._allowed.pop(session_id, None)
 
     def clear(self) -> None:
         """Clear all sessions (for test fixtures / resets)."""
         self._allowed.clear()
 
-    def add(self, tool: str) -> None:
-        """Backward compatibility for set-like interface."""
-        self.allow(None, tool)
-
     def __contains__(self, tool: str) -> bool:
-        """Check if tool is allowed in default session or any session."""
-        return any(tool in tools for tools in self._allowed.values())
+        """Support diagnostic membership checks without broadening scope."""
+        return any(any(entry_tool == tool for entry_tool, _ in entries) for entries in self._allowed.values())
 
 
 _SESSION_ALLOWLIST = SessionAllowlist()
@@ -145,13 +141,19 @@ def dispatch_tool_call(
         "reason": decision.reason
     }, risk_level=decision.risk.value)
 
-    # Session-allowlist: hoppa over confirm for tidigare tillatna tools
+    # A session grant only applies to the exact policy category that was approved.
     if (
-        name == "terminal"
-        and decision.risk == RiskLevel.CONFIRM
-        and _SESSION_ALLOWLIST.is_allowed(session_id, name)
+        decision.risk is RiskLevel.CONFIRM
+        and decision.session_allowable
+        and _SESSION_ALLOWLIST.is_allowed(session_id, name, decision.policy_id)
     ):
-        decision = Decision(RiskLevel.SAFE, allowed=True, reason="session-allowlisted")
+        decision = Decision(
+            RiskLevel.SAFE,
+            allowed=True,
+            reason="Approved policy category for this session",
+            policy_id=decision.policy_id,
+            session_allowable=False,
+        )
 
     if decision.risk is RiskLevel.BLOCKED:
         _emit("tool_call_blocked", {"reason": decision.reason}, risk_level=decision.risk.value)
@@ -238,7 +240,14 @@ def dispatch_tool_call(
                 console.print(f"[yellow]DECLINED[/yellow] (noninteractive) {name} {args}")
             return f"[declined: {reason}]"
 
-        request = ConfirmRequest(tool_name=name, args=args, risk=decision.risk.value)
+        request = ConfirmRequest(
+            tool_name=name,
+            args=args,
+            risk=decision.risk.value,
+            reason=decision.reason,
+            policy_id=decision.policy_id or "",
+            session_allowable=decision.session_allowable,
+        )
 
         if hooks is not None:
             response = normalize_confirm_response(hooks.confirm(request))
@@ -302,10 +311,8 @@ def dispatch_tool_call(
 
         if (
             verdict is ConfirmVerdict.ALLOW_SESSION
-            and name == "terminal"
-            and decision.risk == RiskLevel.CONFIRM
         ):
-            _SESSION_ALLOWLIST.allow(session_id, name)
+            _SESSION_ALLOWLIST.allow(session_id, name, decision)
 
     if publication_binding is not None:
         pub_session_id, pub_auth_id, pub_hash = publication_binding

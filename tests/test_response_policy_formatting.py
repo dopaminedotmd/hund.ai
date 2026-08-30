@@ -16,7 +16,8 @@ def test_get_response_policy_rules_swedish_and_english() -> None:
     """Verify response policy rules in both languages."""
     rules_sv = get_response_policy_rules(language="sv")
     assert len(rules_sv) >= 8
-    assert any("kompakt prosa i 1-4 rader" in r for r in rules_sv)
+    assert any("så kort som möjligt och så komplett som nödvändigt" in r.lower() for r in rules_sv)
+    assert any("avsluta inte identitets-" in r.lower() for r in rules_sv)
     assert any("punktlistor endast när innehållet faktiskt består av minst tre" in r for r in rules_sv)
     assert any("introducera koden kort med 1 mening" in r for r in rules_sv)
     assert any("renderas koden och diffen automatiskt i aktivitetsfeeden" in r for r in rules_sv)
@@ -25,7 +26,8 @@ def test_get_response_policy_rules_swedish_and_english() -> None:
 
     rules_en = get_response_policy_rules(language="en")
     assert len(rules_en) >= 8
-    assert any("concise prose in 1-4 lines" in r for r in rules_en)
+    assert any("as short as possible and as complete as necessary" in r.lower() for r in rules_en)
+    assert any("do not ask the user for a task" in r.lower() for r in rules_en)
     assert any("introduce the snippet with 1 sentence" in r for r in rules_en)
     assert any("treat it as a specification to execute immediately" in r for r in rules_en)
 
@@ -41,7 +43,7 @@ def test_render_advisory_directives() -> None:
         preferred_format=ResponseFormat.PROSE,
     )
     res_prose = render_advisory_directives(brief_prose, language="sv")
-    assert "Formatera som kompakt prosa (1-4 rader)." in res_prose
+    assert "Formatera som naturlig prosa med längd efter uppgiftens komplexitet." in res_prose
 
     # Recommendation brief
     brief_rec = TaskBrief(
@@ -77,7 +79,9 @@ def test_prompt_builder_consumes_response_policy_rules() -> None:
     )
     prompt = build_system_prompt("Hund test persona.", profile)
     assert "## Output-formatering och visuell hierarki i terminalen" in prompt
-    assert "The standard response format is natural, concise prose in 1-4 lines." in prompt
+    assert "As short as possible and as complete as necessary." in prompt
+    assert "Do not ask the user for a task" in prompt
+    assert "1-4 lines" not in prompt
     assert "introduce the snippet with 1 sentence" in prompt
     # Invariant: system prompt canonical rules are English, not hardcoded Swedish
-    assert "Standardformatet är naturlig, kompakt prosa" not in prompt
+    assert "så kort som möjligt" not in prompt.lower()

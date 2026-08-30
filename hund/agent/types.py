@@ -32,6 +32,9 @@ class ConfirmRequest:
     tool_name: str
     args: dict[str, Any] = field(default_factory=dict)
     risk: str = "confirm"
+    reason: str = "Approval required"
+    policy_id: str = ""
+    session_allowable: bool = False
 
 
 @dataclass(frozen=True)

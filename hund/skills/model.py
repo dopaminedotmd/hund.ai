@@ -29,8 +29,6 @@ VAULT_STATES = frozenset({"equipped", "parked", "vaulted"})
 # Compatibility export used by the validator.
 STATUSES = LIFECYCLE_STATES
 
-MAX_ACTIVE_SKILLS = 6
-
 # Verktyg/handlingar som en skill ALDRIG får kräva eller tillåta — dessa är TCB.
 BANNED_ACTIONS = frozenset(
     {"self_update", "apply_update", "modify_tcb", "elevate_permissions"}

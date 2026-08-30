@@ -1,6 +1,7 @@
 """hund doctor — hardware/environment profiler and read-only diagnostic checks."""
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
@@ -124,12 +125,31 @@ def _powershell(script: str) -> str:
         return ""
 
 
-def _detect_os_caption() -> str:
-    return _powershell("(Get-CimInstance Win32_OperatingSystem).Caption")
+_SYSTEM_PROBE_SCRIPT = (
+    "$os = Get-CimInstance Win32_OperatingSystem;"
+    "$cs = Get-CimInstance Win32_ComputerSystem;"
+    "$gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object {"
+    " [pscustomobject]@{ adapterRAM = $_.AdapterRAM; name = $_.Name }"
+    "});"
+    "[pscustomobject]@{"
+    " caption = $os.Caption;"
+    " arch = $os.OSArchitecture;"
+    " ram_bytes = $cs.TotalPhysicalMemory;"
+    " gpus = $gpus"
+    "} | ConvertTo-Json -Compress"
+)
 
 
-def _detect_os_arch() -> str:
-    return _powershell("(Get-CimInstance Win32_OperatingSystem).OSArchitecture")
+def probe_system() -> dict[str, Any]:
+    """One PowerShell round trip: OS caption/arch, RAM bytes and WMI GPUs as JSON."""
+    raw = _powershell(_SYSTEM_PROBE_SCRIPT)
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def parse_nvidia_smi_output(raw: str) -> tuple[str, int]:
@@ -180,7 +200,7 @@ def parse_wmi_gpu_output(raw: str) -> tuple[str, int]:
     return best_name, best_vram
 
 
-def _detect_gpu() -> tuple[str, int]:
+def _detect_gpu(wmi_gpus: list[dict[str, Any]] | None = None) -> tuple[str, int]:
     """Return (model name, VRAM in MB) prioritizing true discrete GPU hardware VRAM."""
     # 1. Try nvidia-smi first (exact hardware VRAM, immune to 32-bit WMI wrap-around)
     if _which("nvidia-smi"):
@@ -196,22 +216,15 @@ def _detect_gpu() -> tuple[str, int]:
         except Exception:
             pass
 
-    # 2. Fallback to CIM/WMI
-    raw = _powershell(
-        'Get-CimInstance Win32_VideoController | ForEach-Object { "{0}|{1}" -f $_.AdapterRAM, $_.Name }'
-    )
-    return parse_wmi_gpu_output(raw)
-
-
-def _detect_ram_gb() -> float:
-    """Total RAM in GB."""
-    raw = _powershell("(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory")
-    if not raw:
-        return 0.0
-    try:
-        return int(raw) / (1024 ** 3)
-    except (ValueError, TypeError):
-        return 0.0
+    # 2. Fallback to WMI GPU data from the single system probe.
+    if wmi_gpus:
+        raw = "\n".join(
+            f"{gpu.get('adapterRAM') or 0}|{gpu.get('name') or ''}"
+            for gpu in wmi_gpus
+            if isinstance(gpu, dict)
+        )
+        return parse_wmi_gpu_output(raw)
+    return "", 0
 
 
 def _detect_cpu_name() -> str:
@@ -255,20 +268,29 @@ def profile_environment(workspace: Path | None = None) -> EnvironmentProfile:
     """Detektera verklig miljö — inklusive GPU, RAM, hostname, OS-detaljer."""
     from .paths import hund_home
 
-    gpu_model, gpu_vram = _detect_gpu()
+    sysinfo = probe_system()
+    gpus = sysinfo.get("gpus") or []
+    if not isinstance(gpus, list):
+        gpus = []
+    gpu_model, gpu_vram = _detect_gpu(wmi_gpus=gpus)
+
+    try:
+        total_ram_gb = float(sysinfo.get("ram_bytes") or 0) / (1024 ** 3)
+    except (ValueError, TypeError):
+        total_ram_gb = 0.0
 
     prof = EnvironmentProfile(
         os=platform.system(),
         os_version=platform.version(),
-        os_caption=_detect_os_caption(),
-        os_arch=_detect_os_arch(),
+        os_caption=str(sysinfo.get("caption") or ""),
+        os_arch=str(sysinfo.get("arch") or ""),
         machine=platform.machine(),
         processor=_detect_cpu_name(),
         cpu_count=os.cpu_count(),
         hostname=_detect_hostname(),
         gpu_model=gpu_model,
         gpu_vram_mb=gpu_vram,
-        total_ram_gb=_detect_ram_gb(),
+        total_ram_gb=total_ram_gb,
         python_impl=platform.python_implementation(),
         shell=os.environ.get("SHELL", "")
         or ("powershell" if os.name == "nt" else "bash"),

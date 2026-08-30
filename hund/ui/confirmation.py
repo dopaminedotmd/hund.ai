@@ -11,7 +11,7 @@ _POLICY: dict[str, tuple[tuple[ConfirmVerdict, str], ...]] = {
     "terminal": (
         (ConfirmVerdict.APPROVE_ONCE, "Run once"),
         (ConfirmVerdict.EDIT, "Edit command"),
-        (ConfirmVerdict.ALLOW_SESSION, "Allow terminal for this session"),
+        (ConfirmVerdict.ALLOW_SESSION, "Allow this action type for this session"),
         (ConfirmVerdict.DENY, "Deny"),
     ),
     "write_file": (
@@ -49,15 +49,20 @@ _EDITABLE_FIELDS: dict[str, tuple[str, ...]] = {
 }
 
 
-def confirmation_options(tool_name: str) -> tuple[tuple[ConfirmVerdict, str], ...]:
+def confirmation_options(
+    tool_name: str, *, session_allowable: bool = True
+) -> tuple[tuple[ConfirmVerdict, str], ...]:
     """Return the canonical choices, in display order, for a tool."""
-    return _POLICY.get(
+    options = _POLICY.get(
         tool_name,
         (
             (ConfirmVerdict.APPROVE_ONCE, "Allow once"),
             (ConfirmVerdict.DENY, "Deny"),
         ),
     )
+    if session_allowable:
+        return options
+    return tuple(option for option in options if option[0] is not ConfirmVerdict.ALLOW_SESSION)
 
 
 def editable_fields(tool_name: str) -> tuple[str, ...]:
@@ -95,4 +100,3 @@ def prompt_edits(request: Any, input_fn: Any = input) -> dict[str, Any] | None:
     except (EOFError, KeyboardInterrupt):
         return None
     return edited_argument_copy(request.tool_name, request.args, updates)
-

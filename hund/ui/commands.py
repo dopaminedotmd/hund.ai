@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from typing import Any
+from typing import Any, Callable
 
 from rich.console import Console
 from rich.table import Table
@@ -34,6 +34,7 @@ class CommandContext:
     console: Console
     rt: Any                 # _init_runtime() SimpleNamespace
     state: PromptState
+    clear_screen: Callable[[], str | None] | None = None
 
 
 def is_slash(user_input: str) -> bool:
@@ -344,7 +345,12 @@ def cmd_tools(ctx: CommandContext, args: list[str]) -> None:
 
 
 def cmd_clear(ctx: CommandContext, args: list[str]) -> None:
-    ctx.console.clear()
+    if ctx.clear_screen is None:
+        ctx.console.clear()
+        return
+    notice = ctx.clear_screen()
+    if notice:
+        ctx.console.print(f"[dim]{notice}[/dim]")
 
 
 def cmd_history(ctx: CommandContext, args: list[str]) -> None:

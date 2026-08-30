@@ -1,8 +1,8 @@
-"""Skill Vault — manages active capacity (max 6 slots) vs vaulted domain skills with scoped state schema v2.
+"""Skill Vault — manages explicit atomic-skill disposition with scoped state schema v2.
 
 Persists active and vaulted domain skill states to HundHome/brain/skill_state.json.
 Constitutional builtins (12 core instincts) are always active in background
-and never consume domain inventory slots.
+and never consume domain inventory capacity.
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from .loader import (
     load_skills,
     skills_dir,
 )
-from .model import MAX_ACTIVE_SKILLS, Skill
+from .model import Skill
 from .scope import ScopedSkillId, compute_workspace_key
 
 # Default domain skills active on fresh install
@@ -54,9 +54,9 @@ def _fsync_replace(src: Path, dst: Path, max_retries: int = 5) -> None:
 class SkillVault:
     def __init__(self, home: Optional[Path] = None, max_active: Optional[int] = None) -> None:
         self.home = home
-        self.max_active = max_active or int(
-            os.environ.get("HUND_MAX_ACTIVE_SKILLS", str(MAX_ACTIVE_SKILLS))
-        )
+        # Compatibility-only display hint for paused legacy renderers. It does
+        # not constrain inventory, migration, sync, or runtime eligibility.
+        self.max_active = max_active or 6
         self._state_file = self._resolve_state_path()
         self._migrate_and_sync()
 
@@ -100,12 +100,10 @@ class SkillVault:
     def _recover_corrupt_state(self) -> dict[str, Any]:
         domain_skills = load_domain_skills(self.home)
         entries = []
-        equipped_count = 0
         for s in domain_skills:
-            vault_state = "vaulted"
-            if s.lifecycle_state in ("active", "proven") and equipped_count < self.max_active:
-                vault_state = "equipped"
-                equipped_count += 1
+            vault_state = (
+                "equipped" if s.lifecycle_state in ("active", "proven") else "vaulted"
+            )
             entries.append({
                 "scope_key": s.scope if s.scope != "project" else "global",
                 "capability_id": s.capability_id or f"{s.domain}/{s.name}",
@@ -237,15 +235,6 @@ class SkillVault:
                 }
                 entries.append(new_entry)
                 entries_by_key[key] = new_entry
-
-        # Enforce max active capacity per scope without evicting pinned skills
-        equipped_entries = [e for e in entries if e.get("vault_state") == "equipped" and e.get("scope_key") == workspace_key]
-        if len(equipped_entries) > self.max_active:
-            # Demote unpinned first
-            for e in reversed(equipped_entries):
-                if not e.get("pinned", False) and len(equipped_entries) > self.max_active:
-                    e["vault_state"] = "vaulted"
-                    equipped_entries.remove(e)
 
         self._save_raw_state({"schema_version": 2, "entries": entries})
 
@@ -382,32 +371,11 @@ class SkillVault:
             entries.append(matched_entry)
 
         if matched_entry.get("vault_state") == "equipped":
-            active_count = sum(
-                1
-                for e in entries
-                if e.get("vault_state") == "equipped"
-                and e.get("scope_key", "global") == scope_key
-            )
-            return False, f"Domain skill '{target_name}' is already equipped ({active_count}/{self.max_active} active)."
-
-        active_count = sum(
-            1
-            for e in entries
-            if e.get("vault_state") == "equipped"
-            and e.get("scope_key", "global") == scope_key
-        )
-        if active_count >= self.max_active:
-            return False, f"Active skill capacity reached ({active_count}/{self.max_active}). Park or swap a skill first."
+            return False, f"Domain skill '{target_name}' is already equipped."
 
         matched_entry["vault_state"] = "equipped"
         self._save_raw_state({"schema_version": 2, "entries": entries})
-        new_active = sum(
-            1
-            for e in entries
-            if e.get("vault_state") == "equipped"
-            and e.get("scope_key", "global") == scope_key
-        )
-        return True, f"Equipped '{target_name}'. ({new_active}/{self.max_active} slots active)"
+        return True, f"Equipped '{target_name}'."
 
     def park(
         self,
@@ -457,13 +425,7 @@ class SkillVault:
 
         matched_entry["vault_state"] = "vaulted"
         self._save_raw_state({"schema_version": 2, "entries": entries})
-        active_count = sum(
-            1
-            for e in entries
-            if e.get("vault_state") == "equipped"
-            and e.get("scope_key", "global") == scope_key
-        )
-        return True, f"Parked '{target_name}' into vault. ({active_count}/{self.max_active} slots active)"
+        return True, f"Parked '{target_name}' into vault."
 
     def swap(
         self,

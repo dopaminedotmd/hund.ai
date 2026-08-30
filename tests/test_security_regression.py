@@ -18,7 +18,7 @@ import pytest
 from rich.console import Console
 from unittest.mock import MagicMock
 
-from hund.agent.safety import PermissionEngine, RiskLevel, TCB_FILES
+from hund.agent.safety import Decision, PermissionEngine, RiskLevel, TCB_FILES
 from hund.agent.tool_dispatch import SessionAllowlist, _SESSION_ALLOWLIST
 from hund.agent.rpc import serve_rpc
 from hund.agent.context import compress_llm
@@ -35,21 +35,37 @@ class TestSessionAllowlist:
     def test_different_sessions_isolated(self):
         """Tool allowed in session A must NOT be auto-allowed in session B."""
         al = SessionAllowlist()
-        al.allow("session-A", "terminal")
-        assert al.is_allowed("session-A", "terminal") is True
-        assert al.is_allowed("session-B", "terminal") is False
+        decision = Decision(RiskLevel.CONFIRM, False, "remote mutation", "terminal.git_push", True)
+        assert al.allow("session-A", "terminal", decision) is True
+        assert al.is_allowed("session-A", "terminal", "terminal.git_push") is True
+        assert al.is_allowed("session-B", "terminal", "terminal.git_push") is False
 
     def test_unallowed_tool_not_allowed(self):
         al = SessionAllowlist()
-        al.allow("session-A", "terminal")
-        assert al.is_allowed("session-A", "delete_file") is False
-        assert al.is_allowed("session-B", "terminal") is False
+        decision = Decision(RiskLevel.CONFIRM, False, "remote mutation", "terminal.git_push", True)
+        assert al.allow("session-A", "terminal", decision) is True
+        assert al.is_allowed("session-A", "delete_file", "terminal.git_push") is False
+        assert al.is_allowed("session-A", "terminal", "terminal.package_install") is False
 
     def test_clear_session_removes_entries(self):
         al = SessionAllowlist()
-        al.allow("s1", "terminal")
+        decision = Decision(RiskLevel.CONFIRM, False, "remote mutation", "terminal.git_push", True)
+        assert al.allow("s1", "terminal", decision) is True
         al.clear_session("s1")
-        assert al.is_allowed("s1", "terminal") is False
+        assert al.is_allowed("s1", "terminal", "terminal.git_push") is False
+
+    @pytest.mark.parametrize(
+        "session_id,decision",
+        [
+            (None, Decision(RiskLevel.CONFIRM, False, "remote mutation", "terminal.git_push", True)),
+            ("s1", Decision(RiskLevel.CONFIRM, False, "unknown", "terminal.unknown", False)),
+            ("s1", Decision(RiskLevel.DANGEROUS, False, "destructive", "terminal.delete", True)),
+        ],
+    )
+    def test_invalid_scope_is_rejected(self, session_id, decision):
+        al = SessionAllowlist()
+        assert al.allow(session_id, "terminal", decision) is False
+        assert not al.is_allowed(session_id, "terminal", decision.policy_id)
 
     def test_global_instance_is_session_allowlist(self):
         """The module-level instance must be the new SessionAllowlist, not a plain set."""

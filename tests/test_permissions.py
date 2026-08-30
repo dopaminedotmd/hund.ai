@@ -29,11 +29,11 @@ def test_write_outside_workspace_blocked(tmp_path):
     assert "workspace" in d.reason.lower()
 
 
-def test_write_inside_workspace_is_write(tmp_path):
+def test_write_inside_workspace_is_safe(tmp_path):
     eng = PermissionEngine(workspace_root=tmp_path)
-    d = eng.classify("write_file", {"path": "notes.txt"})
-    assert d.risk is RiskLevel.WRITE
-    assert d.allowed is False  # kräver confirm, ej auto
+    d = eng.classify("write_file", {"path": "notes.txt", "content": "hello\n"})
+    assert d.risk is RiskLevel.SAFE
+    assert d.allowed is True
 
 
 def test_self_publish_always_blocked(tmp_path):

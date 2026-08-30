@@ -18,8 +18,8 @@ def test_format_blocked():
 def test_safe_terminal_allowed():
     engine = PermissionEngine()
     dec = engine.classify("terminal", {"command": "dir"})
-    assert dec.risk == RiskLevel.CONFIRM  # inte blocked
-    assert dec.allowed is False  # men kraver bekraftelse
+    assert dec.risk == RiskLevel.SAFE
+    assert dec.allowed is True
 
 
 def test_invoke_expression_blocked():

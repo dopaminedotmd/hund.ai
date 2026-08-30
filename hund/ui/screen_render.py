@@ -204,7 +204,7 @@ def skills_lines(snapshot: SkillsSnapshot, width: int, selected: int) -> list[st
     all_skills = snapshot.equipped + snapshot.parked
     inner_w = max(width - 5, 16)
     lines = ["", _section(
-        f"EQUIPPED SKILLS ({len(snapshot.equipped)}/{snapshot.max_active})",
+        f"EQUIPPED SKILLS ({len(snapshot.equipped)})",
         inner_w,
     )]
     if snapshot.equipped:
@@ -307,7 +307,7 @@ def render_skills(
 
     return fullscreen_frame(
         "SKILLS", lines, width=width, height=height,
-        meta=f"[{len(snapshot.equipped)}/{snapshot.max_active} slots]",
+        meta=f"[{len(snapshot.equipped)} equipped]",
         footer=footer, scroll=scroll, ascii_only=ascii_only,
     )
 

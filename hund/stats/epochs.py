@@ -80,3 +80,53 @@ def advance_epoch(db_path: Path | str | None = None) -> tuple[int, str]:
     now = datetime.now(timezone.utc).isoformat()
     set_epoch(new_epoch, now, db_path=db_path)
     return new_epoch, now
+
+
+def get_stat_algorithm_boundary(
+    stat_name: str,
+    algorithm_version: str,
+    db_path: Path | str | None = None,
+) -> str:
+    """Return an idempotent start timestamp for a versioned stat algorithm.
+
+    A missing or changed version starts a new non-destructive evidence window.
+    Existing telemetry remains stored and is excluded by the returned boundary.
+    """
+    if not stat_name or not algorithm_version:
+        raise ValueError("Stat name and algorithm version must be non-empty")
+
+    _ensure_stats_meta_table(db_path)
+    version_key = f"{stat_name}_algorithm"
+    started_key = f"{stat_name}_started_at"
+    conn = connect(db_path)
+    try:
+        stored_version = conn.execute(
+            f"SELECT value FROM {STATS_META_TABLE} WHERE key = ?",
+            (version_key,),
+        ).fetchone()
+        stored_started_at = conn.execute(
+            f"SELECT value FROM {STATS_META_TABLE} WHERE key = ?",
+            (started_key,),
+        ).fetchone()
+        if (
+            stored_version
+            and stored_version[0] == algorithm_version
+            and stored_started_at
+        ):
+            return str(stored_started_at[0])
+
+        started_at = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            f"""INSERT INTO {STATS_META_TABLE} (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (version_key, algorithm_version),
+        )
+        conn.execute(
+            f"""INSERT INTO {STATS_META_TABLE} (key, value) VALUES (?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (started_key, started_at),
+        )
+        conn.commit()
+        return started_at
+    finally:
+        conn.close()

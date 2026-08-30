@@ -1,7 +1,4 @@
-"""Skill-matcher — poängsätt skills mot fritext, returnera top-K.
-
-Enkel trigger-overlap (inte tung semantik). Endast aktiva skills matchas.
-"""
+"""Skill matcher — score equipped, lifecycle-eligible skills against text."""
 from __future__ import annotations
 
 from .model import Skill
@@ -17,7 +14,7 @@ def match(skills: list[Skill], text: str, *, top_k: int = 3) -> list[Skill]:
     scored = [
         (score(s, text), s)
         for s in skills
-        if s.status == "active"
+        if s.lifecycle_state in {"active", "proven"} and s.vault_state == "equipped"
     ]
     scored = [(p, s) for p, s in scored if p > 0]
     scored.sort(key=lambda ps: (-ps[0], ps[1].name))
