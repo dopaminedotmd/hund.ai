@@ -74,9 +74,11 @@ def register_defaults(workspace: Path) -> None:
     registry.register(registry.Tool(
         name="create_skill",
         description=(
-            "Publish the exact declarative Hund skill accepted in the active "
-            "Shaping, Quality, and Ready authoring flow. Requires the complete "
-            "skill payload and its single-use publication authorization."
+            "Publish a Hund skill from the current chat. Provide the complete "
+            "schema_version 1 skill object. User confirmation in the chat is "
+            "the authorization; no external authorization token is needed. "
+            "session_id/authorization_id/payload_hash belong to the UI "
+            "stepper flow only and should be omitted from chat calls."
         ),
         parameters={
             "type": "object",
@@ -90,13 +92,10 @@ def register_defaults(workspace: Path) -> None:
                 },
                 "skill": {
                     "type": "object",
-                    "description": "Exact complete skill payload shown in the accepted Ready draft.",
+                    "description": "Complete schema_version 1 skill payload.",
                 },
             },
-            "required": [
-                "session_id", "authorization_id", "payload_hash",
-                "desired_disposition", "skill",
-            ],
+            "required": ["skill"],
         },
         base_risk="confirm",
         handler=skill_handler(workspace_path=workspace),
