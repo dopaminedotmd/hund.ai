@@ -273,9 +273,14 @@ def test_tcb_dispatch_direct_chat_skill_noninteractive_writes_nothing(
     assert SkillVault().find_skill("noninteractive-direct-chat", workspace=tmp_path) is None
 
 
-def test_tcb_dispatch_active_authoring_without_binding_stays_declined(tmp_path: Path):
+def test_tcb_dispatch_active_authoring_chat_call_confirmation_is_authorization(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from hund.skills.vault import SkillVault
     from hund.tools.default_tools import register_defaults
 
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     register_defaults(tmp_path)
     registry = get_authoring_registry()
     registry.clear()
@@ -315,8 +320,11 @@ def test_tcb_dispatch_active_authoring_without_binding_stays_declined(tmp_path: 
         session_id=context.session_id,
     )
 
-    assert "unconfirmed or modified skill payload" in result
-    assert hooks.confirmed_calls == []
+    # Chat confirmation IS the authorization (BYGGE_7): the confirm modal
+    # fires and approval publishes the skill without any stepper-issued token.
+    assert len(hooks.confirmed_calls) == 1
+    assert not result.startswith("[declined")
+    assert SkillVault().find_skill("active-without-binding", workspace=tmp_path) is not None
 
 
 def test_tcb_dispatch_terminal_authoring_session_can_use_standard_confirmation(

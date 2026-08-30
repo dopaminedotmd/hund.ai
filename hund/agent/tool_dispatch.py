@@ -194,16 +194,16 @@ def dispatch_tool_call(
         auth = auth_session.publication_authorization if auth_session is not None else None
         requested_scope = str(skill_payload.get("scope", "global")) if isinstance(skill_payload, dict) else ""
         requested_disposition = str(args.get("desired_disposition", "auto"))
+        # Chat calls carry no pre-minted authorization: the user's approval
+        # (confirm modal) IS the authorization. The exact-draft gate applies
+        # only to calls that claim a stepper-issued authorization token
+        # (replay/tamper protection stays hard for that path).
         terminal_authoring_states = {
             AuthoringState.PUBLISHED,
             AuthoringState.CANCELLED,
         }
-        has_active_authoring = (
-            auth_session is not None
-            and auth_session.state not in terminal_authoring_states
-        )
         attempts_exact_publication = bool(supplied_hash or supplied_auth_id)
-        if has_active_authoring or attempts_exact_publication:
+        if attempts_exact_publication:
             if (
                 auth_session is None
                 or auth_session.state in terminal_authoring_states
