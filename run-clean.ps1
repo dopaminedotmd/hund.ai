@@ -7,6 +7,7 @@ param (
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = $PSScriptRoot
+. (Join-Path $repoRoot "scripts/test-home-boundary.ps1")
 
 # 1. Verify that .venv\Scripts\hund.exe exists
 $hundExe = Join-Path $repoRoot ".venv" "Scripts" "hund.exe"
@@ -17,7 +18,8 @@ if (-not (Test-Path -Path $hundExe -PathType Leaf)) {
 
 # 2. Create isolated timestamped test-home
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$testHome = Join-Path $repoRoot ".test-home" "hund-$timestamp"
+$testRoot = Get-TestHomeRoot -RepoRoot $repoRoot
+$testHome = Get-ConfinedTestPath -BasePath $testRoot -Segment "hund-$timestamp" -Name "test home"
 
 if (-not (Test-Path -Path $testHome)) {
     New-Item -ItemType Directory -Path $testHome -Force | Out-Null
@@ -25,7 +27,6 @@ if (-not (Test-Path -Path $testHome)) {
 
 # 3. Configure process-local environment variables
 $env:LOCALAPPDATA = $testHome
-$env:HUND_HOME = $testHome
 
 # 4. Print exact test-home location
 Write-Host "============================================================" -ForegroundColor Cyan

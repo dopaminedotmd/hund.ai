@@ -53,6 +53,19 @@ Thumbs.db
 .hermes/
 .codex/
 docs/
+!docs/
+docs/*
+!docs/00_CURRENT_STATE.md
+!docs/plans/
+docs/plans/*
+!docs/plans/HUND_SKILLS_ALPHA_PHASE_7_ALPHA_ACCEPTANCE_GATE_PLAN_2026-08-31.md
+!docs/logs/
+docs/logs/*
+!docs/logs/2026/
+docs/logs/2026/*
+!docs/logs/2026/08/
+docs/logs/2026/08/*
+!docs/logs/2026/08/2026-08-31__skills-alpha-phase-7__alpha-acceptance-gate__completed.md
 dev-dashboard/
 dashboard/
 tui/
@@ -60,6 +73,10 @@ scripts/
 !scripts/
 scripts/*
 !scripts/build_mascot_frames.py
+!scripts/inspect_test_home.py
+!scripts/test-home-boundary.ps1
+!docs/testing/
+!docs/testing/**
 hund/agent/archive/
 AGENTS.md
 CLAUDE.md
@@ -67,3 +84,10 @@ HUND_COMPLETE_BIBLE.md
 PRODUCT_BOUNDARY.md
 skills-lock.json
 tmp_search_diag.ps1
+
+# Cleanup 2026-08-31 — lokala testhem & artefakter (bevarade men osynliga för git)
+/.pytest_*/
+/.test-home/
+/.understand-anything/
+/.manual_acceptance_*/
+/.uv-cache/
