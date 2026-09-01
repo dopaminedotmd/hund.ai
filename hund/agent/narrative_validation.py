@@ -63,12 +63,13 @@ _RAW_PROTOCOL_RE = re.compile(
 
 # Persona mechanics recitation and naming violations
 _HUNDEN_RE = re.compile(r"\bhunden\b", re.IGNORECASE)
-_PERSONA_MECHANICS_RE = re.compile(
-    r"\b(?:hund\s+talar\s+(?:alltid\s+)?i\s+tredje\s+person|"
+_PERSONA_MECHANICS_DETECTION_RE = re.compile(
+    r"\b(?:hund\s+(?:talar|pratar|skriver|svarar|uttrycker\s+sig)\s+(?:alltid\s+)?(?:i\s+)?tredje\s+person|"
     r"tredjepersons?(?:-|\s*)perspektiv|"
+    r"tredjepersons?|"
     r"tredje\s+person|"
-    r"third-person\s+perspective|"
-    r"speaks?\s+in\s+third\s+person)\b",
+    r"third(?:-|\s+)person(?:\s+perspective)?|"
+    r"speaks?\s+(?:in\s+)?third\s+person)\b",
     re.IGNORECASE,
 )
 _MALFORMED_ADDRESS_RE = re.compile(r"\bVill\s+hund\b", re.IGNORECASE)
@@ -147,7 +148,7 @@ def validate_narrative_text(narrative: str, language: str = "sv") -> tuple[bool,
         violations.append("persona_hunden_violation")
 
     # 5. Persona mechanics recitation
-    if _PERSONA_MECHANICS_RE.search(narrative):
+    if _PERSONA_MECHANICS_DETECTION_RE.search(narrative):
         violations.append("persona_mechanics_recitation")
 
     return len(violations) == 0, violations
@@ -172,8 +173,87 @@ def repair_narrative_prose(narrative: str, language: str = "sv") -> str:
     repaired = re.sub(r"\bHunden\b", "Hund", repaired)
     repaired = re.sub(r"\bhunden\b", "hund", repaired)
 
-    # Strip persona mechanics recitation
-    repaired = _PERSONA_MECHANICS_RE.sub("", repaired)
+    # Strip persona mechanics recitation by whole clauses/phrases
+    # 1. Swedish whole-clause patterns
+    repaired = re.sub(
+        r"(?i)\bHund\s+(?:pratar|talar|skriver|svarar|uttrycker\s+sig)\s+(?:alltid\s+)?(?:i\s+)?tredje\s+person(?:s-?perspektiv)?\s*(?:,\s*och\s+|,\s*|\s+och\s+|\s*[—–-]\s*)",
+        "hund ",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\b(?:Eftersom\s+)?hund\s+(?:pratar|talar|skriver|svarar|använder)\s+(?:alltid\s+)?(?:i\s+)?tredjepersons?(?:-|\s*)perspektiv\s*(?:,\s*och\s+|,\s*|\s+och\s+|\s*[—–-]\s*|\s*\.\s*|\s*$)?",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bHund\s+(?:pratar|talar|skriver|svarar|uttrycker\s+sig)\s+(?:alltid\s+)?(?:i\s+)?tredje\s+person(?:s-?perspektiv)?\s*(?:\.\s*|\s*$)",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\btredjepersons?(?:-|\s*)perspektiv\s*(?:,\s*och\s+|,\s*|\s+och\s+|\s*[—–-]\s*|\s*\.\s*|\s*$)?",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\btredjepersons\s*(?:,\s*och\s+|,\s*|\s+och\s+|\s*[—–-]\s*)?",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bi\s+tredje\s+person(?:s-?perspektiv)?\s*(?:,\s*och\s+|,\s*|\s+och\s+|\s*[—–-]\s*|\s*\.\s*|\s*$)?",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\btredje\s+person\s*(?:,\s*och\s+|,\s*|\s+och\s+|\s*[—–-]\s*|\s*\.\s*|\s*$)?",
+        "",
+        repaired,
+    )
+
+    # Clean leftover verb stubs if bare phrase removal left dangling verb
+    repaired = re.sub(
+        r"(?i)\bhund\s+(?:pratar|talar|skriver|svarar|uttrycker\s+sig)\s*(?:[—–-]|,\s*och\s+|,\s*|\s+och\s+)",
+        "hund ",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bhund\s+(?:pratar|talar|skriver|svarar|uttrycker\s+sig)\s*(?:\.\s*|\s*$)",
+        "",
+        repaired,
+    )
+
+    # 2. English whole-clause patterns
+    repaired = re.sub(
+        r"(?i)\bAs\s+hund\s+speaks\s+(?:in\s+)?third(?:-|\s+)person(?:\s+perspective)?\s*(?:,\s*and\s+|,\s*|\s+and\s+|\s*[—–-]\s*)",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bHund\s+speaks\s+(?:in\s+)?third(?:-|\s+)person(?:\s+perspective)?\s*(?:,\s*and\s+|,\s*|\s+and\s+|\s*[—–-]\s*)",
+        "Hund ",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bHund\s+speaks\s+(?:in\s+)?third(?:-|\s+)person(?:\s+perspective)?\s*(?:\.\s*|\s*$)",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bspeaks?\s+(?:in\s+)?third\s+person(?:\s+perspective)?\s*(?:,\s*and\s+|,\s*|\s+and\s+|\s*[—–-]\s*|\s*\.\s*|\s*$)?",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bthird(?:-|\s+)person(?:\s+perspective)?\s*(?:,\s*and\s+|,\s*|\s+and\s+|\s*[—–-]\s*|\s*\.\s*|\s*$)?",
+        "",
+        repaired,
+    )
+    repaired = re.sub(
+        r"(?i)\bhund\s+speaks\s*(?:[—–-]|,\s*and\s+|,\s*|\s+and\s+)",
+        "hund ",
+        repaired,
+    )
 
     # Repair Swedish first-person pronouns in natural prose
     if language.lower().startswith("sv"):
@@ -191,8 +271,12 @@ def repair_narrative_prose(narrative: str, language: str = "sv") -> str:
         repaired = re.sub(r"\b[Mm]itt\b", "hunds", repaired)
         repaired = re.sub(r"\b[Mm]ina\b", "hunds", repaired)
 
-    # Clean double spaces caused by emoji/protocol removal
+    # Clean double spaces, orphaned punctuation
+    repaired = re.sub(r"\s+([,.!?])", r"\1", repaired)
+    repaired = re.sub(r"^[,\s]+", "", repaired)
     repaired = re.sub(r"[ ]{2,}", " ", repaired)
+    if repaired and repaired[0].islower() and not repaired.startswith("hund"):
+        repaired = repaired[0].upper() + repaired[1:]
     return repaired.strip()
 
 

@@ -120,11 +120,40 @@ def build_system_prompt(
 
     parts: list[str] = [persona]
 
-    # Persistent minne (user.md) — EFTER persona, FÖRE miljöprofilen (fas 9.5 Del A)
+    # Persistent minne & Användarprofil — EFTER persona, FÖRE miljöprofilen
     if memory_lines:
         parts.append("")
         parts.append("## Persistent minne")
         parts.extend(f"- {m}" for m in memory_lines)
+
+    user_bullets: list[str] = []
+    has_name_bullet = any(
+        ("namn:" in b.lower() or "namn är" in b.lower() or "name is" in b.lower() or "name:" in b.lower() or "user's name" in b.lower())
+        for b in (memory_lines or [])
+    )
+    current_username = ""
+    try:
+        import getpass
+        current_username = getpass.getuser().strip()
+    except Exception:
+        current_username = os.environ.get("USERNAME", "") or os.environ.get("USER", "")
+
+    if not has_name_bullet and current_username:
+        user_bullets.append(f"Namn: {current_username}")
+
+    if user_bullets:
+        parts.append("")
+        parts.append("## Användarprofil")
+        parts.extend(f"- {m}" for m in user_bullets)
+
+    parts.append("")
+    parts.append("## Minnes- och identitetskontrakt")
+    parts.append("- Minnespåståenden eller personliga preferenser sparas automatiskt i bakgrunden; skriv eller kör aldrig skript, filer eller terminalkommandon för att spara eller rota efter minnen.")
+    parts.append("- Om ett personligt faktum eller minne saknas (t.ex. användarens namn eller preferens): svara direkt och kort i tredje person utan verktygsanrop, gissningar eller databassökning.")
+
+    parts.append("")
+    parts.append("## Desktop file delivery")
+    parts.append("- For a file requested on the Desktop, first create or update it in the workspace with write_file so the user receives the file diff. Then copy that workspace file to the Desktop with one terminal command.")
 
     parts.append("")
     parts.append("## Din miljö (du lever här)")

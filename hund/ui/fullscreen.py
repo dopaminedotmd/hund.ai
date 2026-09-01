@@ -4,8 +4,8 @@ prompt_toolkit Application with a scrollable, semantically-colored output
 buffer, a single input buffer, and an in-app arrow-key confirmation modal.
 
 The output buffer is read-only (safe against stray typing) but focusable, so
-the mouse can select text; Ctrl+C copies a selection to the clipboard (or
-exits when there is none). The agent turn runs in a background thread.
+the mouse can select text; Ctrl+C copies a selection or controls the active
+chat state. The agent turn runs in a background thread.
 """
 from __future__ import annotations
 
@@ -13,8 +13,10 @@ import asyncio
 from collections import deque
 from dataclasses import dataclass
 import io
+import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import subprocess
 import textwrap
@@ -167,19 +169,25 @@ class _StableCompletionsMenuControl(CompletionsMenuControl):
 def _format_runtime_error(e: Exception | str, max_width: int = 70) -> str:
     err_str = str(e)
     err_lower = err_str.lower()
+    status_match = re.search(r"\b(?:provider\s+)?http(?:\s+status)?\s+(\d{3})\b", err_lower)
+    status = int(status_match.group(1)) if status_match else None
+    detail = f" Provider detail: {err_str[:160]}"
 
-    if "401" in err_str or "authentication" in err_lower or ("api key" in err_lower and "invalid" in err_lower):
+    if status == 401:
         title = "API Authentication Error (HTTP 401)"
-        body = "Invalid or missing API key. Run /setup to configure your key, or /model to switch provider."
-    elif "402" in err_str or "insufficient" in err_lower or "quota" in err_lower or "balance" in err_lower:
+        body = "Invalid or missing API key. Run /setup to configure your key, or /model to switch provider." + detail
+    elif status == 402 or "insufficient balance" in err_lower:
         title = "API Quota / Balance Error (HTTP 402)"
-        body = "Account has insufficient balance or quota exceeded. Switch models with /model or check your provider billing account."
-    elif "429" in err_str or ("rate" in err_lower and "limit" in err_lower):
+        body = "Account has insufficient balance or quota exceeded. Switch models with /model or check your provider billing account." + detail
+    elif status == 429:
         title = "API Rate Limit Error (HTTP 429)"
-        body = "Provider rate limit reached. Please wait a moment before retrying, or use /retry to resend."
-    elif "provider http" in err_lower or "http error" in err_lower:
+        body = "Provider rate limit reached. Please wait a moment before retrying, or use /retry to resend." + detail
+    elif status is not None and 500 <= status < 600:
+        title = f"Provider Server Error (HTTP {status})"
+        body = "Provider request failed. Retry shortly or check provider status." + detail
+    elif status is not None:
         title = "Provider Connection Error"
-        body = f"HTTP request failed: {err_str[:120]}. Check your network connection or verify provider status."
+        body = "HTTP request failed. Check your network connection or verify provider status." + detail
     else:
         title = "Execution Error"
         body = err_str[:160]
@@ -420,12 +428,12 @@ def _parse_semantic_line(text: str, indent_str: str = "") -> list[tuple[str, str
         diff_num_del = re.match(r"^(-+\s*)(\d+\s+)(.*)$", cur)
         if diff_num_add:
             tokens.append(("class:add", diff_num_add.group(1)))
-            tokens.append(("class:secondary", diff_num_add.group(2)))
+            tokens.append(("class:add", diff_num_add.group(2)))
             tokens.append(("class:add", diff_num_add.group(3)))
             return tokens
         elif diff_num_del:
             tokens.append(("class:del", diff_num_del.group(1)))
-            tokens.append(("class:secondary", diff_num_del.group(2)))
+            tokens.append(("class:del", diff_num_del.group(2)))
             tokens.append(("class:del", diff_num_del.group(3)))
             return tokens
 
@@ -576,7 +584,9 @@ class ResponseBlockRegistry:
         return None
 
 
-def _lex_pygments_code(cur: str, indent_str: str, lang: str) -> list[tuple[str, str]]:
+def _lex_pygments_code(
+    cur: str, indent_str: str, lang: str, row_style: str = ""
+) -> list[tuple[str, str]]:
     tokens: list[tuple[str, str]] = []
     if indent_str:
         tokens.append(("", indent_str))
@@ -584,6 +594,14 @@ def _lex_pygments_code(cur: str, indent_str: str, lang: str) -> list[tuple[str, 
     try:
         from pygments.lexers import get_lexer_by_name
         lexer = get_lexer_by_name(canon_lang)
+        if canon_lang == "html" and not ("<" in cur or ">" in cur) and (":" in cur or ";" in cur or "{" in cur or "}" in cur):
+            try:
+                css_lexer = get_lexer_by_name("css")
+                css_toks = list(pygments.lex(cur, css_lexer))
+                if any(t[0] not in (pygments.token.Text, pygments.token.Error) for t in css_toks):
+                    lexer = css_lexer
+            except Exception:
+                pass
     except Exception:
         try:
             from pygments.lexers import TextLexer
@@ -593,7 +611,7 @@ def _lex_pygments_code(cur: str, indent_str: str, lang: str) -> list[tuple[str, 
 
     try:
         import pygments
-        from pygments.token import Token
+        from prompt_toolkit.lexers.pygments import pygments_token_to_classname
 
         for tok_type, val in pygments.lex(cur, lexer):
             if val.endswith("\n") and not cur.endswith("\n"):
@@ -601,46 +619,8 @@ def _lex_pygments_code(cur: str, indent_str: str, lang: str) -> list[tuple[str, 
             if not val:
                 continue
 
-            # Map Pygments tokens directly to Hund's theme tokens (marshmallow)
-            if (
-                tok_type in Token.Keyword
-                or tok_type in Token.Keyword.Constant
-                or tok_type in Token.Keyword.Declaration
-                or tok_type in Token.Keyword.Namespace
-                or tok_type in Token.Keyword.Type
-            ):
-                cls = "class:accent bold"
-            elif (
-                tok_type in Token.String
-                or tok_type in Token.String.Doc
-                or tok_type in Token.String.Double
-                or tok_type in Token.String.Single
-            ):
-                cls = "class:learning"
-            elif (
-                tok_type in Token.Number
-                or tok_type in Token.Number.Integer
-                or tok_type in Token.Number.Float
-                or tok_type in Token.Number.Hex
-            ):
-                cls = "class:meta_accent"
-            elif (
-                tok_type in Token.Comment
-                or tok_type in Token.Comment.Single
-                or tok_type in Token.Comment.Multiline
-            ):
-                cls = "class:secondary"
-            elif (
-                tok_type in Token.Name.Function
-                or tok_type in Token.Name.Class
-                or tok_type in Token.Name.Builtin
-            ):
-                cls = "class:primary bold"
-            elif tok_type in Token.Operator or tok_type in Token.Punctuation:
-                cls = "class:secondary"
-            else:
-                cls = "class:primary"
-            tokens.append((cls, val))
+            cls = f"class:{pygments_token_to_classname(tok_type)}"
+            tokens.append((f"{row_style} {cls}".strip(), val))
         return tokens
     except Exception:
         return [("", indent_str), ("class:primary", cur)] if indent_str else [("class:primary", cur)]
@@ -919,6 +899,34 @@ class _OutputLexer(Lexer):
                 line = lines[lineno]
             except IndexError:
                 return []
+            line_style = registry.get_line_style(lineno)
+            if line_style is not None and not (line.startswith("│") and line.endswith("│")):
+                stype, slang = line_style
+                if stype == "diff":
+                    indent_len = len(line) - len(line.lstrip())
+                    indent_str = line[:indent_len]
+                    cur = line[indent_len:]
+                    if cur.startswith("└ "):
+                        return [
+                            ("", indent_str),
+                            ("class:diff_tree", "└ "),
+                            ("class:diff_file_header", cur[2:]),
+                        ]
+                    if cur == "… Diff preview limited.":
+                        return [("", indent_str), ("class:secondary", cur)]
+                    marker = re.match(r"^([+-]\s*(?:\d+\s+)?)(.*)$", cur)
+                    if marker:
+                        is_add = marker.group(1).startswith("+")
+                        style = "class:add" if is_add else "class:del"
+                        return [(style, indent_str), (style, marker.group(1))] + _lex_pygments_code(
+                            marker.group(2), "", slang or "python", style
+                        )
+                    context = re.match(r"^(\s{2}\s*\d{1,4}\s+)(.*)$", cur)
+                    if context:
+                        return [("", indent_str), ("class:diff_lineno", context.group(1))] + _lex_pygments_code(
+                            context.group(2), "", slang or "python"
+                        )
+                    return _parse_semantic_line(cur, indent_str)
             if line.startswith("╔") or line.startswith("║") or line.startswith("╚"):
                 return _lex_banner_line(line)
             if lineno in authoring_lines:
@@ -1141,10 +1149,11 @@ class _OutputLexer(Lexer):
                             parsed = [("class:secondary", indent_str), ("class:accent bold", cur)]
                         elif cur.startswith("─") and set(cur.strip()) == {"─"}:
                             parsed = [("class:secondary", indent_str), ("class:secondary", cur)]
-                        elif cur.startswith("+"):
-                            parsed = [("class:secondary", indent_str), ("class:success", cur)]
-                        elif cur.startswith("-"):
-                            parsed = [("class:secondary", indent_str), ("class:danger", cur)]
+                        elif marker := re.match(r"^([+-]\s*(?:\d+\s+)?)(.*)$", cur):
+                            style = "class:add" if marker.group(1).startswith("+") else "class:del"
+                            parsed = [(style, indent_str), (style, marker.group(1))] + _lex_pygments_code(
+                                marker.group(2), "", slang or "python", row_style=style
+                            )
                         elif cur.startswith("@@"):
                             parsed = [("class:secondary", indent_str), ("class:accent", cur)]
                         else:
@@ -1152,11 +1161,13 @@ class _OutputLexer(Lexer):
                     else:
                         parsed = _parse_semantic_line(cur, indent_str)
                 else:
+                    stype = None
                     parsed = _parse_semantic_line(cur, indent_str)
 
                 diff = len(content) - sum(len(t[1]) for t in parsed)
-                fill = [("class:primary", " " * diff)] if diff > 0 else []
-                return [("class:secondary", pad_str)] + parsed + fill + [("class:secondary", end_str)]
+                row_style = parsed[0][0] if stype == "diff" and cur.startswith(("+", "-")) else "class:secondary"
+                fill = [(row_style, " " * diff)] if diff > 0 else []
+                return [(row_style, pad_str)] + parsed + fill + [(row_style, end_str)]
             elif stripped.startswith("#"):
                 return [("class:header", line)]
 
@@ -1308,16 +1319,19 @@ class _SelectableControl(BufferControl):
 _CONFIRM_COLORS = {
     ConfirmVerdict.APPROVE_ONCE: "class:success",
     ConfirmVerdict.EDIT: "class:accent",
+    ConfirmVerdict.ALLOW_TURN: "class:warning",
     ConfirmVerdict.ALLOW_SESSION: "class:warning",
     ConfirmVerdict.DENY: "class:danger",
 }
 
 
-def _confirm_options(tool_name: str, *, session_allowable: bool = True):
+def _confirm_options(
+    tool_name: str, *, session_allowable: bool = True, turn_allowable: bool = False
+):
     return [
         (v, label, _CONFIRM_COLORS[v])
         for v, label in confirmation_options(
-            tool_name, session_allowable=session_allowable
+            tool_name, session_allowable=session_allowable, turn_allowable=turn_allowable
         )
     ]
 
@@ -2162,8 +2176,11 @@ def create_fullscreen_app(
                     new_registry.register_or_update(rec.block_id, new_start, new_count, line_meta)
                     new_lines.extend(re_lines)
                 else:
-                    # Fallback if payload missing: preserve original lines
+                    # Artifact blocks have no response payload; regenerate their width.
                     orig_block = lines[rec.start_line:rec.start_line + rec.line_count]
+                    if any(meta[0] == "diff" for meta in rec.line_metadata.values()):
+                        from .render import repad_diff_block
+                        orig_block = repad_diff_block(orig_block, cw)
                     new_registry.register_or_update(rec.block_id, len(new_lines), len(orig_block), rec.line_metadata)
                     new_lines.extend(orig_block)
 
@@ -2191,6 +2208,7 @@ def create_fullscreen_app(
     # ---- sink (called from the agent worker thread) ----
     class _Sink:
         def __init__(self) -> None:
+            self._cancelled = False
             self._box_open = False
             self._box_start_marker: int | None = None
             self._block_id = _next_app_block_id()
@@ -2207,15 +2225,24 @@ def create_fullscreen_app(
             self._user_input = ""
             self._turn_start_time: float = 0.0
             self._pending_past_timer: threading.Timer | None = None
-            self._md = StreamingMarkdownFilter()
+            self._md = StreamingMarkdownFilter(content_width=_content_width())
             self._snapshot = None
             self._learning_markers: dict[str, int] = {}
             self._authoring_mode = False
+
+        def cancel(self) -> None:
+            self._cancelled = True
+            self.clear_thinking()
+            self.clear_presentation_state()
+
+        def is_cancelled(self) -> bool:
+            return self._cancelled
 
         def set_authoring_mode(self, active: bool) -> None:
             self._authoring_mode = active
 
         def set_user_input(self, text: str) -> None:
+            self._cancelled = False
             self._user_input = text or ""
             self._tool_switched = False
             self._turn_start_time = time.time()
@@ -2225,9 +2252,10 @@ def create_fullscreen_app(
             self._activity_prefix = ""
             self._active_tool_event_id = None
             self._pending_confirmation_tool = None
+            self._pending_tool_results: list[tuple[str, Any]] = []
             self._block_id = _next_app_block_id()
             self._box_open = False
-            self._md = StreamingMarkdownFilter()
+            self._md = StreamingMarkdownFilter(content_width=_content_width())
 
         def set_turn_snapshot(self, snapshot) -> None:
             self._snapshot = snapshot
@@ -2245,7 +2273,7 @@ def create_fullscreen_app(
             self._active_tool_event_id = None
             self._pending_confirmation_tool = None
             self._learning_markers.clear()
-            self._md = StreamingMarkdownFilter()
+            self._md = StreamingMarkdownFilter(content_width=_content_width())
 
         def _cancel_timers(self) -> None:
             if self._pending_past_timer is not None:
@@ -2304,6 +2332,8 @@ def create_fullscreen_app(
             _invalidate()
 
         def chunk(self, text: str) -> None:
+            if self._cancelled:
+                return
             if not self._turn_start_time:
                 self._turn_start_time = time.time()
             self.clear_thinking()
@@ -2342,6 +2372,8 @@ def create_fullscreen_app(
             _invalidate()
 
         def end_assistant(self) -> None:
+            if self._cancelled:
+                return
             dur = (time.time() - self._turn_start_time) if self._turn_start_time else state.extra.get("last_latency_s", 0.0)
             meta_parts: list[str] = []
             if dur and dur > 0:
@@ -2445,6 +2477,7 @@ def create_fullscreen_app(
             else:
                 append("\n\n")
                 self._turn_start_time = 0.0
+            self._md = StreamingMarkdownFilter(content_width=_content_width())
 
         def learning_pending(self, job_id: str) -> None:
             line = "  · evaluating evidence...\n"
@@ -2521,7 +2554,8 @@ def create_fullscreen_app(
                 detail = detail[:55] + "..."
             _confirm["title"] = title
             _confirm["options"] = _confirm_options(
-                request.tool_name, session_allowable=request.session_allowable
+                request.tool_name, session_allowable=request.session_allowable,
+                turn_allowable=request.turn_allowable,
             )
             _confirm["detail"] = detail
             _confirm["reason"] = _confirm_reason(request)
@@ -2538,6 +2572,7 @@ def create_fullscreen_app(
             _confirm["active"] = False
             screens.overlay = OverlayView.NONE
             _MODAL_ACTIVE[0] = False
+            self._flush_pending_tool_results()
             with _append_lock:
                 _set_output(output_buffer.text)
             _invalidate()
@@ -2562,6 +2597,7 @@ def create_fullscreen_app(
             if self._box_open:
                 self._box_open = False
                 self._box_start_marker = None
+            self._md = StreamingMarkdownFilter(content_width=_content_width())
 
             self._tool_args = args if isinstance(args, dict) else {}
             self._tool_start_time = time.time()
@@ -2595,6 +2631,9 @@ def create_fullscreen_app(
         def tool_result(self, name: str, shown: Any) -> None:
             if self._authoring_mode and name == "create_skill":
                 return
+            if _confirm["active"]:
+                self._pending_tool_results.append((name, shown))
+                return
             dur = time.time() - self._tool_start_time
             if self._active_tool_event_id is not None:
                 self._activity.finish(
@@ -2623,6 +2662,7 @@ def create_fullscreen_app(
             if file_change is not None and not getattr(file_change, "binary", False):
                 cw = _content_width()
                 artifact_block = None
+                artifact_type = "diff"
                 status = getattr(file_change, "status", "")
                 preview = getattr(file_change, "display_preview", "")
                 committed = getattr(file_change, "committed_content_or_diff", "")
@@ -2630,12 +2670,12 @@ def create_fullscreen_app(
                 lang = getattr(file_change, "content_type_or_language", "")
 
                 if status == "created" and preview:
-                    from .render import format_code_block
-                    artifact_block = format_code_block(
-                        preview,
-                        language=lang,
+                    from .render import format_diff_block
+                    artifact_block = format_diff_block(
+                        "\n".join(f"+{line}" for line in preview.splitlines()),
                         filename=path,
                         width=cw,
+                        is_limited=bool(getattr(file_change, "truncated", False)),
                     )
                 elif status == "modified" and (preview or committed):
                     from .render import format_diff_block
@@ -2643,13 +2683,27 @@ def create_fullscreen_app(
                         preview or committed,
                         filename=path,
                         width=cw,
+                        is_limited=bool(getattr(file_change, "truncated", False)),
                     )
 
                 if artifact_block:
                     with _append_lock:
                         base = output_buffer.text.rstrip("\n") + "\n\n"
                         _set_output(base + artifact_block + "\n\n")
+                        start_line = base.count("\n")
+                        lines = artifact_block.splitlines()
+                        block_registry.register_or_update(
+                            _next_app_block_id(),
+                            start_line,
+                            len(lines),
+                            {i: (artifact_type, "python" if lang == "py" else lang) for i in range(len(lines))},
+                        )
                     _invalidate()
+
+        def _flush_pending_tool_results(self) -> None:
+            pending, self._pending_tool_results = self._pending_tool_results, []
+            for pending_name, pending_shown in pending:
+                self.tool_result(pending_name, pending_shown)
 
         def blocked(self, name: str, reason: str) -> None:
             if self._authoring_mode and name == "create_skill":
@@ -3429,6 +3483,15 @@ def create_fullscreen_app(
         _confirm["event"].set()
         _invalidate()
 
+    @kb.add("t", filter=confirm_active)
+    @kb.add("T", filter=confirm_active)
+    def _t(event):
+        verdicts = {item[0] for item in _confirm["options"]}
+        _confirm["answer"] = ConfirmVerdict.ALLOW_TURN if ConfirmVerdict.ALLOW_TURN in verdicts else ConfirmVerdict.DENY
+        _confirm["active"] = False
+        _confirm["event"].set()
+        _invalidate()
+
     @kb.add("n", filter=confirm_active)
     @kb.add("N", filter=confirm_active)
     @kb.add("escape", eager=True, filter=confirm_active)
@@ -4019,6 +4082,7 @@ def create_fullscreen_app(
             pass
         elif turn_running[0]:
             turn_running[0] = False
+            sink.cancel()
             mascot_machine.finish_turn()
             append("\n[turn cancelled]\n")
             set_status_notice("turn cancelled")
@@ -4272,8 +4336,13 @@ async def run_fullscreen(rt, state, *, banner: str, session_id: str) -> int:
 
     threading.Thread(target=_mascot_watcher, daemon=True).start()
 
+    previous_sigint = None
+    if os.name == "nt":
+        previous_sigint = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         result = await app.run_async()
     finally:
         watchers_stop.set()
+        if previous_sigint is not None:
+            signal.signal(signal.SIGINT, previous_sigint)
     return result if isinstance(result, int) else 0

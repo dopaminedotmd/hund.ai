@@ -237,8 +237,10 @@ def _init_runtime():
     _memory.ensure_seed()
     if not _memory.env_path().exists():
         _memory.refresh_env(profile)
-    # Personal memory is query-dependent and enters only as gated turn-local data.
-    memory_lines: list[str] = []
+    try:
+        memory_lines = _memory.inject()
+    except Exception:
+        memory_lines = []
     system_prompt = assemble_system_prompt(
         persona, profile, knowledge=knowledge, policy_rules=policy_rules,
         skills=skills, user_text="", memory_lines=memory_lines,
@@ -251,8 +253,10 @@ def _init_runtime():
     messages: list[Message] = [Message(role="system", content=system_prompt)]
 
     from . import sessions as S
+    from .tool_dispatch import _SESSION_ALLOWLIST
 
     session_id = S.create()
+    _SESSION_ALLOWLIST.clear_session(session_id)
     _emit_prompt_injection_scan_events(
         workspace_id=str(workspace),
         session_id=session_id,
@@ -473,141 +477,149 @@ def run_repl() -> int:
         f"[dim]/sessions · /exit[/dim]"
     )
 
-    while True:
-        try:
-            user = console.input("[bold]du>[/bold] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            console.print("")
-            break
-        if not user:
-            continue
-        if user in ("/exit", "/quit"):
-            break
-        if user == "/stats":
-            _show_stats(console)
-            continue
-        if user == "/profile":
-            console.print(profile.summary())
-            continue
-        if user == "/tools":
-            console.print(
-                ", ".join(f"{t.name}({t.base_risk})" for t in registry.all_tools())
-            )
-            continue
-
-        # /sessions — list | search <q> | resume <id> | new
-        if user == "/sessions" or user.startswith("/sessions"):
-            rest = user[len("/sessions"):].strip()
-            if not rest:
-                rows = S.list_sessions(limit=5)
-                if not rows:
-                    console.print("(inga sessioner)")
-                for sid, created, title, count, act in rows:
-                    mark = "*" if act else " "
-                    console.print(f"{mark} #{sid[:8]} ({count}) {title[:40]} — {created}")
+    try:
+        while True:
+            try:
+                user = console.input("[bold]du>[/bold] ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("")
+                break
+            if not user:
                 continue
-            sub, _, arg = rest.partition(" ")
-            arg = arg.strip()
-            if sub == "search":
-                hits = S.search(arg)
-                if not hits:
-                    console.print(f"(inga träffar för '{arg}')")
-                for sid_, role, snip, created in hits:
-                    console.print(f"#{sid_[:8]} [{role}] {snip} — {created}", markup=False)
+            if user in ("/exit", "/quit"):
+                break
+            if user == "/stats":
+                _show_stats(console)
                 continue
-            if sub == "resume":
-                if S.set_active(arg):
-                    session_id = S.get_active()["id"]
-                    del messages[1:]  # behåll systemprompt
-                    for role, content in S.history(session_id):
-                        messages.append(Message(role=role, content=content))
-                    console.print(f"[green]byt till session #{session_id[:8]}[/green]")
-                else:
-                    console.print(f"[yellow]ingen session matchade '{arg}'[/yellow]")
+            if user == "/profile":
+                console.print(profile.summary())
                 continue
-            if sub == "new":
-                session_id = S.create()
-                del messages[1:]
-                console.print(f"[green]ny session #{session_id[:8]}[/green]")
-                continue
-            console.print("[yellow]användning: /sessions [search <q> | resume <id> | new][/yellow]")
-            continue
-
-        authoring_run_id = uuid.uuid4().hex
-        authoring_outcome = _run_authoring_runtime(
-            user,
-            session_id=session_id,
-            workspace=workspace,
-            engine=engine,
-            console=console,
-            client=client,
-            width=console.width,
-            run_id=authoring_run_id,
-        )
-        if authoring_outcome.handled:
-            authoring_outputs = list(authoring_outcome.outputs)
-            messages.append(Message(role="user", content=user))
-            _session_save(session_id, "user", user, run_id=authoring_run_id)
-            for output in authoring_outputs:
-                console.print(output, markup=False)
-            assistant_text = "\n\n".join(authoring_outputs)
-            if assistant_text:
-                messages.append(Message(role="assistant", content=assistant_text))
-                _session_save(session_id, "assistant", assistant_text, run_id=authoring_run_id)
-            continue
-
-        from .user_context import expand_user_context
-        expanded_context = expand_user_context(user, workspace)
-        messages.append(Message(role="user", content=expanded_context.prompt))
-        if expanded_context.warns_about_size:
-            console.print(
-                f"[yellow]context warning: about {expanded_context.estimated_tokens} tokens[/yellow]"
-            )
-        run_id = uuid.uuid4().hex
-        _session_save(session_id, "user", user, run_id=run_id)
-        # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
-        tokens_before_compress = estimate_tokens(messages)
-        comp = maybe_compress(messages)
-        if comp.compressed:
-            messages[:] = comp.messages
-            _restore_frozen_system_prompt(messages, frozen_system_prompt)
-            _trace_event(
-                engine,
-                session_id,
-                run_id,
-                "context_compressed",
-                {
-                    "turns_dropped": comp.dropped_turns,
-                    "tokens_before": tokens_before_compress,
-                    "tokens_after": comp.tokens,
-                    "method": comp.method,
-                },
-            )
-            console.print(
-                f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
-            )
-        skills = _safe_skills(workspace=workspace)
-        dynamic_msg = _dynamic_context_message(
-            skills=skills,
-            user_text=user,
-            workspace_id=str(workspace),
-            domain_hint=rt.domain_hint,
-        )
-        if dynamic_msg is not None:
-            messages.append(dynamic_msg)  # lägg sist, agenten läser top-down
-        try:
-            _agent_turn(console, client, messages, schemas, engine, cfg, session_id, run_id=run_id)
-        finally:
-            # Ta bort dynamic_msg oavsett var den hamnat
-            if dynamic_msg is not None:
-                messages[:] = [m for m in messages if m is not dynamic_msg]
-            messages[:] = [
-                m for m in messages
-                if not (getattr(m, "content", "") or "").startswith(
-                    "[FÖROBSERVATIONER"
+            if user == "/tools":
+                console.print(
+                    ", ".join(f"{t.name}({t.base_risk})" for t in registry.all_tools())
                 )
-            ]
-            _restore_frozen_system_prompt(messages, frozen_system_prompt)
+                continue
+
+            # /sessions — list | search <q> | resume <id> | new
+            if user == "/sessions" or user.startswith("/sessions"):
+                rest = user[len("/sessions"):].strip()
+                if not rest:
+                    rows = S.list_sessions(limit=5)
+                    if not rows:
+                        console.print("(inga sessioner)")
+                    for sid, created, title, count, act in rows:
+                        mark = "*" if act else " "
+                        console.print(f"{mark} #{sid[:8]} ({count}) {title[:40]} — {created}")
+                    continue
+                sub, _, arg = rest.partition(" ")
+                arg = arg.strip()
+                if sub == "search":
+                    hits = S.search(arg)
+                    if not hits:
+                        console.print(f"(inga träffar för '{arg}')")
+                    for sid_, role, snip, created in hits:
+                        console.print(f"#{sid_[:8]} [{role}] {snip} — {created}", markup=False)
+                    continue
+                if sub == "resume":
+                    if S.set_active(arg):
+                        if session_id:
+                            _SESSION_ALLOWLIST.clear_session(session_id)
+                        session_id = S.get_active()["id"]
+                        del messages[1:]  # behåll systemprompt
+                        for role, content in S.history(session_id):
+                            messages.append(Message(role=role, content=content))
+                        console.print(f"[green]byt till session #{session_id[:8]}[/green]")
+                    else:
+                        console.print(f"[yellow]ingen session matchade '{arg}'[/yellow]")
+                    continue
+                if sub == "new":
+                    if session_id:
+                        _SESSION_ALLOWLIST.clear_session(session_id)
+                    session_id = S.create()
+                    del messages[1:]
+                    console.print(f"[green]ny session #{session_id[:8]}[/green]")
+                    continue
+                console.print("[yellow]användning: /sessions [search <q> | resume <id> | new][/yellow]")
+                continue
+
+            authoring_run_id = uuid.uuid4().hex
+            authoring_outcome = _run_authoring_runtime(
+                user,
+                session_id=session_id,
+                workspace=workspace,
+                engine=engine,
+                console=console,
+                client=client,
+                width=console.width,
+                run_id=authoring_run_id,
+            )
+            if authoring_outcome.handled:
+                authoring_outputs = list(authoring_outcome.outputs)
+                messages.append(Message(role="user", content=user))
+                _session_save(session_id, "user", user, run_id=authoring_run_id)
+                for output in authoring_outputs:
+                    console.print(output, markup=False)
+                assistant_text = "\n\n".join(authoring_outputs)
+                if assistant_text:
+                    messages.append(Message(role="assistant", content=assistant_text))
+                    _session_save(session_id, "assistant", assistant_text, run_id=authoring_run_id)
+                continue
+
+            from .user_context import expand_user_context
+            expanded_context = expand_user_context(user, workspace)
+            messages.append(Message(role="user", content=expanded_context.prompt))
+            if expanded_context.warns_about_size:
+                console.print(
+                    f"[yellow]context warning: about {expanded_context.estimated_tokens} tokens[/yellow]"
+                )
+            run_id = uuid.uuid4().hex
+            _session_save(session_id, "user", user, run_id=run_id)
+            # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
+            tokens_before_compress = estimate_tokens(messages)
+            comp = maybe_compress(messages)
+            if comp.compressed:
+                messages[:] = comp.messages
+                _restore_frozen_system_prompt(messages, frozen_system_prompt)
+                _trace_event(
+                    engine,
+                    session_id,
+                    run_id,
+                    "context_compressed",
+                    {
+                        "turns_dropped": comp.dropped_turns,
+                        "tokens_before": tokens_before_compress,
+                        "tokens_after": comp.tokens,
+                        "method": comp.method,
+                    },
+                )
+                console.print(
+                    f"[dim]({comp.dropped_turns} turns komprimerade)[/dim]"
+                )
+            skills = _safe_skills(workspace=workspace)
+            dynamic_msg = _dynamic_context_message(
+                skills=skills,
+                user_text=user,
+                workspace_id=str(workspace),
+                domain_hint=rt.domain_hint,
+            )
+            if dynamic_msg is not None:
+                messages.append(dynamic_msg)  # lägg sist, agenten läser top-down
+            try:
+                _agent_turn(console, client, messages, schemas, engine, cfg, session_id, run_id=run_id)
+            finally:
+                # Ta bort dynamic_msg oavsett var den hamnat
+                if dynamic_msg is not None:
+                    messages[:] = [m for m in messages if m is not dynamic_msg]
+                messages[:] = [
+                    m for m in messages
+                    if not (getattr(m, "content", "") or "").startswith(
+                        "[FÖROBSERVATIONER"
+                    )
+                ]
+                _restore_frozen_system_prompt(messages, frozen_system_prompt)
+    finally:
+        if session_id:
+            _SESSION_ALLOWLIST.clear_session(session_id)
     return 0
 
 
@@ -798,127 +810,186 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
     _trace_event(engine, session_id, run_id, "run_started", {"model": cfg.provider.model})
     _trace_event(engine, session_id, run_id, "turn_started", {}, turn_id=turn_id)
     consecutive_tool_errors = 0
+    _memory_captured = False
+
+    def _finalize_memory_capture() -> None:
+        nonlocal _memory_captured
+        if _memory_captured:
+            return
+        _memory_captured = True
+        try:
+            _memory_capture_hook(
+                current_user_message,
+                workspace=Path(engine.workspace_root),
+                evidence_id=turn_id,
+            )
+        except Exception:
+            pass
+
+    def _is_sink_cancelled() -> bool:
+        if sink is None:
+            return False
+        if getattr(sink, "_cancelled", None) is True:
+            return True
+        fn = getattr(sink, "is_cancelled", None)
+        if callable(fn):
+            try:
+                return fn() is True
+            except Exception:
+                return False
+        return False
+
     if sink is not None:
         sink.thinking()
-    for round_index in range(MAX_TOOL_ROUNDS):
-        import time
-        MAX_RETRIES = 3
-        for attempt in range(MAX_RETRIES + 1):
-            parts = []
-            first = True
-            try:
-                # Reserve the last round for synthesis. This guarantees a useful
-                # answer instead of ending a turn after a chain of tool calls.
-                round_tools = schemas if round_index < MAX_TOOL_ROUNDS - 1 else []
-                for chunk in client.stream(messages, tools=round_tools):
-                    parts.append(chunk)
+    try:
+        for round_index in range(MAX_TOOL_ROUNDS):
+            if _is_sink_cancelled():
+                return
+            import time
+            MAX_RETRIES = 3
+            for attempt in range(MAX_RETRIES + 1):
+                parts = []
+                first = True
+                try:
+                    # Reserve the last round for synthesis. This guarantees a useful
+                    # answer instead of ending a turn after a chain of tool calls.
+                    round_tools = schemas if round_index < MAX_TOOL_ROUNDS - 1 else []
+                    for chunk in client.stream(messages, tools=round_tools):
+                        if _is_sink_cancelled():
+                            return
+                        parts.append(chunk)
+                        if sink is not None:
+                            if first:
+                                sink.clear_thinking()
+                                first = False
+
+                    break  # lyckades
+                except (RuntimeError, Exception) as e:
+                    msg_str = str(e)
+                    if "429" in msg_str and attempt < MAX_RETRIES:
+                        delay = 2 ** attempt  # 1, 2, 4 sekunder
+                        if sink is not None:
+                            sink.error(f"[dim]rate limit — forsoker igen om {delay}s...[/dim]")
+                        else:
+                            console.print(f"[dim]rate limit — forsoker igen om {delay}s...[/dim]")
+                        time.sleep(delay)
+                        continue
+                    msg = f"\n[red]{e}[/red]" if parts else f"[red]{e}[/red]"
                     if sink is not None:
                         if first:
                             sink.clear_thinking()
-                            first = False
-
-                break  # lyckades
-            except (RuntimeError, Exception) as e:
-                msg_str = str(e)
-                if "429" in msg_str and attempt < MAX_RETRIES:
-                    delay = 2 ** attempt  # 1, 2, 4 sekunder
-                    if sink is not None:
-                        sink.error(f"[dim]rate limit — forsoker igen om {delay}s...[/dim]")
+                        sink.error(msg)
                     else:
-                        console.print(f"[dim]rate limit — forsoker igen om {delay}s...[/dim]")
-                    time.sleep(delay)
-                    continue
-                msg = f"\n[red]{e}[/red]" if parts else f"[red]{e}[/red]"
-                if sink is not None:
-                    if first:
-                        sink.clear_thinking()
-                    sink.error(msg)
-                else:
-                    console.print(msg)
-                messages.pop()  # rensa misslyckad user-msg
-                _trace_event(engine, session_id, run_id, "turn_completed", {"error": msg_str}, turn_id=turn_id)
-                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "error", "error": msg_str})
-                _feedback_hook(session_id, run_id, str(engine.workspace_root))
+                        console.print(msg)
+                    _trace_event(engine, session_id, run_id, "turn_completed", {"error": msg_str}, turn_id=turn_id)
+                    _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "error", "error": msg_str})
+                    _feedback_hook(session_id, run_id, str(engine.workspace_root))
+                    return
+
+            result = client.last_result
+            assert result is not None
+            result.text = "".join(parts)
+
+            if _is_sink_cancelled():
                 return
 
-        result = client.last_result
-        assert result is not None
-        result.text = "".join(parts)
-
-        # Buffer provider output until this provider-independent boundary has
-        # validated it. Streaming raw chunks would leak the text before repair.
-        if result.text:
-            from .language import detect_language
-            from .narrative_validation import validate_and_repair_response
-
-            repaired_text, _ = validate_and_repair_response(
-                result.text,
-                language=detect_language(current_user_message),
-            )
-            result.text = repaired_text
-
-        if result.text and sink is not None:
-            sink.chunk(result.text)
-            sink.end_assistant()
-        elif result.text:
-            console.print(result.text, markup=False, highlight=False)
-
-        if not result.tool_calls:
-            messages.append(Message(role="assistant", content=result.text))
-            _session_save(session_id, "assistant", result.text, run_id=run_id)
-            _log_request(cfg, result, tool_calls=0, run_id=run_id)
-            _trace_event(engine, session_id, run_id, "final_claim", {"text": result.text}, turn_id=turn_id)
-            _trace_event(engine, session_id, run_id, "turn_completed", {}, turn_id=turn_id)
-            _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": result.finish_reason})
-            _feedback_hook(session_id, run_id, str(engine.workspace_root))
-            _runtime_learning_hook(
-                session_id, turn_id, run_id, str(engine.workspace_root), sink=sink
-            )
-            if sink is None:
-                console.print()
-            return
-
-        # Tool-anrop — logga, dispatch varje (med användarens godkännande)
-        _log_request(cfg, result, tool_calls=len(result.tool_calls), run_id=run_id)
-        messages.append(
-            Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
-        )
-        _session_save(session_id, "assistant", result.text or "", run_id=run_id)
-        for tc in result.tool_calls:
-            outcome = dispatch_tool_call(
-                tc,
-                engine,
-                console,
-                hooks=sink,
-                run_id=run_id,
-                session_id=session_id,
-                turn_id=turn_id,
-                tool_context=tool_context,
-            )
-            tc_id = tc.get("id") if isinstance(tc, dict) else None
-            messages.append(Message(role="tool", content=outcome, tool_call_id=tc_id))
-            _session_save(session_id, "tool", outcome, run_id=run_id)
-            if outcome.startswith("[error]"):
-                consecutive_tool_errors += 1
-            else:
-                consecutive_tool_errors = 0
-            if consecutive_tool_errors >= 3:
-                _trace_event(engine, session_id, run_id, "turn_completed", {"error": "repeated_tool_failure"}, turn_id=turn_id)
-                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "repeated_tool_failure"})
-                _feedback_hook(session_id, run_id, str(engine.workspace_root))
-                msg = "repeated tool failure — stopping turn"
+            if (not result.text and not result.tool_calls) or result.finish_reason in ("length", "content_filter"):
+                msg = f"provider returned incomplete response (finish_reason={result.finish_reason})"
                 if sink is not None:
+                    sink.clear_thinking()
                     sink.error(f"[red]{msg}[/red]")
                 else:
                     console.print(f"[red]{msg}[/red]\n")
+                _trace_event(engine, session_id, run_id, "turn_completed", {"error": msg}, turn_id=turn_id)
+                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": result.finish_reason, "error": msg})
+                _feedback_hook(session_id, run_id, str(engine.workspace_root))
                 return
-    _trace_event(engine, session_id, run_id, "turn_completed", {"error": "max_tool_rounds"}, turn_id=turn_id)
-    _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "max_tool_rounds"})
-    _feedback_hook(session_id, run_id, str(engine.workspace_root))
-    if sink is not None:
-        sink.error("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]")
-    else:
-        console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
+
+            # Buffer provider output until this provider-independent boundary has
+            # validated it. Streaming raw chunks would leak the text before repair.
+            if result.text:
+                from .language import detect_language
+                from .narrative_validation import validate_and_repair_response
+
+                repaired_text, _ = validate_and_repair_response(
+                    result.text,
+                    language=detect_language(current_user_message),
+                )
+                result.text = repaired_text
+
+            if result.text and sink is not None:
+                if not result.tool_calls:
+                    sink.chunk(result.text)
+                    sink.end_assistant()
+            elif result.text:
+                console.print(result.text, markup=False, highlight=False)
+
+            if not result.tool_calls:
+                messages.append(Message(role="assistant", content=result.text))
+                _session_save(session_id, "assistant", result.text, run_id=run_id)
+                _finalize_memory_capture()
+                _log_request(cfg, result, tool_calls=0, run_id=run_id)
+                _trace_event(engine, session_id, run_id, "final_claim", {"text": result.text}, turn_id=turn_id)
+                _trace_event(engine, session_id, run_id, "turn_completed", {}, turn_id=turn_id)
+                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": result.finish_reason})
+                _feedback_hook(session_id, run_id, str(engine.workspace_root))
+                _runtime_learning_hook(
+                    session_id, turn_id, run_id, str(engine.workspace_root), sink=sink
+                )
+                if sink is None:
+                    console.print()
+                return
+
+            # Tool-anrop — logga, dispatch varje (med användarens godkännande)
+            _log_request(cfg, result, tool_calls=len(result.tool_calls), run_id=run_id)
+            messages.append(
+                Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
+            )
+            _session_save(session_id, "assistant", result.text or "", run_id=run_id)
+            for tc in result.tool_calls:
+                if _is_sink_cancelled():
+                    return
+                outcome = dispatch_tool_call(
+                    tc,
+                    engine,
+                    console,
+                    hooks=sink,
+                    run_id=run_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    tool_context=tool_context,
+                )
+                tc_id = tc.get("id") if isinstance(tc, dict) else None
+                messages.append(Message(role="tool", content=outcome, tool_call_id=tc_id))
+                _session_save(session_id, "tool", outcome, run_id=run_id)
+                if outcome.startswith("[error]"):
+                    consecutive_tool_errors += 1
+                else:
+                    consecutive_tool_errors = 0
+                if consecutive_tool_errors >= 3:
+                    _finalize_memory_capture()
+                    _trace_event(engine, session_id, run_id, "turn_completed", {"error": "repeated_tool_failure"}, turn_id=turn_id)
+                    _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "repeated_tool_failure"})
+                    _feedback_hook(session_id, run_id, str(engine.workspace_root))
+                    msg = "repeated tool failure — stopping turn"
+                    if sink is not None:
+                        sink.clear_thinking()
+                        sink.error(f"[red]{msg}[/red]")
+                    else:
+                        console.print(f"[red]{msg}[/red]\n")
+                    return
+
+        _finalize_memory_capture()
+        _trace_event(engine, session_id, run_id, "turn_completed", {"error": "max_tool_rounds"}, turn_id=turn_id)
+        _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "max_tool_rounds"})
+        _feedback_hook(session_id, run_id, str(engine.workspace_root))
+        if sink is not None:
+            sink.clear_thinking()
+            sink.error("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]")
+        else:
+            console.print("[yellow]max tool-rundor nådda — avbryter turn.[/yellow]\n")
+    finally:
+        _finalize_memory_capture()
 
 
 def _trace_event(engine, session_id: str | None, run_id: str, event_type: str, payload: dict, *, turn_id: str | None = None) -> None:
@@ -973,3 +1044,25 @@ def _log_request(cfg: HundConfig, result, tool_calls: int, *, run_id: str | None
 
 def _show_stats(console: Console) -> None:
     console.print(_stats_text())
+
+
+def _memory_capture_hook(
+    user_text: str,
+    *,
+    workspace: Path,
+    evidence_id: str | None = None,
+) -> None:
+    """Extract explicit memory facts from user messages at the end of a turn."""
+    if not user_text:
+        return
+    try:
+        from .memory_extractor import extract_and_record_memories
+        from ..paths import workspace_id as get_workspace_id
+
+        extract_and_record_memories(
+            user_text,
+            workspace_id=get_workspace_id(workspace),
+            evidence_id=evidence_id or "",
+        )
+    except Exception:
+        pass

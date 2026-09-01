@@ -27,11 +27,21 @@ class TestPersonaNarrativeRules:
             "Eftersom hund använder tredjepersonsperspektiv...",
             "Hund pratar i tredje person och säger inte jag.",
             "As Hund speaks in third-person perspective...",
+            "hund arbetar tredjepersons, kortfattat och nära verktygen.",
+            "Hund speaks in third person.",
         ]
         for n in narratives:
             valid, violations = validate_narrative_text(n, language="sv")
             assert not valid, f"Expected violation for: {n}"
             assert any("persona_mechanics" in v or "third_person" in v for v in violations)
+
+    def test_repair_removes_persona_mechanics_without_punctuation_hole(self):
+        repaired = repair_narrative_prose(
+            "hund arbetar tredjepersons, kortfattat och nära verktygen.",
+            language="sv",
+        )
+
+        assert repaired == "hund arbetar kortfattat och nära verktygen."
 
     def test_repair_malformed_user_address(self):
         narrative = "Vill hund att vi startar processen?"

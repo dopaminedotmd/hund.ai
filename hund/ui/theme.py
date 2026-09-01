@@ -58,9 +58,12 @@ SKINS: dict[str, dict[str, Any]] = {
             "add": "#78B88A",
             "del": "#E07A82",
             "add_bg": "#1E3A2B",
-            "add_fg": "#A3D9B0",
+            "add_fg": "#8FBF9F",
             "del_bg": "#3D1E24",
-            "del_fg": "#F8BCC6",
+            "del_fg": "#C97B84",
+            "diff_tree": "#6B7280",
+            "diff_lineno": "#555E68",
+            "diff_file_header": "#E5E7EB",
             "mascot": "#FFFFFF",
             "mascot_status": "#959EAE",
             "modal_footer": "#A2ABC0",
@@ -126,8 +129,8 @@ def make_pt_style(skin_name: str | None = None) -> Style:
     """Construct a prompt_toolkit Style object tailored for the specified skin."""
     skin = get_skin(skin_name)
     tokens = skin["tokens"]
-    add_style = f"bg:{tokens.get('add_bg', '#1E3A2B')} fg:{tokens.get('add_fg', '#A3D9B0')}"
-    del_style = f"bg:{tokens.get('del_bg', '#3D1E24')} fg:{tokens.get('del_fg', '#F8BCC6')}"
+    add_style = f"bg:{tokens.get('add_bg', '#1E3A2B')}"
+    del_style = f"bg:{tokens.get('del_bg', '#3D1E24')}"
     base_style = Style.from_dict(
         {
             "": tokens["primary"],
@@ -153,6 +156,9 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "skill_seed": tokens["skill_seed"],
             "add": add_style,
             "del": del_style,
+            "diff_tree": tokens["diff_tree"],
+            "diff_lineno": tokens["diff_lineno"],
+            "diff_file_header": tokens["diff_file_header"],
             "mascot": tokens["mascot"],
             "logo": "bold " + tokens.get("logo", "#FFFFFF"),
             "user": tokens["user"],

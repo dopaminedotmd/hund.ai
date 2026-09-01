@@ -40,10 +40,11 @@ def test_diff_block_formatting_with_line_numbers():
     diff = "- old_line\n+ new_line\n  context_line"
     formatted = format_diff_block(diff, filename="test.py", width=40)
     lines = formatted.split("\n")
-    assert lines[0].startswith("── test.py · changed ")
-    assert any(l.startswith("- 1") for l in lines)
-    assert any(l.startswith("+ 1") for l in lines)
-    assert lines[-1] == "─" * 40
+    assert lines[0].startswith("└ test.py ")
+    assert "+1 -1" in lines[0]
+    assert any(l.startswith("-") and "old_line" in l for l in lines)
+    assert any(l.startswith("+") and "new_line" in l for l in lines)
+    assert any("context_line" in l for l in lines)
 
 
 def test_multi_turn_historical_lexer_registry_and_adversarial_prose():
@@ -165,7 +166,7 @@ def test_file_change_result_binary_handling(tmp_path):
     assert res_bin.display_preview == "[binary content: image.png]"
 
 
-def test_sink_renders_created_file_code_block() -> None:
+def test_sink_renders_created_file_as_addition_diff() -> None:
     from unittest.mock import MagicMock
     from prompt_toolkit.output import DummyOutput
     from hund.tools.file_tool import FileChangeResult
@@ -195,7 +196,8 @@ def test_sink_renders_created_file_code_block() -> None:
     sink.tool_result("write_file", change)
 
     text = out_buf.text
-    assert "── test_app.py" in text
+    assert "└ test_app.py  (+2 -0)" in text
+    assert "── test_app.py" not in text
     assert "def main():" in text
     assert "print('test')" in text
 
@@ -231,9 +233,9 @@ def test_sink_renders_modified_file_diff_block() -> None:
     sink.tool_result("edit_file", change)
 
     text = out_buf.text
-    assert "── config.py · changed" in text
-    assert "- DEBUG = False" in text or "- 1   DEBUG = False" in text
-    assert "+ DEBUG = True" in text or "+ 1   DEBUG = True" in text
+    assert "└ config.py " in text
+    assert "DEBUG = False" in text
+    assert "DEBUG = True" in text
 
 
 def test_sink_does_not_render_artifact_block_on_noop_or_failure() -> None:

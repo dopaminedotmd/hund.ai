@@ -1,6 +1,6 @@
-"""Hunds persona och röstkontrakt — laddar kompakt röstkontrakt för runtime och bevarar full persona för eval/design.
+"""Load Hund's canonical persona for runtime and keep the compact legacy contract.
 
-Sökningsordning för kanonisk persona (eval/design):
+Canonical persona search order (runtime/eval/design):
   1. HUND_PERSONA_PATH (env, explicit override)
   2. HundHome/brain/persona.md  (kanonisk, redigerbar)
   3. ./hund-system/hund.md  (sibling checkout)
@@ -11,6 +11,7 @@ Sökningsordning för kanonisk persona (eval/design):
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +46,11 @@ _PERSONA_CANDIDATES = [
     Path.home() / "Desktop" / "hund-system" / "hund.md",
     Path(__file__).parent / "assets" / "hund-system" / "hund.md",
 ]
+
+_ENVIRONMENT_BLOCK_RE = re.compile(
+    r"\n?<!-- HUND_ENVIRONMENT_BEGIN -->.*?<!-- HUND_ENVIRONMENT_END -->\n?",
+    re.DOTALL,
+)
 
 
 def load_canonical_persona() -> str:
@@ -99,9 +105,8 @@ def get_compact_voice_contract(user_customizations: Optional[str] = None) -> str
 
 
 def load_runtime_persona() -> str:
-    """Seed the canonical persona, then return the compact runtime contract."""
-    load_canonical_persona()
-    return get_compact_voice_contract()
+    """Return canonical persona without the separately injected environment."""
+    return _ENVIRONMENT_BLOCK_RE.sub("\n", load_canonical_persona()).strip()
 
 
 def load_persona() -> str:

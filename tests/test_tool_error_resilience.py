@@ -2,13 +2,96 @@
 from __future__ import annotations
 
 import types
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
 import pytest
 
 from hund.agent.loop import _agent_turn
 from hund.config import HundConfig
 from hund.providers.base import CompletionResult, Message
 from hund.providers.openai_compatible import OpenAICompatibleClient
+
+
+@pytest.mark.parametrize(
+    ("text", "finish_reason"),
+    [
+        ("", "stop"),
+        ("", "tool_calls"),
+        ("partial response", "length"),
+        ("filtered response", "content_filter"),
+    ],
+)
+def test_incomplete_provider_results_are_visible_failures(
+    text: str, finish_reason: str
+) -> None:
+    console = MagicMock()
+    sink = MagicMock()
+    cfg = HundConfig.load()
+    engine = MagicMock(workspace_root=".")
+    client = MagicMock()
+
+    def fake_stream(messages, tools=None):
+        client.last_result = CompletionResult(
+            text=text,
+            tool_calls=[],
+            finish_reason=finish_reason,
+        )
+        if text:
+            yield text
+
+    client.stream = fake_stream
+    messages = [Message(role="user", content="continue")]
+
+    with (
+        patch("hund.agent.loop._session_save") as save,
+        patch("hund.agent.loop._runtime_learning_hook") as learning,
+    ):
+        _agent_turn(
+            console, client, messages, [], engine, cfg, "test-session", sink=sink
+        )
+
+    sink.clear_thinking.assert_called()
+    sink.error.assert_called_once()
+    assert [message.role for message in messages] == ["user"]
+    assert not any(call.args[1] == "assistant" for call in save.call_args_list)
+    learning.assert_not_called()
+
+
+def test_successful_final_turn_captures_memory_once() -> None:
+    console = MagicMock()
+    sink = MagicMock()
+    cfg = HundConfig.load()
+    engine = MagicMock(workspace_root=Path("workspace"))
+    client = MagicMock()
+
+    def fake_stream(messages, tools=None):
+        client.last_result = CompletionResult(
+            text="hund remembers.", tool_calls=[], finish_reason="stop"
+        )
+        yield "hund remembers."
+
+    client.stream = fake_stream
+    messages = [Message(role="user", content="My name is William.")]
+    with (
+        patch("hund.agent.loop._session_save"),
+        patch("hund.agent.loop._feedback_hook"),
+        patch("hund.agent.loop._runtime_learning_hook"),
+        patch("hund.paths.workspace_id", return_value="workspace-id"),
+        patch(
+            "hund.agent.memory_extractor.extract_and_record_memories"
+        ) as capture,
+    ):
+        capture.side_effect = OSError("memory store unavailable")
+        _agent_turn(
+            console, client, messages, [], engine, cfg, "test-session", sink=sink
+        )
+
+    capture.assert_called_once()
+    assert capture.call_args.args == ("My name is William.",)
+    assert capture.call_args.kwargs["workspace_id"] == "workspace-id"
+    assert capture.call_args.kwargs["evidence_id"]
+    assert messages[-1].role == "assistant"
 
 
 def test_consecutive_tool_errors_aborts_turn() -> None:
@@ -150,6 +233,49 @@ def test_thinking_called_once_across_multiple_tool_rounds() -> None:
     assert sink.thinking.call_count == 1
 
 
+def test_tool_call_text_stays_hidden_until_confirmation() -> None:
+    console = MagicMock()
+    sink = MagicMock()
+    cfg = HundConfig.load()
+    engine = MagicMock(workspace_root=".")
+    client = MagicMock()
+    rounds = [0]
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "write_file", "arguments": '{"path":"x.txt","content":"x"}'},
+    }
+
+    def fake_stream(messages, tools=None):
+        rounds[0] += 1
+        if rounds[0] == 1:
+            client.last_result = CompletionResult(
+                text="The file is already changed.",
+                tool_calls=[tool_call],
+                finish_reason="tool_calls",
+            )
+            yield "The file is already changed."
+        else:
+            client.last_result = CompletionResult(
+                text="hund changed the file.", tool_calls=[], finish_reason="stop"
+            )
+            yield "hund changed the file."
+
+    client.stream = fake_stream
+    messages = [Message(role="user", content="change x.txt")]
+
+    with (
+        patch("hund.agent.loop.dispatch_tool_call", return_value="ok"),
+        patch("hund.agent.loop._session_save"),
+        patch("hund.agent.loop._feedback_hook"),
+        patch("hund.agent.loop._runtime_learning_hook"),
+    ):
+        _agent_turn(console, client, messages, [], engine, cfg, "test-session", sink=sink)
+
+    assert all(call.args != ("The file is already changed.",) for call in sink.thinking.call_args_list)
+    sink.chunk.assert_called_once_with("hund changed the file.")
+
+
 def test_last_round_is_reserved_for_final_synthesis() -> None:
     console = MagicMock()
     sink = MagicMock()
@@ -205,3 +331,41 @@ def test_last_round_is_reserved_for_final_synthesis() -> None:
     assert seen_tools[-1] == []
     assert messages[-1].role == "assistant"
     assert messages[-1].content == "hund har tillräcklig evidens."
+
+
+def test_turn_cancellation_aborts_loop_immediately() -> None:
+    """When sink reports cancellation (Ctrl+C), agent turn terminates immediately without emitting chunks or tools."""
+    console = MagicMock()
+    sink = MagicMock()
+    cancelled = [False]
+    sink.is_cancelled.side_effect = lambda: cancelled[0]
+
+    cfg = HundConfig.load()
+    engine = MagicMock(workspace_root=".")
+    client = MagicMock()
+
+    stream_chunks = []
+    def fake_stream(messages, tools=None):
+        cancelled[0] = True  # User presses Ctrl+C during streaming
+        client.last_result = CompletionResult(
+            text="some response that should not leak",
+            tool_calls=[],
+            finish_reason="stop",
+        )
+        yield "some chunk"
+
+    client.stream = fake_stream
+    messages = [Message(role="user", content="hello")]
+
+    with (
+        patch("hund.agent.loop._session_save") as save,
+        patch("hund.agent.loop.dispatch_tool_call") as dispatch,
+    ):
+        _agent_turn(
+            console, client, messages, [], engine, cfg, "test-session", sink=sink
+        )
+
+    sink.chunk.assert_not_called()
+    sink.end_assistant.assert_not_called()
+    dispatch.assert_not_called()
+    assert not any(call.args[1] == "assistant" for call in save.call_args_list)

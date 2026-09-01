@@ -17,6 +17,13 @@ _STOP = {
     "what", "were", "från", "som", "och", "the", "vår", "our", "we", "hade",
     "bestämde", "igen", "mitt", "projekt", "changed",
 }
+_IDENTITY_QUESTIONS = {
+    "vem är jag",
+    "vad heter jag",
+    "vad vet du om mig",
+    "minns du mig",
+    "vad kan du om mig",
+}
 
 
 @dataclass(frozen=True)
@@ -33,6 +40,9 @@ class ContinuityResolver:
         self, user_message: str, current_context: dict[str, Any] | None = None
     ) -> ContinuityPlan:
         lower = user_message.casefold()
+        normalized = " ".join(re.findall(r"\w+", lower))
+        if normalized in _IDENTITY_QUESTIONS:
+            return ContinuityPlan(False)
         detected = any(cue in lower for cue in _CUES)
         if not detected:
             return ContinuityPlan(False)
@@ -52,4 +62,3 @@ class ContinuityResolver:
         return ContinuityPlan(
             True, tuple(nouns), tuple(queries[:2]),
         )
-

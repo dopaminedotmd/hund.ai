@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from hund.ui.activity import ActivityStatus, ActivityTimeline, activity_group, describe_tool
+from hund.ui.unicode_cells import cell_width
 
 
 def test_activity_groups_observed_tools_without_reasoning_text() -> None:
@@ -20,6 +23,18 @@ def test_activity_timeline_replaces_running_state() -> None:
     assert timeline.render_lines() == ["  ┊ ⟳ searched the web for Hund"]
     timeline.finish(event_id, ActivityStatus.COMPLETE, duration_s=0.9)
     assert timeline.render_lines() == ["  ┊ ✓ searched the web for Hund · 0.9s"]
+
+
+@pytest.mark.parametrize("width", [42, 60, 80])
+def test_activity_lines_fit_the_available_width(width: int) -> None:
+    timeline = ActivityTimeline()
+    event_id = timeline.start(
+        "search_files",
+        "searched a deeply nested workspace target with a long query",
+    )
+    timeline.finish(event_id, ActivityStatus.ERROR, duration_s=12.3, detail="permission denied")
+
+    assert all(cell_width(line) <= width for line in timeline.render_lines(width))
 
 
 def test_activity_timeline_renders_grouped_read_events() -> None:

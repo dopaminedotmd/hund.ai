@@ -6,6 +6,7 @@ action in code; prompt instructions are never treated as a security boundary.
 from __future__ import annotations
 
 import re
+import shlex
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -127,21 +128,6 @@ _TERMINAL_CONFIRM_PATTERNS: tuple[
 )
 
 _TERMINAL_SAFE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(
-            r"^\s*(?:pwd|dir|ls|Get-Location|Get-ChildItem|Test-Path)"
-            r"(?:\s+[^\r\n]*)?$",
-            re.IGNORECASE,
-        ),
-        "terminal.safe.inspect",
-    ),
-    (
-        re.compile(
-            r"^\s*(?:rg|Get-Content|Select-String)(?:\s+[^\r\n]+)?$",
-            re.IGNORECASE,
-        ),
-        "terminal.safe.read",
-    ),
     (
         re.compile(
             r"^\s*git\s+(?:status|diff|log|show|rev-parse)\b[^\r\n]*$",
@@ -286,8 +272,77 @@ class PermissionEngine:
                     return f"Terminal command blocked: {description}."
         return None
 
-    @staticmethod
-    def _classify_terminal_command(command: str) -> Decision:
+    def _read_only_policy(self, command: str) -> str | None:
+        """Return a safe policy only for exact workspace-scoped read grammar."""
+        try:
+            tokens = shlex.split(command, posix=False)
+        except ValueError:
+            return None
+        if not tokens:
+            return None
+
+        name = tokens[0].casefold()
+        paths: list[str] = []
+        if name in {"pwd", "get-location"}:
+            if len(tokens) != 1:
+                return None
+        elif name in {"dir", "ls", "get-childitem"}:
+            allowed_options = {"-l", "-a", "-la", "-al", "-force"}
+            paths = [token for token in tokens[1:] if not token.startswith("-")]
+            options = [
+                token.casefold() for token in tokens[1:] if token.startswith("-")
+            ]
+            if len(paths) > 1 or any(
+                option not in allowed_options for option in options
+            ):
+                return None
+        elif name in {"test-path", "get-content"}:
+            if len(tokens) != 2:
+                return None
+            paths = [tokens[1]]
+        elif name == "select-string":
+            if (
+                len(tokens) != 5
+                or tokens[1].casefold() != "-path"
+                or tokens[3].casefold() != "-pattern"
+            ):
+                return None
+            paths = [tokens[2]]
+        elif name == "rg":
+            if len(tokens) == 4 and tokens[1] == "-n":
+                paths = [tokens[3]]
+            elif tokens[1:] == ["--files"]:
+                paths = []
+            elif len(tokens) == 3 and tokens[1] == "--files":
+                paths = [tokens[2]]
+            else:
+                return None
+        else:
+            return None
+
+        for raw_path in paths:
+            value = (
+                raw_path[1:-1]
+                if len(raw_path) >= 2
+                and raw_path[0] == raw_path[-1]
+                and raw_path[0] in "\"'"
+                else raw_path
+            )
+            if (
+                not value
+                or any(char in value for char in "*?[]$%")
+                or value.startswith(("~", "\\\\"))
+                or ".." in Path(value).parts
+            ):
+                return None
+            try:
+                resolved = (self.workspace_root / value).resolve()
+                resolved.relative_to(self.workspace_root)
+            except (OSError, ValueError):
+                return None
+        return "terminal.safe.read"
+
+    def _classify_terminal_command(self, command: str) -> Decision:
         """Classify a complete untrusted shell command conservatively."""
         for pattern, policy_id, description in _TERMINAL_DANGEROUS_PATTERNS:
             if pattern.search(command):
@@ -304,6 +359,7 @@ class PermissionEngine:
                 allowed=False,
                 reason="Compound or arbitrary shell execution requires approval.",
                 policy_id="terminal.compound",
+                session_allowable=True,
             )
 
         for (
@@ -321,6 +377,14 @@ class PermissionEngine:
                     session_allowable=session_allowable,
                 )
 
+        if policy_id := self._read_only_policy(command):
+            return Decision(
+                RiskLevel.SAFE,
+                allowed=True,
+                reason="Complete read-only command matched the safe policy.",
+                policy_id=policy_id,
+            )
+
         if not _UNSCOPED_READ_PATH_RE.search(command):
             for pattern, policy_id in _TERMINAL_SAFE_PATTERNS:
                 if pattern.fullmatch(command):
@@ -336,6 +400,7 @@ class PermissionEngine:
             allowed=False,
             reason="Unknown or unscoped terminal command requires approval.",
             policy_id="terminal.unknown",
+            session_allowable=True,
         )
 
     @staticmethod

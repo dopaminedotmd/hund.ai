@@ -31,6 +31,8 @@ from pathlib import Path
 
 def hund_home() -> Path:
     """Rotkatalog för Hund lokal data. Skapas ej här — endast på begäran."""
+    if override := os.environ.get("HUND_HOME", "").strip():
+        return Path(override).expanduser().resolve()
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home())
         return Path(base) / "hund"

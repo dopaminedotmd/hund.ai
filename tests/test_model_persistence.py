@@ -63,6 +63,15 @@ def test_custom_endpoint_persistence(tmp_path: Path) -> None:
         assert any(o.model_id == "mistralai/Mistral-7B" for o in opts_with_key)
 
 
+def test_openrouter_free_router_only_when_configured(tmp_path: Path, monkeypatch) -> None:
+    cfg = HundConfig()
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with patch("keyring.get_password", return_value=None):
+        assert not any(o.model_id == "openrouter/free" for o in get_options(cfg))
+    with patch("keyring.get_password", return_value="sk-test"):
+        assert any(o.model_id == "openrouter/free" for o in get_options(cfg))
+
+
 def test_activate_model_persists_config(tmp_path: Path, monkeypatch) -> None:
     cfg_file = tmp_path / "config.json"
     cfg = HundConfig()

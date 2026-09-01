@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import pytest
 
 from prompt_toolkit.application import Application
@@ -898,7 +898,45 @@ def test_fullscreen_has_explicit_ctrl_d_exit_binding() -> None:
 
     _app, ctx = create_fullscreen_app(rt, state, output=DummyOutput())
 
-    assert ctx["kb"].get_bindings_for_keys((Keys.ControlD,))
+    bindings = ctx["kb"].get_bindings_for_keys((Keys.ControlD,))
+    assert bindings
+
+    event = MagicMock()
+    bindings[-1].handler(event)
+    event.app.exit.assert_called_once_with()
+
+
+def test_ctrl_c_never_exits_for_selection_active_turn_input_or_idle() -> None:
+    from prompt_toolkit.keys import Keys
+    from hund.ui.fullscreen import create_fullscreen_app
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock(theme_name="marshmallow", extra={}, start_time=0.0)
+    app, ctx = create_fullscreen_app(rt, state, output=DummyOutput())
+    assert app.mouse_support()
+    handler = ctx["kb"].get_bindings_for_keys((Keys.ControlC,))[-1].handler
+    event = MagicMock()
+
+    output = ctx["output_buffer"]
+    output.set_document(Document("selected", cursor_position=0), bypass_readonly=True)
+    output.start_selection()
+    output.cursor_position = len(output.text)
+    with patch("hund.ui.fullscreen.clipboard.copy_text", return_value=True):
+        handler(event)
+
+    ctx["turn_running"][0] = True
+    handler(event)
+    assert ctx["turn_running"][0] is False
+
+    ctx["input_buffer"].text = "draft"
+    handler(event)
+    assert ctx["input_buffer"].text == ""
+
+    handler(event)
+    event.app.exit.assert_not_called()
 
 def test_mouse_click_and_drag_selection() -> None:
     from hund.ui.fullscreen import create_fullscreen_app
