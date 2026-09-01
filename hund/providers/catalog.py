@@ -151,6 +151,26 @@ MODEL_OPTIONS: tuple[ModelOption, ...] = (
         "https://openrouter.ai/api/v1", 256_000, "openrouter",
         "Free Nemotron preset", env_name="OPENROUTER_API_KEY",
     ),
+    ModelOption(
+        "openrouter", "OpenRouter", "z-ai/glm-5.2:free",
+        "https://openrouter.ai/api/v1", 256_000, "openrouter",
+        "GLM 5.2 (Free)", env_name="OPENROUTER_API_KEY",
+    ),
+    ModelOption(
+        "openrouter", "OpenRouter", "minimax/minimax-m3:free",
+        "https://openrouter.ai/api/v1", 1_000_000, "openrouter",
+        "MiniMax M3 (Free)", env_name="OPENROUTER_API_KEY",
+    ),
+    ModelOption(
+        "openrouter", "OpenRouter", "thinkingmachines/inkling:free",
+        "https://openrouter.ai/api/v1", 1_000_000, "openrouter",
+        "Inkling (Free)", env_name="OPENROUTER_API_KEY",
+    ),
+    ModelOption(
+        "openrouter", "OpenRouter", "openrouter/free",
+        "https://openrouter.ai/api/v1", 200_000, "openrouter",
+        "Free router; low-volume testing only", env_name="OPENROUTER_API_KEY",
+    ),
     # Groq suite
     ModelOption(
         "groq", "Groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1",

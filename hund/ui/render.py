@@ -276,7 +276,7 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
     ])
 
     # Two columns need enough room for labels, bars, and percentages.
-    if W >= 80:
+    if W >= 72:
         col_left = (W - 6 - 4) // 2
         col_right = (W - 6 - 4) - col_left
 
@@ -315,7 +315,7 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
         lines.append(row(f"{rule} BASE STATS {rule}"))
         for abbr, name, pct in attr_data:
             bar = progress_bar(pct, bar_w)
-            lines.append(row(f"{abbr} {name:<9} {bar} {pct}%"))
+            lines.append(row(f"{abbr} {name:<10} {bar} {pct}%"))
         lines.append(empty)
         lines.append(row(skills_header))
         if skill_data:
@@ -367,8 +367,14 @@ def _sanitize_block_label(value: str, max_cells: int) -> str:
     return slice_cells(clean, max(max_cells, 0))[0]
 
 
-def format_diff_block(diff_text: str, filename: str = "", width: int = 70, is_open: bool = False) -> str:
-    """Format a diff block for streaming response box."""
+def format_diff_block(
+    diff_text: str,
+    filename: str = "",
+    width: int = 70,
+    is_open: bool = False,
+    is_limited: bool = False,
+) -> str:
+    """Format a frameless diff artifact for both streaming presentation paths."""
     w = max(width, 24)
     raw_lines = diff_text.strip("\n").splitlines() if diff_text else []
 
@@ -395,43 +401,43 @@ def format_diff_block(diff_text: str, filename: str = "", width: int = 70, is_op
     if not content_lines:
         content_lines = [(" ", l) for l in raw_lines]
 
-    show_line_numbers = len(content_lines) >= 3
     body_lines: list[str] = []
 
     old_num = 1
     new_num = 1
     for kind, text in content_lines:
-        if show_line_numbers:
-            if kind == "-":
-                body_lines.append(f"- {old_num:<3} {text.rstrip()}")
-                old_num += 1
-            elif kind == "+":
-                body_lines.append(f"+ {new_num:<3} {text.rstrip()}")
-                new_num += 1
-            else:
-                body_lines.append(f"  {new_num:<3} {text.rstrip()}")
-                old_num += 1
-                new_num += 1
+        if kind == "-":
+            prefix = f"- {old_num:>4} "
+            old_num += 1
+        elif kind == "+":
+            prefix = f"+ {new_num:>4} "
+            new_num += 1
         else:
-            if kind == "-":
-                body_lines.append(f"- {text.rstrip()}")
-            elif kind == "+":
-                body_lines.append(f"+ {text.rstrip()}")
-            else:
-                body_lines.append(f"  {text.rstrip()}")
+            prefix = f"  {new_num:>4} "
+            old_num += 1
+            new_num += 1
+        content, _ = slice_cells(text.rstrip(), max(w - cell_width(prefix), 0))
+        row = prefix + content
+        body_lines.append(row + " " * max(w - cell_width(row), 0))
 
-    filename = _sanitize_block_label(filename, max(w - cell_width("──  · changed ") - 2, 1))
-    label = f"{filename} · changed" if filename else "diff"
-    label = _sanitize_block_label(label, max(w - cell_width("──  ") - 2, 1)) or "diff"
-    title_part = f"── {label} "
-    title_w = cell_width(title_part)
-    dashes = max(w - title_w, 2)
-    header = f"{title_part}{'─' * dashes}"
+    adds = sum(kind == "+" for kind, _ in content_lines)
+    dels = sum(kind == "-" for kind, _ in content_lines)
+    counts = f"  (+{adds} -{dels})"
+    filename = _sanitize_block_label(filename or "diff", max(w - cell_width("└ ") - cell_width(counts), 1))
+    lines = [f"└ {filename}{counts}", *body_lines]
+    if is_limited:
+        lines.append("… Diff preview limited.")
+    return "\n".join(lines)
 
-    if is_open:
-        return "\n".join([header] + body_lines)
-    footer = "─" * w
-    return "\n".join([header] + body_lines + [footer])
+
+def repad_diff_block(lines: list[str], width: int) -> list[str]:
+    """Re-pad registered diff rows after the terminal width changes."""
+    w = max(width, 24)
+    return [
+        line if index == 0 or line == "… Diff preview limited."
+        else slice_cells(line.rstrip(), w)[0] + " " * max(w - cell_width(slice_cells(line.rstrip(), w)[0]), 0)
+        for index, line in enumerate(lines)
+    ]
 
 
 def format_code_block(code: str, language: str = "", filename: str = "", width: int = 70, is_open: bool = False) -> str:
@@ -736,8 +742,9 @@ def render_response_box_from_segments(
                 formatted_content_lines.append((sanitize_display_line(l), "code", lang))
         elif stype_str == "diff":
             block_str = format_diff_block("\n".join(lines), filename=fn, width=cw, is_open=is_open)
+            diff_language = normalize_language_alias(fn.rsplit(".", 1)[-1]) if "." in fn else "diff"
             for l in block_str.split("\n"):
-                formatted_content_lines.append((sanitize_display_line(l), "diff", "diff"))
+                formatted_content_lines.append((sanitize_display_line(l), "diff", diff_language))
         else:
             prose_text = "\n".join(lines) if isinstance(lines, (list, tuple)) else str(lines)
             wrapped = wrap_cells(prose_text, cw)

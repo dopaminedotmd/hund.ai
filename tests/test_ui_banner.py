@@ -164,7 +164,7 @@ def test_startup_layout_stacks_truthful_specialisations_and_defensively_caps_pro
         skills_index = banner.index("── ACTIVE SKILLS")
         specialisations_index = banner.index("SPECIALISATIONS (0/6)")
         assert base_index < skills_index < specialisations_index
-        if width < 80:
+        if width < 72:
             assert " │  " not in banner[base_index:specialisations_index]
         else:
             assert " │  " in banner[base_index:specialisations_index]
@@ -231,7 +231,7 @@ def test_banner_breakpoint_preserves_full_percentages(monkeypatch) -> None:
         assert all(cell_width(line) == width for line in banner.splitlines())
         assert banner.count("100%") == 6, f"W={width}\n{banner}"
         stats_section = banner.split("── BASE STATS", 1)[1]
-        if width < 80:
+        if width < 72:
             assert " │  " not in stats_section
         else:
             assert " │  " in stats_section

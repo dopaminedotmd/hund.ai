@@ -10,9 +10,19 @@ from dataclasses import dataclass, replace
 from enum import Enum
 import os
 from pathlib import Path
+import shutil
 from typing import Iterable
 
 from ..learning.redactor import redact_text
+from .unicode_cells import cell_width, slice_cells
+
+
+def _fit_width(line: str, width: int) -> str:
+    if cell_width(line) <= width:
+        return line
+    if width <= 1:
+        return "…"
+    return slice_cells(line, width - 1)[0] + "…"
 
 
 class ActivityStatus(str, Enum):
@@ -182,7 +192,7 @@ class ActivityTimeline:
                 )
                 return
 
-    def render_lines(self) -> list[str]:
+    def render_lines(self, width: int | None = None) -> list[str]:
         if not self._events:
             return []
 
@@ -288,7 +298,8 @@ class ActivityTimeline:
             elif len(self._events) >= 3:
                 lines.append(f"  ╰─ completed · {len(self._events)} steps · {total:.1f}s")
 
-        return lines
+        available_width = width or max(shutil.get_terminal_size((80, 24)).columns - 1, 1)
+        return [_fit_width(line, available_width) for line in lines]
 
     def render(self) -> str:
         lines = self.render_lines()

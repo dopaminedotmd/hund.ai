@@ -15,6 +15,7 @@ class ConfirmVerdict(str, Enum):
     """Verdict returned by a confirm() implementation."""
 
     APPROVE_ONCE = "approve_once"
+    ALLOW_TURN = "allow_turn"
     ALLOW_SESSION = "allow_session"
     EDIT = "edit"
     DENY = "deny"
@@ -35,6 +36,7 @@ class ConfirmRequest:
     reason: str = "Approval required"
     policy_id: str = ""
     session_allowable: bool = False
+    turn_allowable: bool = False
 
 
 @dataclass(frozen=True)

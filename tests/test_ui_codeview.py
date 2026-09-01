@@ -37,14 +37,13 @@ def test_format_code_block_no_raw_fences() -> None:
     assert "──" in formatted
 
 
-def test_format_diff_block_line_numbers_hide_under_3_lines() -> None:
-    # 2 lines total -> hide line numbers
+def test_format_diff_block_line_numbers_are_fixed_for_short_diffs() -> None:
     diff_2 = "- old_line\n+ new_line"
     formatted = format_diff_block(diff_2, filename="short.py", width=70)
 
-    lines = [line for line in formatted.splitlines() if line.strip() and not line.startswith("──")]
-    assert any(line.startswith("-") for line in lines)
-    assert not any(line.startswith("1") for line in lines)
+    lines = [line for line in formatted.splitlines() if line.startswith(("-", "+"))]
+    assert lines[0].startswith("-    1 ")
+    assert lines[1].startswith("+    1 ")
 
 
 def test_format_diff_block_line_numbers_shown_for_3_or_more_lines() -> None:
@@ -53,7 +52,7 @@ def test_format_diff_block_line_numbers_shown_for_3_or_more_lines() -> None:
     formatted = format_diff_block(diff_4, filename="auth.py", width=70)
 
     assert "auth.py" in formatted
-    lines = [line for line in formatted.splitlines() if line.strip() and not line.startswith("──")]
+    lines = [line for line in formatted.splitlines() if line.strip() and not line.startswith("└")]
     assert any("1" in line for line in lines)
     assert any("2" in line and "-" in line for line in lines)
     assert any("2" in line and "+" in line for line in lines)
@@ -72,17 +71,22 @@ def test_smart_filename_detection_from_leading_comment() -> None:
     # Diff with // auth.ts leading comment
     diff = "// auth.ts\n- const a = 1\n+ const a = 2"
     formatted_diff = format_diff_block(diff, filename="", width=70)
-    assert "── auth.ts · changed" in formatted_diff
+    assert formatted_diff.startswith("└ auth.ts  (+1 -1)")
 
 
 def test_theme_add_del_styles() -> None:
     from hund.ui.theme import make_pt_style
     st = make_pt_style("bone")
 
-    # Check style rules for add and del
+    # Check style rules for add and del: bg only, no fg override, no strike
     rules_dict = dict(st.style_rules)
     assert "add" in rules_dict
     assert "del" in rules_dict
+    assert "bg:#1e3a2b" in rules_dict["add"].lower()
+    assert "bg:#3d1e24" in rules_dict["del"].lower()
+    assert "fg:" not in rules_dict["add"].lower()
+    assert "fg:" not in rules_dict["del"].lower()
+    assert "strike" not in rules_dict["del"]
     assert "backdrop" in rules_dict
 
 
@@ -107,8 +111,22 @@ def test_pygments_lex_code_highlighting() -> None:
     tokens = _lex_pygments_code("def hello():", "  ", "python")
 
     assert tokens[0] == ("", "  ")
-    assert any("class:accent" in t[0] and t[1] == "def" for t in tokens)
-    assert any("class:primary" in t[0] and t[1] == "hello" for t in tokens)
+    assert any("class:pygments" in t[0] and t[1] == "def" for t in tokens)
+    assert any("class:pygments" in t[0] and t[1] == "hello" for t in tokens)
+
+
+def test_deleted_diff_rows_do_not_use_strike() -> None:
+    from hund.ui import theme
+
+    assert "strike" not in dict(theme.make_pt_style().style_rules)["del"]
+
+
+def test_unregistered_box_line_lexes_without_error() -> None:
+    from prompt_toolkit.document import Document
+    from hund.ui.fullscreen import _OutputLexer
+
+    get_line = _OutputLexer().lex_document(Document("│ ordinary response │"))
+    assert get_line(0)
 
 
 def test_output_lexer_backdrop_dim_when_modal_active() -> None:

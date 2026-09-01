@@ -425,7 +425,7 @@ def strip_rich(text: str) -> str:
 def _confirm_title(request: ConfirmRequest) -> str:
     """Derive a human-readable title from a ConfirmRequest."""
     titles = {
-        "terminal": "hund wants to run a command",
+        "terminal": "hund wants to run a potentially dangerous command",
         "read_file": "hund wants to read a file",
         "write_file": "hund wants to write a file",
         "delete_file": "hund wants to delete a file",

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 from datetime import datetime, timezone
 
 from rich.console import Console
@@ -13,21 +14,77 @@ from .safety import PermissionEngine, RiskLevel, Decision
 from .types import ConfirmRequest, ConfirmResponse, ConfirmVerdict, normalize_confirm_response
 from ..trace.events import create_event, write_event
 
+def _canonical_args_str(args: object) -> str:
+    if args is None:
+        return ""
+    if isinstance(args, dict):
+        return json.dumps(args, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return str(args)
+
+
+def _emit_session_grant_event(
+    event_type: str,
+    payload: dict,
+    *,
+    session_id: str,
+    workspace_id: str | None = None,
+    run_id: str | None = None,
+    risk_level: str = "none",
+    tool_name: str | None = None,
+    approval_id: str | None = None,
+) -> None:
+    if not session_id:
+        return
+    try:
+        event = create_event(
+            workspace_id=workspace_id or str(Path.cwd()),
+            session_id=session_id,
+            run_id=run_id or uuid.uuid4().hex,
+            actor="hund",
+            event_type=event_type,
+            policy_version="1.0.0",
+            payload_unredacted=payload,
+            risk=risk_level,
+            tool_name=tool_name or "",
+            approval_id=approval_id,
+        )
+        write_event(event)
+    except Exception:
+        pass
+
+
 class SessionAllowlist:
     """Store narrowly scoped policy approvals for one live session."""
 
     def __init__(self) -> None:
-        self._allowed: dict[str, set[tuple[str, str]]] = {}
+        self._allowed: dict[str, set[tuple[str, str, str, str]]] = {}
 
     def is_allowed(
-        self, session_id: str | None, tool: str, policy_id: str | None
+        self,
+        session_id: str | None,
+        tool: str,
+        policy_id: str | None,
+        args: dict | None = None,
+        risk: str | RiskLevel | None = None,
     ) -> bool:
         if not session_id or not policy_id:
             return False
-        return (tool, policy_id) in self._allowed.get(session_id, set())
+        risk_str = risk.value if isinstance(risk, RiskLevel) else (risk or "confirm")
+        canonical = _canonical_args_str(args)
+        entries = self._allowed.get(session_id, set())
+        if tool == "terminal":
+            return any(
+                entry_tool == tool and entry_policy == policy_id and entry_risk == risk_str
+                for entry_tool, entry_policy, entry_risk, _entry_args in entries
+            )
+        return (tool, policy_id, risk_str, canonical) in entries
 
     def allow(
-        self, session_id: str | None, tool: str, decision: Decision
+        self,
+        session_id: str | None,
+        tool: str,
+        decision: Decision,
+        args: dict | None = None,
     ) -> bool:
         if (
             not session_id
@@ -36,12 +93,73 @@ class SessionAllowlist:
             or not decision.session_allowable
         ):
             return False
-        self._allowed.setdefault(session_id, set()).add((tool, decision.policy_id))
+        risk_str = decision.risk.value
+        canonical = _canonical_args_str(args)
+        self._allowed.setdefault(session_id, set()).add(
+            (tool, decision.policy_id, risk_str, canonical)
+        )
         return True
 
-    def clear_session(self, session_id: str | None) -> None:
+    def revoke(
+        self,
+        session_id: str | None,
+        tool: str,
+        policy_id: str | None,
+        args: dict | None = None,
+        risk: str | RiskLevel | None = None,
+        *,
+        run_id: str | None = None,
+        workspace_id: str | None = None,
+        approval_id: str | None = None,
+    ) -> bool:
+        if not session_id or not policy_id:
+            return False
+        risk_str = risk.value if isinstance(risk, RiskLevel) else (risk or "confirm")
+        canonical = _canonical_args_str(args)
+        entries = self._allowed.get(session_id)
+        key = (tool, policy_id, risk_str, canonical)
+        if entries and key in entries:
+            entries.remove(key)
+            _emit_session_grant_event(
+                "session_grant_revoked",
+                {
+                    "session_id": session_id,
+                    "tool": tool,
+                    "policy_id": policy_id,
+                    "risk": risk_str,
+                    "args": args,
+                },
+                session_id=session_id,
+                workspace_id=workspace_id,
+                run_id=run_id,
+                risk_level=risk_str,
+                tool_name=tool,
+                approval_id=approval_id,
+            )
+            return True
+        return False
+
+    def clear_session(
+        self,
+        session_id: str | None,
+        *,
+        run_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         if session_id:
-            self._allowed.pop(session_id, None)
+            existed = self._allowed.pop(session_id, None)
+            if existed:
+                _emit_session_grant_event(
+                    "session_grant_cleared",
+                    {
+                        "session_id": session_id,
+                        "cleared_grants": len(existed),
+                    },
+                    session_id=session_id,
+                    workspace_id=workspace_id,
+                    run_id=run_id,
+                    risk_level="none",
+                )
 
     def clear(self) -> None:
         """Clear all sessions (for test fixtures / resets)."""
@@ -49,10 +167,14 @@ class SessionAllowlist:
 
     def __contains__(self, tool: str) -> bool:
         """Support diagnostic membership checks without broadening scope."""
-        return any(any(entry_tool == tool for entry_tool, _ in entries) for entries in self._allowed.values())
+        return any(
+            any(entry_tool == tool for entry_tool, _, _, _ in entries)
+            for entries in self._allowed.values()
+        )
 
 
 _SESSION_ALLOWLIST = SessionAllowlist()
+_TURN_TERMINAL_ALLOWLIST: set[tuple[str, str]] = set()
 
 
 def _parse(tc: dict) -> tuple[str, dict]:
@@ -141,16 +263,31 @@ def dispatch_tool_call(
         "reason": decision.reason
     }, risk_level=decision.risk.value)
 
-    # A session grant only applies to the exact policy category that was approved.
+    if (
+        name == "terminal"
+        and decision.risk is RiskLevel.CONFIRM
+        and session_id
+        and turn_id
+        and (session_id, turn_id) in _TURN_TERMINAL_ALLOWLIST
+    ):
+        decision = Decision(RiskLevel.SAFE, allowed=True, reason="Approved terminal commands for this turn")
+
+    # A session grant only applies to the exact policy category, risk and arguments that were approved.
     if (
         decision.risk is RiskLevel.CONFIRM
         and decision.session_allowable
-        and _SESSION_ALLOWLIST.is_allowed(session_id, name, decision.policy_id)
+        and _SESSION_ALLOWLIST.is_allowed(session_id, name, decision.policy_id, args=args, risk=decision.risk)
     ):
+        _emit("session_grant_hit", {
+            "tool": name,
+            "policy_id": decision.policy_id,
+            "risk": decision.risk.value,
+            "args": args,
+        }, risk_level=decision.risk.value)
         decision = Decision(
             RiskLevel.SAFE,
             allowed=True,
-            reason="Approved policy category for this session",
+            reason="Approved command for this session",
             policy_id=decision.policy_id,
             session_allowable=False,
         )
@@ -247,6 +384,7 @@ def dispatch_tool_call(
             reason=decision.reason,
             policy_id=decision.policy_id or "",
             session_allowable=decision.session_allowable,
+            turn_allowable=name == "terminal" and decision.risk is RiskLevel.CONFIRM,
         )
 
         if hooks is not None:
@@ -256,7 +394,8 @@ def dispatch_tool_call(
             if len(preview) > 200:
                 preview = preview[:200] + "…"
             prompt = (
-                f"[yellow]{decision.risk.upper()}[/yellow] hund wants to run "
+                f"[yellow]{decision.risk.upper()}[/yellow] "
+                "hund wants to run a potentially dangerous command: "
                 f"[bold]{name}[/bold] {preview} — allow? [y/N]"
             )
             ans = console.input(prompt + " ").strip().lower()
@@ -309,10 +448,16 @@ def dispatch_tool_call(
 
         _emit("tool_call_approved", {}, risk_level=decision.risk.value, approval_id=approved_id)
 
-        if (
-            verdict is ConfirmVerdict.ALLOW_SESSION
-        ):
-            _SESSION_ALLOWLIST.allow(session_id, name, decision)
+        if verdict is ConfirmVerdict.ALLOW_SESSION:
+            if _SESSION_ALLOWLIST.allow(session_id, name, decision, args=args):
+                _emit("session_grant_added", {
+                    "tool": name,
+                    "policy_id": decision.policy_id,
+                    "risk": decision.risk.value,
+                    "args": args,
+                }, risk_level=decision.risk.value, approval_id=approved_id)
+        elif verdict is ConfirmVerdict.ALLOW_TURN and name == "terminal" and session_id and turn_id:
+            _TURN_TERMINAL_ALLOWLIST.add((session_id, turn_id))
 
     if publication_binding is not None:
         pub_session_id, pub_auth_id, pub_hash = publication_binding

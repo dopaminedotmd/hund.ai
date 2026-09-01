@@ -60,6 +60,10 @@ EVENT_TYPES = {
     "cloud_registered",
     "cloud_heartbeat",
     "cloud_deployed",
+    "session_grant_added",
+    "session_grant_hit",
+    "session_grant_revoked",
+    "session_grant_cleared",
 }
 
 ACTORS = {"user", "hund", "agent", "subagent", "connector", "system", "evaluator", "worktree_agent"}

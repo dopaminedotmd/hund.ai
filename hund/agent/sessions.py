@@ -261,4 +261,10 @@ def delete(session_id: str, home: Optional[Path] = None) -> int:
     n = conn.execute("DELETE FROM sessions WHERE id=?", (full,)).rowcount
     conn.commit()
     conn.close()
+    try:
+        from .tool_dispatch import _SESSION_ALLOWLIST
+
+        _SESSION_ALLOWLIST.clear_session(full)
+    except Exception:
+        pass
     return n

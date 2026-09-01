@@ -55,8 +55,7 @@ def test_retry_on_429_fails_after_max_retries():
         _agent_turn(console, client, messages, [], MagicMock(), MagicMock(), "session_id")
         assert mock_sleep.call_count == 3  # 1s, 2s, 4s
         
-    # messages.pop() ska ha tagit bort det ursprungliga meddelandet
-    assert len(messages) == 0
+    assert messages == [Message(role="user", content="hello")]
 
 
 def test_no_retry_on_other_errors():
@@ -72,4 +71,4 @@ def test_no_retry_on_other_errors():
         _agent_turn(console, client, messages, [], MagicMock(), MagicMock(), "session_id")
         mock_sleep.assert_not_called()
         
-    assert len(messages) == 0
+    assert messages == [Message(role="user", content="hello")]

@@ -1,3 +1,5 @@
+import pytest
+
 from hund.learning.continuity import ContinuityResolver
 
 
@@ -27,3 +29,19 @@ def test_no_cue_produces_no_search():
     assert not plan.detected
     assert plan.queries == ()
 
+
+@pytest.mark.parametrize(
+    "message",
+    (
+        "vem är jag",
+        "vad heter jag",
+        "vad vet du om mig",
+        "minns du mig",
+        "vad kan du om mig",
+    ),
+)
+def test_identity_questions_never_search_session_history(message):
+    plan = ContinuityResolver().plan(message, {"project": "hund"})
+
+    assert not plan.detected
+    assert plan.queries == ()

@@ -77,11 +77,24 @@ def test_system_prompt_budget_reduction():
     assert len(optimized_prompt) <= 6500
 
 
-def test_runtime_persona_uses_compact_contract():
+def test_runtime_persona_uses_canonical_contract_without_stale_environment(
+    monkeypatch,
+):
+    canonical = """# Canonical
+No Roleplay Recitation
+<!-- HUND_ENVIRONMENT_BEGIN -->
+stale environment
+<!-- HUND_ENVIRONMENT_END -->
+No False Certainty
+"""
+    monkeypatch.setattr("hund.persona.load_canonical_persona", lambda: canonical)
+
     runtime_persona = load_runtime_persona()
 
-    assert runtime_persona == get_compact_voice_contract()
-    assert len(runtime_persona) <= 1500
+    assert "No Roleplay Recitation" in runtime_persona
+    assert "No False Certainty" in runtime_persona
+    assert "HUND_ENVIRONMENT_BEGIN" not in runtime_persona
+    assert "stale environment" not in runtime_persona
 
 
 def test_system_prompt_hash_stability():
