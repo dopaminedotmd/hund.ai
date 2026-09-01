@@ -1,24 +1,19 @@
 # hund.ai
 
 ```text
-▄▄                   ▄▄
-██                   ██
-████▄ ██ ██ ████▄ ▄████
-██ ██ ██ ██ ██ ██ ██ ██
-██ ██ ▀██▀█ ██ ██ ▀████ ██
-HUND_ASCII_COMPACT = (
-    "        ░░    ░░░░\n"
-    "        ░░░░░░░░\n"
-    "        ░░██░░██░░\n"
-    "        ░░░░░░░░░░██\n"
-    "░░    ░░░░░░░░░░░░\n"
-    "░░  ░░░░░░░░░░░░\n"
-    "░░  ░░░░░░░░░░░░\n"
-    "░░░░░░░░░░░░░░░░\n"
-    "  ░░░░░░  ░░  ░░"
-)
+                                ████    ████      
+                                  ████████        
+                                ██████████        
+                              ████████████        
+                                ██████████        
+                                  ████████        
+▄▄                   ▄▄           ██████████    ██
+██                   ██           ████████████  ██
+████▄ ██ ██ ████▄ ▄████           ████████████████
+██ ██ ██ ██ ██ ██ ██ ██           ████████████████
+██ ██ ▀██▀█ ██ ██ ▀████ ██        ██  ██  ██████  
 
-```
+
 
 > **A self-learning, local-first terminal companion.**
 > Hund reads your machine and workspace, develops specialized skills from your real workflow, and helps you build without generic boilerplate or hallucinated assumptions.
