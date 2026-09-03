@@ -2237,10 +2237,17 @@ def create_fullscreen_app(
         _invalidate()
         return None
 
+    class _ScreenTextControl(FormattedTextControl):
+        """Screen control whose mouse wheel drives destination scroll/cursor."""
+
+        def mouse_handler(self, mouse_event: MouseEvent) -> Any:
+            return _screen_mouse_handler(mouse_event)
+
     screen_window = Window(
-        content=FormattedTextControl(lambda: _semantic_screen_fragments(_screen_text())),
+        content=_ScreenTextControl(
+            lambda: _semantic_screen_fragments(_screen_text())
+        ),
         wrap_lines=False,
-        mouse_handler=_screen_mouse_handler,
     )
     screen_container = ConditionalContainer(
         screen_window,
