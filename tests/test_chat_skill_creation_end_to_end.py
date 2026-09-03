@@ -244,3 +244,173 @@ def test_chat_skill_creation_pins_skill_for_next_turn_and_expires(tmp_path: Path
         assert "## Nyligen skapad & aktiv skill (prio: instruktioner)" not in msg_turn2.content
 
 
+# --- Track 3: authoring exit, pinned skill, next prompt (Masterplan A STEG 4) ---
+
+
+class _ShapingOkSynthesisInvalidClient:
+    """Shaping succeeds, but every synthesis attempt fails schema validation."""
+
+    def __init__(self):
+        self.synthesis_calls = 0
+
+    def complete(self, messages, tools=None, **kwargs):
+        import json
+
+        from hund.providers.base import CompletionResult
+
+        all_text = " ".join(str(m.content) for m in messages)
+        if "shaping specialist" in all_text:
+            content = json.dumps({
+                "mini_draft": {
+                    "when_to_use": "When executing marketing campaigns.",
+                    "steps": ["Step 1: Define audience.", "Step 2: Launch campaign."],
+                },
+                "questions": [
+                    {
+                        "key": "audience",
+                        "title": "Target audience",
+                        "help_text": "Choose the audience so channel and review steps fit.",
+                        "options": ["Existing customers", "New B2B prospects"],
+                        "default_option": "Existing customers",
+                    }
+                ],
+                "research_queries": [],
+            })
+        elif "quality review" in all_text or "review gate" in all_text or "skill quality" in all_text:
+            content = json.dumps({"approved": True, "score": 0.95, "issues": []})
+        else:
+            self.synthesis_calls += 1
+            # Always invalid: only one step violates the 2-8 schema rule.
+            content = json.dumps({
+                "when_to_use": "When summarizing markdown release notes for the project.",
+                "steps": ["Summarize the markdown notes."],
+                "triggers": ["summarize markdown"],
+                "verification": ["All notes covered.", "Summary is concise."],
+                "examples": ["Markdown notes summarized."],
+            })
+        return CompletionResult(text=content, prompt_tokens=100, completion_tokens=50)
+
+
+def test_failed_authoring_next_prompt_reaches_normal_loop_nothing_hangs(tmp_path: Path):
+    """Track 3: after a FAILED authoring session, the next ordinary prompt
+    reaches the agent loop on the FIRST attempt (no prompt swallowing) and
+    nothing is pinned for it."""
+    from hund.agent.loop import _run_authoring_runtime
+    from hund.agent.safety import PermissionEngine
+    from rich.console import Console
+
+    home = tmp_path / "hund_home"
+    home.mkdir()
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    reg = get_authoring_registry()
+    reg.clear()
+    intent = SkillAuthoringIntent(
+        operation="create",
+        capability="markdown summaries",
+        target_scope="project",
+        referenced_name=None,
+        local_only=True,
+        requires_research=False,
+        confidence=1.0,
+        raw_prompt="create skill for markdown summaries",
+    )
+    sess = create_authoring_session(intent, session_id="e2e-fail-next", registry=reg)
+    sess = replace(
+        sess,
+        state=AuthoringState.FAILED,
+        failure_reason=(
+            "Quality gate failed after 3 attempts: "
+            "steps must contain between 2 and 8 concrete steps"
+        ),
+    )
+    reg.save(sess)
+
+    engine = PermissionEngine(home)
+    outcome = _run_authoring_runtime(
+        "nu när det misslyckades, visa vad vi har för filer i repot",
+        session_id="e2e-fail-next",
+        workspace=ws,
+        engine=engine,
+        console=Console(quiet=True),
+        run_id="run-e2e-fail-next",
+    )
+
+    # The authoring layer must NOT swallow the prompt: falls through to the agent loop.
+    assert outcome.handled is False
+    # No receipt -> the loop pins nothing (rt.pinned_skill stays None).
+    assert outcome.receipt is None
+    # The failed session was pruned, so it cannot affect the next prompt.
+    assert reg.get("e2e-fail-next") is None
+
+
+def test_validation_retry_exhaustion_then_next_prompt_is_normal(tmp_path: Path):
+    """Track 3: a synthesis that always fails validation ends FAILED after 3
+    retries (Track 1) and the next ordinary prompt is not swallowed."""
+    from hund.skills.authoring_runtime import handle_authoring_turn
+
+    home = tmp_path / "hund_home"
+    home.mkdir()
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+
+    reg = get_authoring_registry()
+    reg.clear()
+    client = _ShapingOkSynthesisInvalidClient()
+
+    started = handle_authoring_turn(
+        "create a skill for markdown summaries without research",
+        session_id="e2e-fail-flow",
+        workspace=ws,
+        registered_tools={"read_file"},
+        registry=reg,
+        shaping_client=client,
+        client=client,
+    )
+    assert started.view is not None
+    assert started.view.question_key == "mini_draft"
+
+    confirmed = handle_authoring_turn(
+        "continue",
+        session_id="e2e-fail-flow",
+        workspace=ws,
+        registered_tools={"read_file"},
+        registry=reg,
+        shaping_client=client,
+        client=client,
+    )
+    assert confirmed.view is not None
+    assert confirmed.view.question_key == "audience"
+
+    audience = handle_authoring_turn(
+        "Existing customers",
+        session_id="e2e-fail-flow",
+        workspace=ws,
+        registered_tools={"read_file"},
+        registry=reg,
+        shaping_client=client,
+        client=client,
+    )
+    assert audience.handled is True
+
+    sess = reg.get("e2e-fail-flow")
+    assert sess is not None
+    assert sess.state == AuthoringState.FAILED
+    assert client.synthesis_calls == 3
+    assert "3 attempts" in (sess.failure_reason or "")
+
+    # The FAILED session does not swallow the next ordinary prompt.
+    next_turn = handle_authoring_turn(
+        "nu när det misslyckades, visa vad vi har för filer i repot",
+        session_id="e2e-fail-flow",
+        workspace=ws,
+        registered_tools={"read_file"},
+        registry=reg,
+        shaping_client=client,
+        client=client,
+    )
+    assert next_turn.handled is False
+    assert reg.get("e2e-fail-flow") is None
+
+

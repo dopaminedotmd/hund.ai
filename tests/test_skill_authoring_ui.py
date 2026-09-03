@@ -340,3 +340,28 @@ def test_ascii_mode_fallback():
     # Check ASCII fallback characters (| and `)
     assert "|" in rendered_ascii
     assert "`" in rendered_ascii
+
+
+def test_failed_authoring_view_is_terminal_and_closeable():
+    """Track 3: the FAILED view renders a terminal notice the user can close and
+    restart from — no ghost publish/edit actions."""
+    from hund.ui.skill_authoring import render_authoring_stepper
+
+    view = AuthoringView(
+        session_id="sess-failed-1",
+        phase=AuthoringState.FAILED,
+        subject="markdown summaries",
+        title="Quality gate failed after 3 attempts",
+        description=(
+            "Quality gate failed after 3 attempts: steps must contain between "
+            "2 and 8 concrete steps"
+        ),
+    )
+    rendered = render_authoring_stepper(view, width=80)
+
+    assert "SKILL AUTHORING · Failed" in rendered
+    assert "3 attempts" in rendered
+    assert "Enter Close" in rendered
+    # No publish/use/edit options on the failed view.
+    assert "Publish" not in rendered
+    assert "Edit" not in rendered

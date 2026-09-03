@@ -288,3 +288,48 @@ def test_dynamic_context_message_pinned_skill_injection():
         assert "pinned-css-formatter" not in summaries_part
         assert "other-skill" in summaries_part
 
+
+def test_pinned_skill_absent_after_turn_injects_no_created_header():
+    """Track 3: once the pinned skill expired (None), the next turn carries no
+    'recently created skill' header — the pin is strictly one turn."""
+    from hund.agent.loop import _dynamic_context_message
+    from hund.skills.model import Skill
+
+    skill = Skill(
+        schema_version=1,
+        name="expired-pinned-html",
+        domain="design",
+        status="active",
+        triggers=("expired html",),
+        when_to_use="When building expired html pages.",
+        steps=("Create the html skeleton.", "Verify the page."),
+        required_tools=(),
+        forbidden_actions=(),
+        safety_level="read_only",
+        verification=("Page renders.",),
+        lifecycle_state="active",
+        vault_state="equipped",
+    )
+
+    # Turn N+1: pin present -> created-header is injected.
+    msg_pinned = _dynamic_context_message(
+        skills=[skill],
+        user_text="expired html",
+        workspace_id="test_ws",
+        pinned_skill=skill,
+    )
+    assert msg_pinned is not None
+    assert "## Nyligen skapad & aktiv skill (prio: instruktioner)" in msg_pinned.content
+
+    # Turn N+2: pin expired (None) -> never inject the created-header again,
+    # even though the same skill still exists in the equipped list.
+    msg_after = _dynamic_context_message(
+        skills=[skill],
+        user_text="expired html",
+        workspace_id="test_ws",
+        pinned_skill=None,
+    )
+    assert msg_after is None or (
+        "## Nyligen skapad & aktiv skill (prio: instruktioner)" not in msg_after.content
+    )
+
