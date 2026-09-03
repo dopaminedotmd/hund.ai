@@ -5,6 +5,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import json
+import logging
 import re
 import textwrap
 import threading
@@ -27,6 +28,8 @@ from .contracts import (
 )
 from .loader import load_builtins
 from .model import BANNED_ACTIONS, Skill
+
+logger = logging.getLogger(__name__)
 
 
 class AuthoringState:
@@ -757,6 +760,54 @@ _SWEDISH_WORDS_PATTERN = re.compile(
 )
 
 
+class AuthoringCallBudgetExceeded(RuntimeError):
+    """An authoring attempt exceeded its per-run LLM call budget (Track 19)."""
+
+
+# Track 19: hard per-attempt LLM call budget. One run_id == one authoring turn
+# == one attempt (loop.py creates a fresh uuid4 per authoring turn).
+AUTHORING_MAX_LLM_CALLS_PER_ATTEMPT = 25
+
+# In-memory call counters per run_id. Incremented BEFORE the db write so a
+# failed db write can never hide budget consumption (fail-closed). The db row
+# is evidence, not the counting source.
+_AUTHORING_CALL_COUNTS: dict[str, int] = {}
+
+# Counter-map size cap: pruned oldest-first so long sessions cannot leak memory.
+_AUTHORING_CALL_COUNTS_MAX = 512
+
+
+def authoring_call_count(run_id: str | None) -> int:
+    """Return the in-memory authoring LLM call count for a run."""
+    if not run_id:
+        return 0
+    return _AUTHORING_CALL_COUNTS.get(run_id, 0)
+
+
+def reset_authoring_call_counts(run_id: str | None = None) -> None:
+    """Forget call counters (all counters when run_id is None)."""
+    if run_id is None:
+        _AUTHORING_CALL_COUNTS.clear()
+    else:
+        _AUTHORING_CALL_COUNTS.pop(run_id, None)
+
+
+def authoring_llm_calls_for_run(run_id: str) -> int:
+    """Count persisted authoring LLM rows for a run (calls-per-published-skill metric)."""
+    try:
+        from ..store.sqlite import connect_requests
+        conn = connect_requests()
+        cur = conn.execute(
+            "SELECT COUNT(*) FROM requests WHERE run_id = ? AND task_class LIKE 'authoring_%'",
+            (run_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        return int(row[0]) if row else 0
+    except Exception:
+        return 0
+
+
 def log_authoring_request(
     client: Any,
     result: Any,
@@ -765,7 +816,28 @@ def log_authoring_request(
     run_id: str | None = None,
     latency_ms: int = 0,
 ) -> None:
-    """Log an authoring LLM call to logs/requests.db without crashing."""
+    """Log an authoring LLM call and enforce the per-run call budget (Track 19).
+
+    The in-memory counter is incremented BEFORE the db write; a db failure is
+    swallowed for logging purposes but can never make the budget fail-open.
+    """
+    if run_id:
+        count = _AUTHORING_CALL_COUNTS.get(run_id, 0) + 1
+        _AUTHORING_CALL_COUNTS[run_id] = count
+        if len(_AUTHORING_CALL_COUNTS) > _AUTHORING_CALL_COUNTS_MAX:
+            _AUTHORING_CALL_COUNTS.pop(next(iter(_AUTHORING_CALL_COUNTS)), None)
+        if count > AUTHORING_MAX_LLM_CALLS_PER_ATTEMPT:
+            logger.warning(
+                "authoring_call_budget_exceeded run_id=%s calls=%s limit=%s",
+                run_id,
+                count,
+                AUTHORING_MAX_LLM_CALLS_PER_ATTEMPT,
+            )
+            raise AuthoringCallBudgetExceeded(
+                f"authoring_call_budget_exceeded: run {run_id} made {count} "
+                f"authoring LLM calls (limit {AUTHORING_MAX_LLM_CALLS_PER_ATTEMPT} "
+                "per attempt)"
+            )
     try:
         from ..store.sqlite import connect_requests
         conn = connect_requests()

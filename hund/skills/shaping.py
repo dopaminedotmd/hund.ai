@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 from ..learning.redactor import redact_text
 from ..providers.base import Message
 from .authoring import (
+    AuthoringCallBudgetExceeded,
     LocalInspectionSnapshot,
     MiniDraftData,
     ShapingQuestion,
@@ -662,6 +663,9 @@ def refine_research_queries(
         fallback = (parsed.fallback_query or default_fallback).strip()[:160]
         if queries:
             return (queries, fallback)
+    except AuthoringCallBudgetExceeded:
+        # Track 19: budget violations must stop the attempt, not fall back.
+        raise
     except Exception:
         pass
 
