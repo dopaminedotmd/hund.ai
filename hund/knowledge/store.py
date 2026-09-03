@@ -90,8 +90,14 @@ def add(domain: str, trigger: str, rule: str, source: str = "manual",
         pass
 
     try:
-        from hund.domains.xp import add_xp
-        add_xp(domain, 3)
+        from hund.domains.xp import award_xp
+        award_xp(
+            domain,
+            event_type="knowledge_added",
+            amount=3,
+            unit_id=uid,
+            db_path=db_path,
+        )
     except Exception:
         pass
     return uid

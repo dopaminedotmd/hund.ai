@@ -17,11 +17,12 @@ Priority:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
 from hund.domains.confidence import list_confidence
-from hund.domains.xp import list_all_xp
+from hund.domains.xp import list_all_xp, xp_events_since
 from hund.learning.observer import list_gap_events
 from hund.learning.redactor import redact_text
 from hund.paths import memory_db_path as default_memory_db_path
@@ -39,6 +40,7 @@ class TurnSnapshot:
     base_stats: dict[str, str] = field(default_factory=dict)
     knowledge_audit_count: int = 0
     memory_audit_count: int = 0
+    captured_at: str = ""  # agyC/1: ISO-timestamp när snapshotet togs (XP-attribution)
 
 
 def _get_knowledge_audit_count(home: Optional[Path] = None, db_path: Path | str | None = None) -> int:
@@ -116,6 +118,7 @@ def take_snapshot(home: Optional[Path] = None, db_path: Path | str | None = None
         base_stats=stat_map,
         knowledge_audit_count=k_count,
         memory_audit_count=m_count,
+        captured_at=datetime.now(timezone.utc).isoformat(),
     )
 
 
@@ -142,14 +145,25 @@ def compute_reflections(
 
     h_db = (home / "hund.db") if home else db_path
 
-    # 1. Check Domain XP & Level ups
+    # 1. Check Domain XP & Level ups — agyC/1 (Spår 14): gains are attributed
+    # via audit events since the snapshot, never raw table deltas. A domain
+    # whose table grew without any event is shown as external/unattributed.
     current_xp = {item["domain"]: item for item in list_all_xp(db_path=h_db)}
+    event_gains = xp_events_since(db_path=h_db, since_iso=snapshot.captured_at or None)
+    grown_domains = {
+        d
+        for d, curr in current_xp.items()
+        if snapshot.domain_xp.get(d, {}).get("xp", 0) < curr["xp"]
+    }
+    external_only = sorted(grown_domains - set(event_gains))
     for domain, curr in current_xp.items():
+        gain = event_gains.get(domain, 0)
+        if gain <= 0:
+            continue
         prev = snapshot.domain_xp.get(domain)
         old_xp = prev["xp"] if prev else 0
         old_level = prev["level"] if prev else 1
 
-        new_xp = curr["xp"]
         new_level = curr["level"]
         new_tier = curr["tier"]
         new_pct = curr["progress_pct"]
@@ -157,10 +171,11 @@ def compute_reflections(
         if new_level > old_level:
             level_ups.append(f"{domain} ⟶ level up! ({new_tier})")
 
-        if new_xp > old_xp:
-            gain = new_xp - old_xp
-            bar = render_bar(new_pct, width=14)
-            xp_gains.append(f"{domain:<18} {bar}   +{gain} XP")
+        bar = render_bar(new_pct, width=14)
+        xp_gains.append(f"{domain:<18} {bar}   +{gain} XP")
+
+    for domain in external_only:
+        xp_gains.append(f"{domain:<18} external/unattributed change")
 
     # 2. Check Knowledge Audit entries
     try:

@@ -214,7 +214,7 @@ def get_xp(domain: str, db_path=None) -> dict[str, Any]:
 
 
 def add_xp(domain: str, amount: int, db_path=None) -> tuple[int, str, bool]:
-    """Directly add XP to domain without creating an audit event (legacy helper)."""
+    """Directly add XP to domain, keeping a direct_add audit event (agyC/1)."""
     if amount <= 0:
         current = get_xp(domain, db_path)
         return current["level"], current["tier"], False
@@ -235,10 +235,48 @@ def add_xp(domain: str, amount: int, db_path=None) -> tuple[int, str, bool]:
             VALUES (?, ?, ?, ?)""",
         (domain, new_xp, new_level, new_tier),
     )
+    # agyC/1 (Spår 14): legacy direct adds keep an audit event so post-turn
+    # reflections attribute gains to events, not to raw table bumps.
+    try:
+        conn.execute(
+            f"""INSERT INTO {XP_EVENTS_TABLE} (
+                event_id, domain, unit_id, xp_amount, event_type,
+                task_id, session_id, evidence_id, xp_algorithm, timestamp
+            ) VALUES (?, ?, NULL, ?, 'direct_add', NULL, NULL, NULL, ?, ?)""",
+            (f"xpevt_{uuid.uuid4().hex[:12]}", domain, amount, CURRENT_XP_ALGORITHM, datetime.now(timezone.utc).isoformat()),
+        )
+    except Exception:
+        pass
     conn.commit()
     conn.close()
 
     return new_level, new_tier, leveled_up
+
+
+def xp_events_since(db_path=None, since_iso: str | None = None) -> dict[str, int]:
+    """Sum xp_amount per domain from audit events recorded after since_iso.
+
+    agyC/1 (Spår 14): post-turn reflections use this instead of raw table
+    deltas, so XP written without an event is never credited to Hund.
+    """
+    _ensure_table(db_path)
+    conn = connect(db_path)
+    try:
+        if since_iso:
+            rows = conn.execute(
+                f"SELECT domain, xp_amount FROM {XP_EVENTS_TABLE} WHERE timestamp > ?",
+                (since_iso,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                f"SELECT domain, xp_amount FROM {XP_EVENTS_TABLE}"
+            ).fetchall()
+    finally:
+        conn.close()
+    out: dict[str, int] = {}
+    for domain, amt in rows:
+        out[domain] = out.get(domain, 0) + (amt or 0)
+    return out
 
 
 def award_xp(
