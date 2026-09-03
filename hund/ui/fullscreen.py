@@ -4253,6 +4253,25 @@ def create_fullscreen_app(
             screens.scroll_by(key, 1, 10_000)
         _invalidate()
 
+    # agyD/0 (Gate 3): Home/End/j/k scroll destination views (spec §2.5.1).
+    @kb.add("home", filter=destination_active & ~modal_active)
+    def _screen_home(event):
+        screens.scroll_by(screens.destination.value, -10_000, 10_000)
+        _invalidate()
+
+    @kb.add("end", filter=destination_active & ~modal_active)
+    def _screen_end(event):
+        screens.scroll_by(screens.destination.value, 10_000, 10_000)
+        _invalidate()
+
+    @kb.add("j", filter=destination_active & ~modal_active)
+    def _screen_j(event):
+        _screen_up(event)
+
+    @kb.add("k", filter=destination_active & ~modal_active)
+    def _screen_k(event):
+        _screen_down(event)
+
     @kb.add("u", filter=destination_active & ~modal_active)
     @kb.add("U", filter=destination_active & ~modal_active)
     def _unsuppress_skill_seed(event):
@@ -4803,11 +4822,19 @@ def create_fullscreen_app(
 
     @kb.add("pageup")
     def _pgup(event):
-        _scroll_lines(15)
+        if screens.destination is not DestinationView.CHAT:
+            screens.scroll_by(screens.destination.value, -15, 10_000)
+            _invalidate()
+        else:
+            _scroll_lines(15)
 
     @kb.add("pagedown")
     def _pgdn(event):
-        _scroll_lines(-15)
+        if screens.destination is not DestinationView.CHAT:
+            screens.scroll_by(screens.destination.value, 15, 10_000)
+            _invalidate()
+        else:
+            _scroll_lines(-15)
 
     @kb.add("s-up", filter=chat_active)
     def _scroll_history_up(event):
