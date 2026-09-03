@@ -150,8 +150,8 @@ def test_stats_character_sheet() -> None:
     ctx = _ctx()
     dispatch_command("/stats", ctx)
     out = ctx.console.file.getvalue()
-    assert "CHARACTER SHEET" in out
-    assert "BASE ATTRIBUTES" in out or "CLR" in out
+    assert "╔═ STATS" in out or "STATS" in out
+    assert "BASE STATS" in out or "CLR" in out
 
 
 def test_stats_compact() -> None:
