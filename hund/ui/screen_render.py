@@ -231,7 +231,7 @@ def render_stats_inline(
     ascii_only: bool = False,
 ) -> str:
     """Gate 3 §2.1: four-quadrant double-frame card printed inline in chat."""
-    frame_w = max(20, width - 1)
+    frame_w = max(20, width)
     inner = max(frame_w - 6, 16)
     half_w = max(18, (inner - 1) // 2)
     v = "|" if ascii_only else "│"
@@ -304,7 +304,7 @@ def render_stats_inline(
 
 def _double_frame_box(title: str, lines: Sequence[str], *, width: int, ascii_only: bool, meta: str = "") -> str:
     """Compact double-frame (╔═╗) card without viewport padding (inline use)."""
-    frame_w = max(20, width - 1)
+    frame_w = max(20, width)
     inner = max(frame_w - 6, 16)
     if ascii_only:
         tl, tr, bl, br, h, v = "+", "+", "+", "+", "-", "|"
