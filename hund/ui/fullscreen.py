@@ -391,10 +391,10 @@ def _parse_semantic_line(text: str, indent_str: str = "", bold_open: bool = Fals
         if "**" in cur:
             bold_part, _, rest = cur.partition("**")
             if bold_part:
-                tokens.append(("class:label", bold_part))
+                tokens.append(("class:strong", bold_part))
             cur = rest
         else:
-            tokens.append(("class:label", cur))
+            tokens.append(("class:strong", cur))
             return tokens
 
     # Code / diff block headers and footers
@@ -497,11 +497,11 @@ def _parse_semantic_line(text: str, indent_str: str = "", bold_open: bool = Fals
             tokens.append(("class:primary", cur[pos : m.start()]))
         val = m.group(0)
         if val.startswith("**") and val.endswith("**") and len(val) >= 4:
-            tokens.append(("class:label", val[2:-2]))
+            tokens.append(("class:strong", val[2:-2]))
         elif val == "**":
             remainder = cur[m.end():]
             if remainder:
-                tokens.append(("class:label", remainder))
+                tokens.append(("class:strong", remainder))
             pos = len(cur)
             break
         elif val.startswith("`") and val.endswith("`"):
@@ -935,6 +935,12 @@ class _OutputLexer(Lexer):
         authoring_title_lines: set[int] = set()
         bold_open_lines: set[int] = set()
         is_bold_open = False
+        # agyC/0: bold-state återställs vid varje response-blockgräns (REV3.3) —
+        # ett obalanserat ** i ett tidigare block får inte färga senare block.
+        try:
+            block_starts = {r.start_line for r in self.block_registry.records()}
+        except Exception:
+            block_starts = set()
         in_user = False
         in_skill_seed = False
         in_authoring = False
@@ -942,6 +948,8 @@ class _OutputLexer(Lexer):
         expect_authoring_title = False
         expect_skill_seed_name = False
         for i, raw_line in enumerate(lines):
+            if i in block_starts:
+                is_bold_open = False
             if is_bold_open:
                 bold_open_lines.add(i)
 
