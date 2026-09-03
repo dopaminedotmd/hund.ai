@@ -13,6 +13,7 @@ import uuid
 from pydantic import ValidationError
 
 from .authoring import (
+    AuthoringCallBudgetExceeded,
     AuthoringSession,
     AuthoringSessionRegistry,
     AuthoringState,
@@ -632,6 +633,22 @@ def _build_ready(
                 gate_feedback=gate_feedback if gate_feedback else None,
                 run_id=run_id,
             )
+        except AuthoringCallBudgetExceeded as exc:
+            # Track 19: budget exceeded -> stop this attempt immediately with
+            # a logged, understandable reason. Never loop silently.
+            failed = replace(
+                session,
+                state=AuthoringState.FAILED,
+                failure_reason=str(exc),
+                gate_attempts=gate_attempts,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+            )
+            registry.save(failed)
+            return AuthoringTurnResult(
+                True,
+                f"Skill authoring stopped: {exc}",
+                view=_authoring_view(failed),
+            )
         except ValidationError as exc:
             # Track 1: schema/validation failures produce structured feedback
             # and retry through the gate loop instead of killing the session.
@@ -1064,14 +1081,30 @@ def handle_authoring_turn(
                 )
                 session = replace(session, research_grant=grant, updated_at=now.isoformat())
                 from .shaping import refine_research_queries
-                refined_queries, fallback_query = refine_research_queries(
-                    subject=session.request_subject,
-                    shaping_answers=session.shaping_answers,
-                    mini_draft=session.mini_draft,
-                    existing_queries=session.research_decision.search_queries if session.research_decision else (),
-                    client=active_client,
-                    run_id=active_run_id,
-                )
+                try:
+                    refined_queries, fallback_query = refine_research_queries(
+                        subject=session.request_subject,
+                        shaping_answers=session.shaping_answers,
+                        mini_draft=session.mini_draft,
+                        existing_queries=session.research_decision.search_queries if session.research_decision else (),
+                        client=active_client,
+                        run_id=active_run_id,
+                    )
+                except AuthoringCallBudgetExceeded as exc:
+                    # Track 19: stop the attempt with a logged reason instead of
+                    # crashing the turn or silently falling back.
+                    failed = replace(
+                        session,
+                        state=AuthoringState.FAILED,
+                        failure_reason=str(exc),
+                        updated_at=datetime.now(timezone.utc).isoformat(),
+                    )
+                    reg.save(failed)
+                    return AuthoringTurnResult(
+                        True,
+                        f"Skill authoring stopped: {exc}",
+                        view=_authoring_view(failed),
+                    )
                 if session.research_decision:
                     session = replace(
                         session,
