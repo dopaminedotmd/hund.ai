@@ -105,6 +105,8 @@ from .confirmation import confirmation_options, prompt_edits
 from .mascot import MascotMachine, mirror_art
 from .screen_state import DestinationView, OverlayView, ScreenController
 from .screen_render import (
+    _spec_left_items,
+    _spec_member_items,
     catalog_selectables,
     fullscreen_frame,
     render_auth_add_modal,
@@ -116,6 +118,8 @@ from .screen_render import (
     render_model_key_modal,
     render_model_modal,
     render_skills,
+    render_spec_member_remove_modal,
+    render_specialisation_management,
     render_stats,
     render_theme_modal,
     render_tools,
@@ -1748,6 +1752,7 @@ def create_fullscreen_app(
     modal_editor = ModalTextEditor()
     model_options: list[Any] = []
     auth_target_provider: dict[str, str] = {}
+    spec_member_remove: dict[str, str] = {}
     custom_wizard_data: dict[str, str] = {}
     custom_step = [0]
 
@@ -2057,6 +2062,16 @@ def create_fullscreen_app(
                 ascii_only=getattr(rt.cfg, "ascii_ui", False),
             )
         if destination is DestinationView.SKILLS:
+            if screens.detail.get(f"{key}_spec"):
+                return render_specialisation_management(
+                    snapshot,
+                    spec_cursor=screens.selected.get(f"{key}_idx", 0),
+                    member_cursor=screens.selected.get(f"{key}_member", 0),
+                    focus=screens.panel_focus.get(key, "left"),
+                    width=width, height=height,
+                    scroll=screens.scroll.get(key, 0),
+                    ascii_only=getattr(rt.cfg, "ascii_ui", False),
+                )
             return render_skills(
                 snapshot, width=width, height=height,
                 selected=screens.selected.get(key, 0),
@@ -2162,6 +2177,13 @@ def create_fullscreen_app(
             return render_auth_forget_modal(
                 target_name,
                 width,
+                ascii_only=getattr(rt.cfg, "ascii_ui", False),
+            )
+        if overlay is OverlayView.SPEC_MEMBER_REMOVE:
+            return render_spec_member_remove_modal(
+                spec_member_remove.get("skill", ""),
+                spec_member_remove.get("spec", ""),
+                width=width,
                 ascii_only=getattr(rt.cfg, "ascii_ui", False),
             )
         if overlay is OverlayView.MODEL_CUSTOM:
@@ -3485,6 +3507,7 @@ def create_fullscreen_app(
 
     def _close_destination() -> None:
         screens.destination = DestinationView.CHAT
+        screens.detail.clear()
         if input_buffer.text != screens.input_text:
             input_buffer.text = screens.input_text
         output_buffer.cursor_position = min(screens.chat_cursor, len(output_buffer.text))
@@ -4119,14 +4142,15 @@ def create_fullscreen_app(
 
     @kb.add("escape", eager=True, filter=~confirm_active & ~authoring_active)
     def _escape(event):
-        if screens.destination is not DestinationView.CHAT:
-            _close_destination()
-            return
+        # Overlays may now sit above a destination (spec member confirm).
         if screens.overlay is not OverlayView.NONE:
             screens.overlay = OverlayView.NONE
             modal_editor.clear()
             screens.status = ""
             _invalidate()
+            return
+        if screens.destination is not DestinationView.CHAT:
+            _close_destination()
             return
         if (
             active_skill_seed[0] is not None
@@ -4177,12 +4201,40 @@ def create_fullscreen_app(
         elif res != "none":
             _invalidate()
 
+    # Gate 3 §2.4: Left mirrors Backspace while a destination is open.
+    @kb.add("left", filter=destination_active & ~modal_active)
+    def _destination_left(event):
+        _destination_back(event)
+
     @kb.add("r", filter=destination_active & ~modal_active)
     @kb.add("R", filter=destination_active & ~modal_active)
     def _destination_r(event):
         if screens.destination is DestinationView.SYSTEM:
             from ..stats.environment_snapshot import create_environment_snapshot
             screen_snapshots["system"] = create_environment_snapshot(force_fresh=True)
+            _invalidate()
+        elif (
+            screens.destination is DestinationView.SKILLS
+            and _skills_spec_open()
+            and screens.panel_focus.get("skills", "left") == "right"
+        ):
+            # Gate 3 §2.4: [r] parks the selected active member (confirm modal).
+            snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+            if snapshot is None:
+                return
+            found = _skills_management_selection(snapshot)
+            if not found:
+                return
+            spec, _active, members, member_index = found
+            if not members:
+                return
+            item = members[member_index]
+            if item.vault_state != "equipped":
+                screens.status = f"{item.name} is already parked."
+            else:
+                spec_member_remove["skill"] = item.name
+                spec_member_remove["spec"] = spec.name
+                screens.open_overlay(OverlayView.SPEC_MEMBER_REMOVE)
             _invalidate()
 
     @kb.add("f", filter=destination_active & ~modal_active)
@@ -4228,13 +4280,89 @@ def create_fullscreen_app(
             screens.move("auth_manage", 1, max(len(_manage_entries()), 1))
         _invalidate()
 
+    # ---- Gate 3 §2.4: specialisation management helpers ----
+    def _skills_spec_open() -> bool:
+        return bool(screens.detail.get("skills_spec"))
+
+    def _reload_skills_snapshot(include_proposals: bool | None = None) -> None:
+        flag = (
+            include_proposals
+            if include_proposals is not None
+            else bool(getattr(rt.cfg, "enable_skill_proposals", False))
+        )
+        screen_snapshots[DestinationView.SKILLS.value] = collect_skills(
+            workspace=getattr(rt, "workspace", None),
+            include_proposals=flag,
+        )
+
+    def _skills_management_selection(snapshot):
+        """Return (spec, active_flag, members, member_index) at current cursors."""
+        left_items = _spec_left_items(snapshot)
+        if not left_items:
+            return None
+        spec_index = screens.selected.get("skills_spec_idx", 0) % len(left_items)
+        spec, active_flag = left_items[spec_index]
+        members = _spec_member_items(snapshot, spec)
+        member_index = 0
+        if members:
+            member_index = screens.selected.get("skills_member", 0) % len(members)
+        return spec, active_flag, members, member_index
+
+    def _skills_member_scoped_id(item, workspace) -> Any:
+        from ..skills.scope import ScopedSkillId, compute_workspace_key
+
+        scope_key = (
+            compute_workspace_key(workspace) if item.scope == "project" else "global"
+        )
+        return ScopedSkillId(scope_key, item.capability_id or item.name, item.name)
+
+    def _toggle_spec_member(snapshot) -> None:
+        from ..skills.vault import SkillVault
+
+        found = _skills_management_selection(snapshot)
+        if not found:
+            return
+        spec, _active, members, member_index = found
+        if not members:
+            return
+        item = members[member_index]
+        sid = _skills_member_scoped_id(item, getattr(rt, "workspace", None))
+        vault = SkillVault()
+        if item.vault_state == "equipped":
+            ok, msg = vault.park(sid)
+        else:
+            ok, msg = vault.equip(sid)
+        if ok:
+            _reload_skills_snapshot()
+            fresh = screen_snapshots.get(DestinationView.SKILLS.value)
+            if fresh is not None:
+                fresh_members = _spec_member_items(fresh, spec)
+                position = next(
+                    (i for i, member in enumerate(fresh_members) if member.name == item.name),
+                    0,
+                )
+                screens.selected["skills_member"] = position
+        screens.status = msg
+
     @kb.add("up", filter=destination_active & ~modal_active)
     def _screen_up(event):
         key = screens.destination.value
         snapshot = screen_snapshots.get(key)
         if screens.destination is DestinationView.SKILLS and snapshot is not None:
-            screens.move(key, -1, len(catalog_selectables(snapshot)))
-            screens.scroll_by(key, -1, 10_000)
+            if _skills_spec_open():
+                if screens.panel_focus.get(key, "left") == "right":
+                    found = _skills_management_selection(snapshot)
+                    if found:
+                        screens.move("skills_member", -1, len(found[2]))
+                else:
+                    screens.move(
+                        "skills_spec_idx", -1, len(_spec_left_items(snapshot))
+                    )
+                    screens.selected["skills_member"] = 0
+                    screens.scroll_by(key, -1, 10_000)
+            else:
+                screens.move(key, -1, len(catalog_selectables(snapshot)))
+                screens.scroll_by(key, -1, 10_000)
         elif screens.destination is DestinationView.TOOLS and snapshot is not None:
             screens.move(key, -1, len(snapshot.tools))
             screens.scroll_by(key, -1, 10_000)
@@ -4247,8 +4375,20 @@ def create_fullscreen_app(
         key = screens.destination.value
         snapshot = screen_snapshots.get(key)
         if screens.destination is DestinationView.SKILLS and snapshot is not None:
-            screens.move(key, 1, len(catalog_selectables(snapshot)))
-            screens.scroll_by(key, 1, 10_000)
+            if _skills_spec_open():
+                if screens.panel_focus.get(key, "left") == "right":
+                    found = _skills_management_selection(snapshot)
+                    if found:
+                        screens.move("skills_member", 1, len(found[2]))
+                else:
+                    screens.move(
+                        "skills_spec_idx", 1, len(_spec_left_items(snapshot))
+                    )
+                    screens.selected["skills_member"] = 0
+                    screens.scroll_by(key, 1, 10_000)
+            else:
+                screens.move(key, 1, len(catalog_selectables(snapshot)))
+                screens.scroll_by(key, 1, 10_000)
         elif screens.destination is DestinationView.TOOLS and snapshot is not None:
             screens.move(key, 1, len(snapshot.tools))
             screens.scroll_by(key, 1, 10_000)
@@ -4307,6 +4447,17 @@ def create_fullscreen_app(
     @kb.add("enter", filter=destination_active & ~modal_active)
     def _destination_enter(event):
         if screens.destination is DestinationView.SKILLS:
+            if _skills_spec_open():
+                # Gate 3 §2.4: Enter moves left -> right, then toggles members.
+                if screens.panel_focus.get("skills", "left") == "left":
+                    screens.panel_focus["skills"] = "right"
+                    screens.selected["skills_member"] = 0
+                else:
+                    snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+                    if snapshot is not None:
+                        _toggle_spec_member(snapshot)
+                _invalidate()
+                return
             if screens.detail.get("skills"):
                 screens.detail["skills"] = None
                 _invalidate()
@@ -4327,10 +4478,14 @@ def create_fullscreen_app(
                     screens.detail["skills"] = pool[index].name
                     _invalidate()
             elif kind == "spec":
-                # ponytail: two-pane specialisation management lands in Gate 3
-                # step D4; D3 keeps the dispatch slot reserved.
+                # Open the two-pane specialisation window (Gate 3 §2.4).
                 if 0 <= index < len(snapshot.specialisations):
-                    screens.status = "Specialisation management opens in the next build step."
+                    spec = snapshot.specialisations[index]
+                    screens.detail["skills_spec"] = spec.name
+                    screens.selected["skills_spec_idx"] = index
+                    screens.selected["skills_member"] = 0
+                    screens.panel_focus["skills"] = "left"
+                    screens.scroll["skills"] = 0
                     _invalidate()
         elif screens.destination is DestinationView.TOOLS:
             if screens.detail.get("tools"):
@@ -4606,6 +4761,54 @@ def create_fullscreen_app(
     def _auth_forget_no(event):
         modal_editor.clear()
         screens.open_overlay(OverlayView.AUTH_MANAGE)
+        _invalidate()
+
+    # Gate 3 §2.4: confirm parking a specialisation member ([r] in right panel).
+    @kb.add("y", filter=Condition(lambda: screens.overlay is OverlayView.SPEC_MEMBER_REMOVE and not _confirm.get("active")))
+    @kb.add("Y", filter=Condition(lambda: screens.overlay is OverlayView.SPEC_MEMBER_REMOVE and not _confirm.get("active")))
+    def _spec_member_remove_yes(event):
+        from ..skills.vault import SkillVault
+
+        snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+        skill_name = spec_member_remove.get("skill", "")
+        if snapshot is not None and skill_name:
+            item = next(
+                (member for member in snapshot.equipped + snapshot.parked if member.name == skill_name),
+                None,
+            )
+            if item is not None:
+                sid = _skills_member_scoped_id(item, getattr(rt, "workspace", None))
+                ok, msg = SkillVault().park(sid)
+                if ok:
+                    _reload_skills_snapshot()
+                    fresh = screen_snapshots.get(DestinationView.SKILLS.value)
+                    if fresh is not None:
+                        spec_name = spec_member_remove.get("spec", "")
+                        spec = next(
+                            (
+                                candidate
+                                for candidate in fresh.specialisations + fresh.vaulted_specialisations
+                                if candidate.name == spec_name
+                            ),
+                            None,
+                        )
+                        if spec is not None:
+                            fresh_members = _spec_member_items(fresh, spec)
+                            position = next(
+                                (i for i, member in enumerate(fresh_members) if member.name == skill_name),
+                                0,
+                            )
+                            screens.selected["skills_member"] = position
+                    screens.status = f"Parked {skill_name}."
+                else:
+                    screens.status = msg
+        screens.overlay = OverlayView.NONE
+        _invalidate()
+
+    @kb.add("n", filter=Condition(lambda: screens.overlay is OverlayView.SPEC_MEMBER_REMOVE and not _confirm.get("active")))
+    @kb.add("N", filter=Condition(lambda: screens.overlay is OverlayView.SPEC_MEMBER_REMOVE and not _confirm.get("active")))
+    def _spec_member_remove_no(event):
+        screens.overlay = OverlayView.NONE
         _invalidate()
 
     @kb.add("k", filter=Condition(lambda: screens.overlay is OverlayView.MODEL and not _confirm.get("active")))
