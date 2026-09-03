@@ -3631,7 +3631,8 @@ def create_fullscreen_app(
                 # Deterministic compression is local and bounded. It still belongs
                 # off the Prompt Toolkit thread so submitting a prompt never freezes
                 # the terminal when a long session crosses the token threshold.
-                comp = maybe_compress(messages, client=getattr(rt, "client", None))
+                cw = getattr(getattr(getattr(rt, "cfg", None), "provider", None), "context_window", None)
+                comp = maybe_compress(messages, client=getattr(rt, "client", None), context_window=cw)
                 if comp.compressed:
                     messages[:] = comp.messages
                     _restore_frozen_system_prompt(messages, frozen)

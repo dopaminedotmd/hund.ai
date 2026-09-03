@@ -171,7 +171,8 @@ def _run_agent_turn(user_msg: str, session_id: str | None = None) -> dict[str, A
     engine = agent_loop.PermissionEngine(workspace_root=workspace, mode="connector_remote")
     schemas = agent_loop.registry.as_provider_schemas()
     tokens_before_compress = agent_loop.estimate_tokens(messages)
-    comp = agent_loop.maybe_compress(messages, client=client)
+    cw = getattr(getattr(cfg, "provider", None), "context_window", None)
+    comp = agent_loop.maybe_compress(messages, client=client, context_window=cw)
     if comp.compressed:
         messages[:] = comp.messages
         agent_loop._trace_event(engine, session_id, run_id, "context_compressed",

@@ -26,12 +26,40 @@ _NOTE = (
 
 
 @dataclass
+class TaskState:
+    source: str = ""
+    goal: str = ""
+    target_file: str | None = None
+
+    def to_message(self) -> Message:
+        parts = [f"källa={self.source or 'user'}", f"mål={self.goal}"]
+        if self.target_file:
+            parts.append(f"målfil={self.target_file}")
+        return Message(
+            role="system",
+            content=f"[TASK_STATE {', '.join(parts)}]",
+            tool_calls=[],
+            tool_call_id=None,
+        )
+
+
+@dataclass
 class CompressionResult:
     messages: list[Message]
     dropped_turns: int
     tokens: int
     compressed: bool
     method: str = "none"
+
+
+def compression_threshold(context_window: int | None = None, margin: float = 0.8) -> int:
+    """Härled komprimeringströskel från modellens context_window med säkerhetsmarginal (~80%).
+
+    Fallback till DEFAULT_MAX_TOKENS om context_window saknas eller <= 0.
+    """
+    if context_window is not None and context_window > 0:
+        return int(context_window * margin)
+    return DEFAULT_MAX_TOKENS
 
 
 def estimate_tokens(messages: list[Message]) -> int:
@@ -64,6 +92,7 @@ def compress(
     messages: list[Message],
     *,
     keep_recent: int = DEFAULT_KEEP_RECENT,
+    task_state: TaskState | None = None,
 ) -> CompressionResult:
     """Kollapsa äldre turns; bevara system[0] + primär task (messages[1] om role=user) + marker + recent.
 
@@ -80,7 +109,19 @@ def compress(
     if has_primary:
         recent = [m for m in recent if m is not messages[1]]
 
-    dropped = max(0, len(messages) - 1 - len(primary_task) - len(recent))
+    task_state_msg = None
+    if task_state is not None:
+        task_state_msg = task_state.to_message() if hasattr(task_state, "to_message") else Message(role="system", content=str(task_state))
+    else:
+        for m in messages:
+            if getattr(m, "role", None) == "system" and getattr(m, "content", "").startswith("[TASK_STATE"):
+                task_state_msg = m
+                break
+
+    if task_state_msg:
+        recent = [m for m in recent if m is not task_state_msg]
+
+    dropped = max(0, len(messages) - 1 - len(primary_task) - len(recent) - (1 if task_state_msg and task_state_msg in messages else 0))
 
     # Behåll systemprompten oförändrad (prompt cache)
     # Markören läggs som ett separat system-meddelande
@@ -90,26 +131,34 @@ def compress(
         tool_calls=[],
         tool_call_id=None,
     )
-    compacted = [system, marker] + primary_task + recent
+    extra_parts = [task_state_msg] if task_state_msg else []
+    compacted = [system, marker] + extra_parts + primary_task + recent
     return CompressionResult(compacted, dropped, estimate_tokens(compacted), True, "deterministic")
 
 
 def maybe_compress(
     messages: list[Message],
     *,
-    max_tokens: int = DEFAULT_MAX_TOKENS,
+    max_tokens: int | None = None,
+    context_window: int | None = None,
     keep_recent: int = DEFAULT_KEEP_RECENT,
     client=None,  # ProviderClient — provar LLM-compress om given
+    task_state: TaskState | None = None,
 ) -> CompressionResult:
     """Komprimera endast om uppskattad token-mangd overstiger troskel.
-    Provat LLM-compress forst, fallback till deterministisk."""
+    Provar LLM-compress forst, fallback till deterministisk."""
+    if max_tokens is None:
+        if context_window is None and client is not None:
+            context_window = getattr(client, "context_window", None)
+        max_tokens = compression_threshold(context_window)
+
     if estimate_tokens(messages) <= max_tokens:
         return CompressionResult(list(messages), 0, estimate_tokens(messages), False, "none")
     if client is not None:
-        llm_result = compress_llm(client, messages, keep_recent=keep_recent)
+        llm_result = compress_llm(client, messages, keep_recent=keep_recent, task_state=task_state)
         if llm_result is not None:
             return llm_result
-    return compress(messages, keep_recent=keep_recent)
+    return compress(messages, keep_recent=keep_recent, task_state=task_state)
 
 
 _LLM_COMPRESS_SYSTEM_PROMPT = (
@@ -124,15 +173,42 @@ def compress_llm(
     messages: list[Message],
     *,
     keep_recent: int = DEFAULT_KEEP_RECENT,
+    task_state: TaskState | None = None,
 ) -> CompressionResult | None:
     """LLM-baserad summering av aldre turns. Returnerar None vid fel (ring fallback)."""
     if len(messages) <= keep_recent + 3:  # for fa meddelanden for LLM
         return None
     system = messages[0]
+    has_primary = len(messages) > 1 and getattr(messages[1], "role", None) == "user"
+    primary_task = [messages[1]] if has_primary else []
+
     recent, dropped = _safe_recent_slice(messages, keep_recent)
-    old_messages = messages[1 : len(messages) - len(recent)]
+    if has_primary:
+        recent = [m for m in recent if m is not messages[1]]
+
+    task_state_msg = None
+    if task_state is not None:
+        task_state_msg = task_state.to_message() if hasattr(task_state, "to_message") else Message(role="system", content=str(task_state))
+    else:
+        for m in messages:
+            if getattr(m, "role", None) == "system" and getattr(m, "content", "").startswith("[TASK_STATE"):
+                task_state_msg = m
+                break
+
+    if task_state_msg:
+        recent = [m for m in recent if m is not task_state_msg]
+
+    recent_set = set(id(m) for m in recent)
+    excluded_ids = {id(system)} | recent_set
+    if primary_task:
+        excluded_ids.add(id(primary_task[0]))
+    if task_state_msg:
+        excluded_ids.add(id(task_state_msg))
+
+    old_messages = [m for m in messages if id(m) not in excluded_ids]
     if not old_messages:
         return None
+
     # Bygg en text-representation av gamla meddelanden
     old_text_parts = []
     for m in old_messages:
@@ -152,13 +228,14 @@ def compress_llm(
     summary = result.text.strip()
     if not summary or len(summary) < 20:
         return None
-    # Bygg ny meddelandelista: system + summary + recent
+    # Bygg ny meddelandelista: system + marker + task_state + primary_task + recent
     marker = Message(
         role="system",
         content=f"[KOMPRIMERAD via LLM — sammanfattning av {len(old_messages)} tidigare meddelanden]\n\n{summary}",
         tool_calls=[],
         tool_call_id=None,
     )
-    compacted = [system, marker] + recent
+    extra_parts = [task_state_msg] if task_state_msg else []
+    compacted = [system, marker] + extra_parts + primary_task + recent
     return CompressionResult(compacted, dropped, estimate_tokens(compacted), True, "llm")
 

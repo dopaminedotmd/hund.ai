@@ -98,3 +98,73 @@ def test_maybe_compress_with_client_preserves_system_and_invokes_llm():
     assert "[KOMPRIMERAD via LLM" in res.messages[1].content
     assert len(client.calls) == 1
 
+
+def test_compress_llm_preserves_primary_user_task():
+    """compress_llm must preserve messages[1] (primary user goal) structurally."""
+    client = _FakeClient("[SUMMERAD] Kärnpunkter bevarade.")
+    msgs = [
+        Message(role="system", content="SYS PROMPT"),
+        Message(role="user", content="BYGG EN SUPER-AGENT I PYTHON"),
+    ]
+    for i in range(10):
+        msgs.append(Message(role="assistant", content=f"assistant turn {i} " * 5))
+        msgs.append(Message(role="user", content=f"user turn {i} " * 5))
+
+    res = compress_llm(client, msgs, keep_recent=2)
+    assert res is not None
+    assert res.compressed is True
+    # System prompt at index 0
+    assert res.messages[0].content == "SYS PROMPT"
+    # Marker at index 1
+    assert "[KOMPRIMERAD via LLM" in res.messages[1].content
+    # Primary task preserved at index 2
+    assert res.messages[2].role == "user"
+    assert res.messages[2].content == "BYGG EN SUPER-AGENT I PYTHON"
+    # Recent turns follow
+    assert res.messages[-1].role == "user"
+    assert "user turn 9" in res.messages[-1].content
+
+
+def test_compress_and_compress_llm_preserve_task_state():
+    """TaskState survives both compress() and compress_llm()."""
+    from hund.agent.context import TaskState, compress
+
+    state = TaskState(source="user_cli", goal="Implement Track 18", target_file="context.py")
+    client = _FakeClient("[SUMMERAD] Kärnpunkter bevarade.")
+
+    msgs = [
+        Message(role="system", content="SYS PROMPT"),
+        Message(role="user", content="PRIMARY TASK"),
+    ]
+    for i in range(10):
+        msgs.append(Message(role="assistant", content=f"reply {i} " * 5))
+        msgs.append(Message(role="user", content=f"next {i} " * 5))
+
+    # Test deterministic compress with task_state
+    det_res = compress(msgs, keep_recent=2, task_state=state)
+    assert det_res.compressed is True
+    state_msgs = [m for m in det_res.messages if "[TASK_STATE" in (m.content or "")]
+    assert len(state_msgs) == 1
+    assert "Implement Track 18" in state_msgs[0].content
+    assert "målfil=context.py" in state_msgs[0].content
+
+    # Test LLM compress with task_state
+    llm_res = compress_llm(client, msgs, keep_recent=2, task_state=state)
+    assert llm_res is not None
+    assert llm_res.compressed is True
+    llm_state_msgs = [m for m in llm_res.messages if "[TASK_STATE" in (m.content or "")]
+    assert len(llm_state_msgs) == 1
+    assert "Implement Track 18" in llm_state_msgs[0].content
+    assert "målfil=context.py" in llm_state_msgs[0].content
+
+
+def test_compression_threshold_derivation():
+    """Verify compression_threshold derives ~80% of context_window, with fallback."""
+    from hund.agent.context import DEFAULT_MAX_TOKENS, compression_threshold
+
+    assert compression_threshold(131072) == 104857  # ~104k
+    assert compression_threshold(65536) == 52428
+    assert compression_threshold(None) == DEFAULT_MAX_TOKENS
+    assert compression_threshold(0) == DEFAULT_MAX_TOKENS
+
+
