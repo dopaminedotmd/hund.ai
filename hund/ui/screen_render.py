@@ -174,6 +174,110 @@ def stats_lines(snapshot: StatsSnapshot, width: int) -> list[str]:
     return lines
 
 
+def _stat_row_compact(item: Any) -> str:
+    if item.value is None:
+        return f"{item.abbreviation} {item.name.title():<9} No data yet"
+    return (
+        f"{item.abbreviation} {item.name.title():<9} "
+        f"{render_bar(item.percent, 8)} {item.percent:>3}%"
+    )
+
+
+def render_stats_inline(
+    snapshot: StatsSnapshot,
+    *,
+    width: int,
+    ascii_only: bool = False,
+) -> str:
+    """Gate 3 §2.1: four-quadrant double-frame card printed inline in chat."""
+    frame_w = max(20, width - 1)
+    inner = max(frame_w - 6, 16)
+    half_w = max(18, (inner - 1) // 2)
+    v = "|" if ascii_only else "│"
+
+    def col(line: str, w: int) -> str:
+        return _clip(line, w).ljust(w)
+
+    # Quadrant 1 — BASE STATS
+    q1 = [_stat_row_compact(item) for item in snapshot.stats[:5]]
+    # Quadrant 2 — ACTIVE SKILLS (real domain skills; fixed mislabelled column)
+    q2: list[str] = []
+    for item in snapshot.specializations[:5]:
+        marker = "●" if getattr(item, "locked", False) else "○"
+        q2.append(
+            f"{marker} {col(item.name, 12)} L{item.level} "
+            f"{render_bar(item.percent, 6)} {item.percent:>3}%"
+        )
+    if not q2:
+        q2 = ["No active skills yet"]
+    # Quadrant 3 — SPECIALISATIONS
+    q3: list[str] = []
+    for idx, item in enumerate(snapshot.specializations[:4]):
+        q3.append(
+            f"{'●' if getattr(item, 'locked', False) else '○'} "
+            f"{col(item.name, 12)} L{item.level} "
+            f"{render_bar(item.percent, 6)} {item.percent:>3}%"
+        )
+    if not q3:
+        q3 = ["No specialisations yet"]
+    # Quadrant 4 — TODAY & PROGRESS
+    best = max(snapshot.specializations, key=lambda s: s.level, default=None)
+    q4 = [f"XP Today:   +{snapshot.xp_today} XP ({snapshot.verified_today} verified)"]
+    if best is not None:
+        q4.append(f"Current:    {best.name} L{best.level} · {best.percent}%")
+    else:
+        q4.append("Current:    no skill xp yet")
+    sign = "+" if snapshot.velocity_today_pct >= 0 else "-"
+    q4.append(f"Velocity:   {sign}{abs(snapshot.velocity_today_pct)}% vs yesterday")
+
+    lines: list[str] = []
+    if inner >= 54:
+        top_hdr = _section("BASE STATS", half_w) + f" {v} " + _section("ACTIVE SKILLS", half_w)
+        bottom_hdr = _section("SPECIALISATIONS", half_w) + f" {v} " + _section("TODAY & PROGRESS", half_w)
+        lines.append(top_hdr)
+        for i in range(max(len(q1), len(q2))):
+            lines.append(
+                col(q1[i] if i < len(q1) else "", half_w)
+                + f" {v} "
+                + col(q2[i] if i < len(q2) else "", half_w)
+            )
+        lines.append("")
+        lines.append(bottom_hdr)
+        for i in range(max(len(q3), len(q4))):
+            lines.append(
+                col(q3[i] if i < len(q3) else "", half_w)
+                + f" {v} "
+                + col(q4[i] if i < len(q4) else "", half_w)
+            )
+    else:
+        lines.extend(
+            [_section("BASE STATS", inner), *q1, "", _section("ACTIVE SKILLS", inner),
+             *q2, "", _section("SPECIALISATIONS", inner), *q3, "",
+             _section("TODAY & PROGRESS", inner), *q4]
+        )
+
+    lines.append("")
+    lines.append("commands: /stats full (7-day velocity & deltas) · /skills · /usage")
+    return _double_frame_box("STATS", lines, width=width, ascii_only=ascii_only, meta=f"v{snapshot.version}")
+
+
+def _double_frame_box(title: str, lines: Sequence[str], *, width: int, ascii_only: bool, meta: str = "") -> str:
+    """Compact double-frame (╔═╗) card without viewport padding (inline use)."""
+    frame_w = max(20, width - 1)
+    inner = max(frame_w - 6, 16)
+    if ascii_only:
+        tl, tr, bl, br, h, v = "+", "+", "+", "+", "-", "|"
+    else:
+        tl, tr, bl, br, h, v = "╔", "╗", "╚", "╝", "═", "║"
+    title_text = f" {title} "
+    meta_text = f" {meta} " if meta else ""
+    head_len = 1 + len(title_text) + len(meta_text)
+    top = (tl + h + title_text + meta_text + h * max(0, frame_w - 1 - head_len))[: frame_w - 1].ljust(frame_w - 1, h) + tr
+    rows = [f"{v}  {_clip(line, inner).ljust(inner)}  {v}" for line in lines]
+    bottom = bl + h * (frame_w - 2) + br
+    return "\n".join([top, *rows, bottom])
+
+
 def render_stats(
     snapshot: StatsSnapshot, *, width: int, height: int, scroll: int = 0,
     ascii_only: bool = False,

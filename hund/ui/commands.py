@@ -95,16 +95,15 @@ def cmd_stats(ctx: CommandContext, args: list[str]) -> None:
         render_character_card(ctx.console, ctx.rt, stats, compact=True)
         return
     try:
-        from .screen_render import render_stats
+        from .screen_render import render_stats_inline
         from .snapshots import collect_stats
 
         snapshot = collect_stats(workspace=workspace)
-        ctx.console.print("CHARACTER SHEET", markup=False, highlight=False)
         ctx.console.print(
-            render_stats(
+            render_stats_inline(
                 snapshot,
                 width=getattr(ctx.console, "width", 80),
-                height=24,
+                ascii_only=bool(getattr(ctx.rt, "cfg", None) and getattr(ctx.rt.cfg, "ascii_ui", False)),
             ),
             markup=False,
             highlight=False,

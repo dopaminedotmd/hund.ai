@@ -39,6 +39,10 @@ class StatsSnapshot:
     activity_dates: tuple[date, ...]
     velocity: tuple[tuple[str, float, bool], ...]
     has_activity: bool
+    # agyD/1 (Gate 3 §2.1): TODAY & PROGRESS data for the inline card.
+    xp_today: int = 0
+    verified_today: int = 0
+    velocity_today_pct: int = 0
 
 
 @dataclass(frozen=True)
@@ -233,6 +237,21 @@ def collect_stats(
         for name, item in velocity.items()
     )
     activity = tuple(counts[day] for day in dates)
+    # agyD/1: TODAY & PROGRESS for the inline /stats card.
+    from ..domains.xp import xp_events_since
+
+    xp_today = 0
+    verified_today = counts.get(today, 0)
+    try:
+        today_start = datetime.combine(today, datetime.min.time(), tzinfo=local_tz)
+        xp_today = sum(xp_events_since(_home_db(home, "hund.db"), today_start.isoformat()).values())
+    except Exception:
+        pass
+    yesterday_count = counts.get(today - timedelta(days=1), 0)
+    if yesterday_count <= 0:
+        velocity_today_pct = 100 if activity and activity[-1] > 0 else 0
+    else:
+        velocity_today_pct = round((activity[-1] - yesterday_count) / yesterday_count * 100)
     return StatsSnapshot(
         _package_version(),
         stat_items,
@@ -241,6 +260,9 @@ def collect_stats(
         dates,
         velocity_items,
         any(activity),
+        xp_today=xp_today,
+        verified_today=verified_today,
+        velocity_today_pct=velocity_today_pct,
     )
 
 
