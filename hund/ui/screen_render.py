@@ -517,6 +517,7 @@ def render_skill_editor(
     width: int,
     height: int,
     scroll: int = 0,
+    status: str = "",
     ascii_only: bool = False,
 ) -> str:
     """Gate 3 §2.5.2: in-place editing view in the same window.
@@ -565,7 +566,16 @@ def render_skill_editor(
         else:
             visible.append(crop(row_text))
     visible.extend([""] * (capacity - len(visible)))
-    visible.append(f"[Line {line + 1}, Col {col + 1} · EDIT · Mouse Scroll]")
+    # agyD/9 QA: validation/save feedback must be visible INSIDE the editor —
+    # before this the message went to screens.status, which this frame never
+    # rendered, so Ctrl+S appeared to do nothing. Keep the whole row on one
+    # line (fullscreen_frame would wrap and push it out of the viewport).
+    status_row = f"[Line {line + 1}, Col {col + 1} · EDIT · Mouse Scroll]"
+    if status:
+        budget = max(0, inner - len(status_row) - 2)
+        tail = status if len(status) <= budget else status[: max(budget - 1, 0)] + "…"
+        status_row += "  " + tail
+    visible.append(status_row)
 
     footer = (
         "[Ctrl+S] Save * [Esc] Exit * [Ctrl+O] Open in $EDITOR"
@@ -576,6 +586,53 @@ def render_skill_editor(
         f"SKILL DETAIL · EDITING · {name}", visible,
         width=width, height=height, meta="[EDIT]",
         footer=footer, scroll=effective, ascii_only=ascii_only,
+    )
+
+
+def catalog_click_selection(
+    snapshot: SkillsSnapshot,
+    *,
+    width: int,
+    height: int,
+    scroll: int,
+    y: int,
+) -> int | None:
+    """Map a mouse click row on the /skills catalog to a selectable index.
+
+    Mirrors fullscreen_frame's geometry: row y=0 is the top border, content
+    rows start at y=1 and each catalog line may wrap over several rows. Returns
+    the global selectable index (the same ordinal Up/Down move) or None when
+    the click is not on a selectable row (header, └ member row, placeholder,
+    footer). agyD/9 QA: clicking a row must move the cursor there.
+    """
+    inner = max(max(20, width - 1) - 6, 16)
+    body_rows = max(height - 2, 1)
+    content_rows = max(body_rows - 1, 0)
+    if y < 1:
+        return None
+    content_index = y - 1
+    if content_index >= content_rows:
+        return None
+    lines = skills_lines(snapshot, width, 0)
+    expanded: list[str] = []
+    owners: list[int] = []
+    for index, line in enumerate(lines):
+        for part in _wrap(line, inner):
+            expanded.append(part)
+            owners.append(index)
+    maximum = max(0, len(expanded) - content_rows)
+    start = min(max(scroll, 0), maximum)
+    position = start + content_index
+    if not (0 <= position < len(expanded)):
+        return None
+    entry = owners[position]
+    line = lines[entry]
+    if not line.startswith(("❯ ● ", "  ○ ")):
+        return None
+    return sum(
+        1
+        for prior in lines[:entry]
+        if prior.startswith(("❯ ● ", "  ○ "))
     )
 
 
@@ -616,9 +673,9 @@ def render_skills(
             footer=footer, scroll=scroll, ascii_only=ascii_only,
         )
     footer = (
-        "<- Back * [Esc/q] Close * ^v Select * Enter Inspect/Manage * [n] New"
+        "<- Back * [Esc/q] Close * ^v * Enter Inspect * [a] Activate * [p] Park"
         if ascii_only
-        else "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect/Manage · [n] New"
+        else "[←] Back · [Esc/q] Close · ↑↓ · Enter Inspect · [a] Activate · [p] Park"
     )
 
     return fullscreen_frame(
@@ -748,9 +805,9 @@ def render_specialisation_management(
         )
     else:
         footer = (
-            "[Enter] Toggle active/parked * [r] Park * <- Back to specs"
+            "[Enter] Inspect * [a] Activate * [p] Park * <- Back to specs"
             if ascii_only
-            else "[Enter] Toggle active/parked · [r] Park · [←] Back to specs"
+            else "[Enter] Inspect · [a] Activate · [p] Park · [←] Back to specs"
         )
     return fullscreen_frame(
         title, lines, width=width, height=height,

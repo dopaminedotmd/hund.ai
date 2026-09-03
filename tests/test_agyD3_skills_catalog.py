@@ -92,7 +92,9 @@ def test_render_skills_catalog_groups_and_footer():
     assert "[active]" in out and "[parked]" in out
     assert "◇ deferred" in out
     assert "└ python-fastapi" in out
-    assert "Enter Inspect/Manage" in out and "[n] New" in out
+    # agyD/9 QA: Enter opens the inspect; activate/park have explicit keys.
+    assert "Enter Inspect" in out and "[a] Activate" in out and "[p] Park" in out
+    assert "[n] New" not in out
     assert "[←] Back · [Esc/q] Close" in out
 
 
@@ -100,7 +102,7 @@ def test_render_skills_ascii_fallback():
     out = render_skills(_snapshot(), width=80, height=24, ascii_only=True)
     assert "╔" not in out
     assert out.splitlines()[0].startswith("+")
-    assert "<- Back" in out and "[n] New" in out
+    assert "<- Back" in out and "[a] Activate" in out and "[p] Park" in out
     # ascii_only swaps the frame chrome; content glyphs stay (same as /stats).
     assert "❯ ●" in out
     assert max(len(line) for line in out.splitlines()) <= 79
