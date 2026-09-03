@@ -121,56 +121,95 @@ def modal_frame(
     return "\n".join([top, *rows])
 
 
+def _vertical_velocity_chart(activity: Sequence[int], labels: Sequence[Any], width: int) -> list[str]:
+    """Three-row vertical column chart + day-letter axis (Gate 3 §2.2)."""
+    max_v = max(activity) if activity and max(activity) > 0 else 1
+    n = len(activity)
+    cell_w = max(2, min(4, width // max(n, 1)))
+    rows: list[str] = []
+    for level in (3, 2, 1):
+        label = str(round(max_v * level / 3))
+        cells: list[str] = []
+        for value in activity:
+            filled = value >= max(1, round(max_v * level / 3))
+            cells.append(("█" if filled else " ") * cell_w)
+        rows.append(f"{label:>3} ┤ " + " ".join(cells).rstrip())
+    axis_label = "".join(str(day.strftime("%a")[0]).ljust(cell_w) for day in labels)
+    rows.append(f"   └─" + axis_label)
+    return rows
+
+
 def stats_lines(snapshot: StatsSnapshot, width: int) -> list[str]:
     frame_w = max(20, width - 1)
     inner = max(frame_w - 6, 16)
-    stats = []
-    for item in snapshot.stats:
+
+    def barrow(item: Any) -> str:
         if item.value is None:
-            stats.append(f"{item.abbreviation} {item.name.title():<10} No data yet")
-        else:
-            stats.append(
-                f"{item.abbreviation} {item.name.title():<10} "
-                f"{render_bar(item.percent, 10)} {item.percent:>3}% ({_tier_letter(item.tier)})"
-            )
-    specs = []
-    for item in snapshot.specializations:
-        lock = " LCK" if getattr(item, "locked", False) else ""
-        specs.append(
-            f"{item.name:<18} [{getattr(item, 'vault_state', 'equipped')}]{lock}"
+            return f"{item.abbreviation} {item.name.title():<9} No data yet"
+        return (
+            f"{item.abbreviation} {item.name.title():<9} "
+            f"{render_bar(item.percent, 10)} {item.percent:>3}%"
         )
+
+    stats = [barrow(item) for item in snapshot.stats]
+    # ACTIVE SKILLS column: real domain skills with level + bar (Gate 3 §2.2).
+    skills = [
+        f"{item.name:<18} L{item.level} {render_bar(item.percent, 8)} {item.percent:>3}%"
+        for item in snapshot.specializations
+    ]
+    if not skills:
+        skills = ["No active skills yet"]
+    specs = [
+        f"{'●' if getattr(item, 'locked', False) else '○'} {item.name:<18} L{item.level} "
+        f"{render_bar(item.percent, 8)} {item.percent:>3}%  [active]"
+        for item in snapshot.specializations
+    ]
     if not specs:
-        specs = ["No data yet"]
+        specs = ["No specialisations yet"]
 
     lines: list[str] = [""]
-    if width >= 72:
+    if inner >= 72:
         left_w = max(31, (inner - 3) // 2)
         right_w = max(10, inner - left_w - 3)
         lines.append(
             _section("BASE STATS", left_w) + " │ " + _section("ACTIVE SKILLS", right_w)
         )
-        count = max(len(stats), len(specs))
+        count = max(len(stats), len(skills))
         for index in range(count):
             left = stats[index] if index < len(stats) else ""
-            right = specs[index] if index < len(specs) else ""
+            right = skills[index] if index < len(skills) else ""
             lines.append(_clip(left, left_w).ljust(left_w) + " │ " + _clip(right, right_w))
     else:
-        lines.extend([_section("BASE STATS", inner), *stats, "", _section("ACTIVE SKILLS", inner), *specs])
+        lines.extend([_section("BASE STATS", inner), *stats, "", _section("ACTIVE SKILLS", inner), *skills])
 
-    lines.extend(["", _section("7-DAY VELOCITY", inner)])
-    if snapshot.has_activity:
-        maximum = max(snapshot.activity) or 1
-        bars = " ".join("█" * max(1, round(value / maximum * 4)) if value else "·" for value in snapshot.activity)
-        labels = " ".join(day.strftime("%a")[0] for day in snapshot.activity_dates)
-        lines.extend([f"Activity / Day  {bars}", f"                {labels}"])
+    lines.extend(["", _section(f"SPECIALISATIONS ({len(snapshot.specializations)})", inner), *specs])
+
+    if inner >= 72:
+        lines.extend(["", _section("7-DAY VELOCITY", left_w) + " │ " + _section("BASE STAT DELTAS", right_w)])
+        chart = _vertical_velocity_chart(snapshot.activity, snapshot.activity_dates, left_w)
+        deltas = [
+            f"{name.title():<11} {'+' if delta >= 0 else '-'}{abs(delta):.1f}%"
+            for name, delta, _improving in snapshot.velocity
+        ]
+        if not deltas:
+            deltas = ["No data yet"]
+        count = max(len(chart), len(deltas))
+        for index in range(count):
+            left = chart[index] if index < len(chart) else ""
+            right = deltas[index] if index < len(deltas) else ""
+            lines.append(_clip(left, left_w).ljust(left_w) + " │ " + _clip(right, right_w))
     else:
-        lines.append("Activity / Day  No data yet")
-    if snapshot.velocity:
-        for name, delta, improving in snapshot.velocity:
-            sign = "+" if delta >= 0 else "-"
-            lines.append(f"{name.title():<12} {sign}{abs(delta):.1f}%")
-    else:
-        lines.append("Base Stat Deltas  No data yet")
+        lines.extend(["", _section("7-DAY VELOCITY", inner)])
+        if snapshot.has_activity:
+            lines.extend(_vertical_velocity_chart(snapshot.activity, snapshot.activity_dates, inner))
+        else:
+            lines.append("No activity yet")
+        lines.append(_section("BASE STAT DELTAS", inner))
+        delta_rows = [
+            f"{name.title():<11} {'+' if delta >= 0 else '-'}{abs(delta):.1f}%"
+            for name, delta, _improving in snapshot.velocity
+        ]
+        lines.extend(delta_rows or ["No data yet"])
     return lines
 
 
@@ -288,7 +327,7 @@ def render_stats(
         else "[←] Back · [Esc/q] Close · ↑↓ Scroll"
     )
     return fullscreen_frame(
-        "STATS", stats_lines(snapshot, width), width=width, height=height,
+        "STATS · FULL VELOCITY & TRENDS", stats_lines(snapshot, width), width=width, height=height,
         meta=f"v{snapshot.version}", footer=footer,
         scroll=scroll, ascii_only=ascii_only,
     )
