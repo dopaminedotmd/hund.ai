@@ -3860,7 +3860,6 @@ def create_fullscreen_app(
             return True
 
         destination_commands = {
-            "/stats": DestinationView.STATS,
             "/skills": DestinationView.SKILLS,
             "/tools": DestinationView.TOOLS,
             "/usage": DestinationView.USAGE,
@@ -3869,6 +3868,15 @@ def create_fullscreen_app(
         }
         if text in destination_commands:
             _open_destination(destination_commands[text])
+            return True
+
+        # agyD/1 (Gate 3 §2.1/2.2): /stats prints the inline card in chat;
+        # /stats full|details opens the detailed destination view.
+        if text in ("/stats full", "/stats details", "/stats detail"):
+            _open_destination(DestinationView.STATS)
+            return True
+        if text == "/stats":
+            run_command(text)
             return True
 
         if text == "/theme":
