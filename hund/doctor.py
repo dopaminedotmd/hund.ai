@@ -311,6 +311,34 @@ def profile_environment(workspace: Path | None = None) -> EnvironmentProfile:
     return prof
 
 
+def _check_context_window(cfg: Any) -> CheckResult:
+    """Flag configs whose context window exceeds the model's true window (Track 21)."""
+    from .providers.catalog import catalog_context_window
+
+    provider = getattr(cfg, "provider", None)
+    model = getattr(provider, "model", "") or "unknown"
+    configured = int(getattr(provider, "context_window", 0) or 0)
+    truthful = catalog_context_window(model)
+    if truthful is None:
+        return CheckResult(
+            name="Context window",
+            status="pass",
+            detail=f"{configured:,} tokens ({model} not in catalog; unverified)",
+        )
+    if configured > truthful:
+        return CheckResult(
+            name="Context window",
+            status="warn",
+            detail=f"Configured {configured:,} exceeds {model} true window {truthful:,}",
+            remedy="Restart Hund so the config loader corrects the value, or re-select the model in /model.",
+        )
+    return CheckResult(
+        name="Context window",
+        status="pass",
+        detail=f"{configured:,} of {truthful:,} ({model})",
+    )
+
+
 def diagnose_system(rt: Any = None, workspace: Path | None = None) -> DoctorReport:
     """Run structured read-only health checks on Hund and integrations."""
     from .config import HundConfig
@@ -420,7 +448,23 @@ def diagnose_system(rt: Any = None, workspace: Path | None = None) -> DoctorRepo
         ))
         fix_plan.append("Select active model via /model")
 
-    # 5. Learning store check
+    # 5. Context window truthfulness (Track 21)
+    try:
+        cfg = getattr(rt, "cfg", None) or HundConfig.load()
+        context_check = _check_context_window(cfg)
+        checks.append(context_check)
+        if context_check.status == "warn":
+            fix_plan.append("Correct the provider context window via /model or restart")
+    except Exception:
+        checks.append(CheckResult(
+            name="Context window",
+            status="warn",
+            detail="Window unverified",
+            remedy="Verify the active model's context window in /model.",
+        ))
+        fix_plan.append("Verify context window via /model")
+
+    # 6. Learning store check
     try:
         from .store.sqlite import connect_requests
         conn = connect_requests()
@@ -440,7 +484,7 @@ def diagnose_system(rt: Any = None, workspace: Path | None = None) -> DoctorRepo
         ))
         fix_plan.append("Verify learning store schema")
 
-    # 6. Terminal capabilities & profile
+    # 7. Terminal capabilities & profile
     try:
         from .ui import theme
         if theme.supports_truecolor():

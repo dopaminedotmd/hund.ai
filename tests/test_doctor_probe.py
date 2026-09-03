@@ -53,3 +53,53 @@ def test_profile_environment_uses_single_powershell_call(monkeypatch):
     assert prof.os_caption == "X"
     assert prof.total_ram_gb == 8.0
     assert prof.gpu_model == ""
+
+
+# --- Track 21: context window doctor check (Masterplan A STEG 0) ---
+
+
+def test_context_window_check_flags_overclaim() -> None:
+    """Configured window above the model's true window must warn."""
+    from hund.config import HundConfig
+
+    cfg = HundConfig()
+    cfg.provider.model = "deepseek-chat"
+    cfg.provider.context_window = 1_000_000
+    result = doctor._check_context_window(cfg)
+    assert result.name == "Context window"
+    assert result.status == "warn"
+    assert "1,000,000" in result.detail
+    assert "131,072" in result.detail
+    assert result.remedy
+
+
+def test_context_window_check_passes_when_truthful() -> None:
+    from hund.config import HundConfig
+
+    cfg = HundConfig()
+    cfg.provider.model = "deepseek-chat"
+    cfg.provider.context_window = 131_072
+    result = doctor._check_context_window(cfg)
+    assert result.status == "pass"
+
+
+def test_context_window_check_unknown_model_is_unverified() -> None:
+    from hund.config import HundConfig
+
+    cfg = HundConfig()
+    cfg.provider.model = "mystery-model"
+    result = doctor._check_context_window(cfg)
+    assert result.status == "pass"
+    assert "unverified" in result.detail.lower()
+
+
+def test_diagnose_system_includes_context_window_check() -> None:
+    """The /doctor report must contain the context window truthfulness check."""
+    from types import SimpleNamespace
+
+    from hund.config import HundConfig
+
+    cfg = HundConfig()
+    report = doctor.diagnose_system(SimpleNamespace(cfg=cfg))
+    names = [c.name for c in report.checks]
+    assert "Context window" in names

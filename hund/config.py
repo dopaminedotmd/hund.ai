@@ -7,12 +7,15 @@ I 0.1.0 sparas nyckel i miljövariabel eller OS-nyckelring — TODO innan setup.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from pathlib import Path
 import shutil
 
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .paths import config_path
+
+logger = logging.getLogger(__name__)
 
 
 # Valid DeepSeek model names (single source of truth).
@@ -46,7 +49,9 @@ class ProviderConfig(BaseModel):
     api_key_env: str = "DEEPSEEK_API_KEY"
     provider_id: str = "deepseek"
     credential_id: str = "deepseek"
-    context_window: int = 1_000_000
+    # Track 21: default states the verified deepseek window (128k), never 1M.
+    # The config loader corrects stale overclaims against the model catalog.
+    context_window: int = 131_072
 
 
 class HundConfig(BaseModel):
@@ -80,8 +85,30 @@ class HundConfig(BaseModel):
                     cfg.provider.model.startswith("gpt-") or cfg.provider.model not in KNOWN_MODELS
                 ):
                     cfg.provider.model = "deepseek-v4-flash"
-                if cfg.provider.context_window == 64_000:
-                    cfg.provider.context_window = 1_000_000
+                # Track 21: correct overclaimed context windows against the
+                # model catalog. Legacy 64k values are kept, never upgraded.
+                from .providers.catalog import catalog_context_window
+
+                truthful_window = catalog_context_window(cfg.provider.model)
+                if (
+                    truthful_window is not None
+                    and cfg.provider.context_window > truthful_window
+                ):
+                    logger.warning(
+                        "Correcting provider.context_window %s -> %s for model %s "
+                        "(catalog truth).",
+                        cfg.provider.context_window,
+                        truthful_window,
+                        cfg.provider.model,
+                    )
+                    cfg.provider.context_window = truthful_window
+                    try:
+                        cfg.save(path)
+                    except Exception:
+                        logger.warning(
+                            "Failed to persist corrected context window to %s.",
+                            path,
+                        )
                 # Marshmallow is Hund's sole current theme. Migrate every
                 # historical or unknown persisted value deterministically.
                 if cfg.theme != "marshmallow":
