@@ -170,7 +170,7 @@ def expand_user_context(user_text: str, workspace: Path | str) -> ContextExpansi
 
     if brief.needs_environment_facts:
         force_fresh = bool(brief.environment_freshness == "dynamic_refresh")
-        snapshot = get_canonical_snapshot(force_fresh=force_fresh)
+        snapshot = get_canonical_snapshot(workspace=root, force_fresh=force_fresh)
         env_block = serialize_environment_facts(snapshot, language=lang)
         blocks.append(env_block)
 

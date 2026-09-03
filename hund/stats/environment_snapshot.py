@@ -1,11 +1,12 @@
 """Canonical EnvironmentSnapshot representing frozen host machine facts and storage metrics."""
 from __future__ import annotations
 
+import json
 import os
 import platform
 import shutil
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -161,17 +162,62 @@ def _get_disk_storage(path_str: str = "C:\\") -> VolumeStorage:
 _CACHED_SNAPSHOT: EnvironmentSnapshot | None = None
 
 
+def _snapshot_file_path(workspace: Path | str | None) -> Path:
+    ws_path = Path(workspace) if workspace else Path.cwd()
+    target_dir = ws_path / ".hund"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    return target_dir / "environment_snapshot.json"
+
+
+def _save_snapshot_to_disk(snapshot: EnvironmentSnapshot, workspace: Path | str | None) -> None:
+    try:
+        path = _snapshot_file_path(workspace)
+        data = asdict(snapshot)
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_snapshot_from_disk(workspace: Path | str | None) -> EnvironmentSnapshot | None:
+    try:
+        path = _snapshot_file_path(workspace)
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        pv_data = data.pop("primary_volume", None)
+        pv = VolumeStorage(**pv_data) if pv_data else _get_disk_storage()
+        vols_data = data.pop("volumes", [])
+        vols = tuple(VolumeStorage(**v) for v in vols_data) if vols_data else (pv,)
+        return EnvironmentSnapshot(
+            primary_volume=pv,
+            volumes=vols,
+            **data,
+        )
+    except Exception:
+        return None
+
+
 def create_environment_snapshot(
-    workspace: Path | None = None,
+    workspace: Path | str | None = None,
     *,
     force_fresh: bool = False,
 ) -> EnvironmentSnapshot:
-    """Create or return the cached runtime EnvironmentSnapshot."""
+    """Create or return the cached runtime EnvironmentSnapshot.
+
+    Persists facts to .hund/environment_snapshot.json in workspace;
+    new sessions read without rescan unless force_fresh=True.
+    """
     global _CACHED_SNAPSHOT
     if _CACHED_SNAPSHOT is not None and not force_fresh:
         return _CACHED_SNAPSHOT
 
-    prof = profile_environment(workspace=workspace)
+    if not force_fresh:
+        persisted = _load_snapshot_from_disk(workspace)
+        if persisted is not None:
+            _CACHED_SNAPSHOT = persisted
+            return persisted
+
+    prof = profile_environment(workspace=Path(workspace) if workspace else None)
     disk = _get_disk_storage("C:\\" if os.name == "nt" else "/")
 
     snapshot = EnvironmentSnapshot(
@@ -197,4 +243,5 @@ def create_environment_snapshot(
         python_impl=prof.python_impl,
     )
     _CACHED_SNAPSHOT = snapshot
+    _save_snapshot_to_disk(snapshot, workspace)
     return snapshot
