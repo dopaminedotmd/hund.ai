@@ -43,7 +43,7 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
             "deepseek-chat",
             "deepseek-reasoner",
         ),
-        1_000_000, "deepseek", "DEEPSEEK_API_KEY",
+        131_072, "deepseek", "DEEPSEEK_API_KEY",
     ),
     ProviderPreset(
         "openrouter", "OpenRouter", "Access 100+ models with 1 key",
@@ -84,25 +84,36 @@ PROVIDER_PRESETS: tuple[ProviderPreset, ...] = (
 
 
 MODEL_OPTIONS: tuple[ModelOption, ...] = (
+    # DeepSeek suite. Context windows state the model's REAL window, never a
+    # marketing claim (Track 21: context window must be truth).
+    # Evidence: deepseek-chat verified at 128k against the DeepSeek platform
+    # (REV3.3 audit, 2026-09-03). The remaining models are set to the same
+    # verified family value and marked "verify" until confirmed in provider
+    # docs; under-claiming is safe, over-claiming breaks compression.
     ModelOption(
         "deepseek", "DeepSeek", "deepseek-v4-flash", "https://api.deepseek.com",
-        1_000_000, "deepseek", "Fast and token-efficient (default)", env_name="DEEPSEEK_API_KEY",
+        # verify: not yet confirmed in provider docs; 128k family default.
+        131_072, "deepseek", "Fast and token-efficient (default)", env_name="DEEPSEEK_API_KEY",
     ),
     ModelOption(
         "deepseek", "DeepSeek", "deepseek-v4-pro", "https://api.deepseek.com",
-        1_000_000, "deepseek", "High-precision model", env_name="DEEPSEEK_API_KEY",
+        # verify: not yet confirmed in provider docs; 128k family default.
+        131_072, "deepseek", "High-precision model", env_name="DEEPSEEK_API_KEY",
     ),
     ModelOption(
         "deepseek", "DeepSeek", "deepseek-v4-flash-vision-exp", "https://api.deepseek.com",
-        1_000_000, "deepseek", "Multimodal vision model", env_name="DEEPSEEK_API_KEY",
+        # verify: not yet confirmed in provider docs; 128k family default.
+        131_072, "deepseek", "Multimodal vision model", env_name="DEEPSEEK_API_KEY",
     ),
     ModelOption(
         "deepseek", "DeepSeek", "deepseek-chat", "https://api.deepseek.com",
-        1_000_000, "deepseek", "Fast chat model", env_name="DEEPSEEK_API_KEY",
+        # Source: DeepSeek platform/API; 128k verified (REV3.3, 2026-09-03).
+        131_072, "deepseek", "Fast chat model", env_name="DEEPSEEK_API_KEY",
     ),
     ModelOption(
         "deepseek", "DeepSeek", "deepseek-reasoner", "https://api.deepseek.com",
-        1_000_000, "deepseek", "Reasoning model", env_name="DEEPSEEK_API_KEY",
+        # verify: not yet confirmed in provider docs; 128k family default.
+        131_072, "deepseek", "Reasoning model", env_name="DEEPSEEK_API_KEY",
     ),
     # OpenAI suite
     ModelOption(
@@ -185,6 +196,18 @@ MODEL_OPTIONS: tuple[ModelOption, ...] = (
         32_768, "groq", "Fast Groq Mixtral", env_name="GROQ_API_KEY",
     ),
 )
+
+
+def catalog_context_window(model_id: str) -> int | None:
+    """Return the catalog context window for a known model, or None if unknown.
+
+    Single source of truth used by config-load correction and the doctor
+    context-window check (Track 21).
+    """
+    for opt in MODEL_OPTIONS:
+        if opt.model_id == model_id:
+            return opt.context_window
+    return None
 
 
 def custom_model(
@@ -283,11 +306,27 @@ def active_option(cfg: Any) -> ModelOption:
                 ep.id, ep.base_url, ep.model_id, ep.context_window,
                 credential_id=ep.credential_id, name=ep.name,
             )
+    # Known model served from a non-catalog endpoint (e.g. a proxy): the
+    # catalog window is still the truth for that model.
+    for opt in MODEL_OPTIONS:
+        if opt.model_id == active_m:
+            return custom_model(
+                getattr(cfg.provider, "provider_id", "custom"),
+                active_u or opt.base_url,
+                active_m,
+                opt.context_window,
+                credential_id=getattr(cfg.provider, "credential_id", "custom"),
+            )
+    # Unknown model: trust the configured window when present, otherwise use
+    # the conservative custom-endpoint default. Never fabricate 1M (Track 21).
+    configured_window = getattr(cfg.provider, "context_window", 0)
+    if not configured_window or configured_window <= 0:
+        configured_window = 32_000
     return custom_model(
         getattr(cfg.provider, "provider_id", "custom"),
         getattr(cfg.provider, "base_url", ""),
         active_m or "unknown",
-        getattr(cfg.provider, "context_window", 1_000_000),
+        configured_window,
         credential_id=getattr(cfg.provider, "credential_id", "custom"),
     )
 
