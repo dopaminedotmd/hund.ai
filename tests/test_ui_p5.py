@@ -174,7 +174,7 @@ def test_output_lexer_box_and_thinking_styles() -> None:
     # Line 7: "│  detta är **fetstil** och `inline_kod` här.          │"
     # Markers must be stripped in tokens: "fetstil" (no **) and "inline_kod" (no `)
     t7 = lexer_fn(7)
-    assert any(style == "class:label" and text == "fetstil" for style, text in t7)
+    assert any(style == "class:strong" and text == "fetstil" for style, text in t7)
     assert not any("**" in text for style, text in t7)
     assert any(style == "class:code" and text == "inline_kod" for style, text in t7)
     assert not any("`" in text for style, text in t7)
