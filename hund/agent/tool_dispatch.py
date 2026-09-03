@@ -308,9 +308,47 @@ TOOL_DOMAIN_MAP = {
 _TURN_TOOL_XP: dict[tuple[str, str], int] = {}
 
 
-def _log_tool(tool: str, risk: str, outcome: str, success: int, run_id: str | None = None) -> None:
-    """Compatibility telemetry hook. Tool use never awards domain XP."""
-    return None
+def _log_tool(
+    tool: str,
+    risk: str,
+    outcome: str,
+    success: int,
+    *,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    latency_ms: int | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Log one executed tool call to logs/tool_events.db (agyB/5, Spår 22).
+
+    Only actual executions are recorded (outcome='ran'); blocked/declined
+    attempts stay in the trace events. Never crashes the agent loop.
+    """
+    try:
+        from ..store.sqlite import connect_tool_events
+
+        conn = connect_tool_events(db_path)
+        conn.execute(
+            "INSERT INTO tool_events "
+            "(id, created_at, tool, risk, outcome, success, run_id, session_id, latency_ms, risk_class) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                str(uuid.uuid4()),
+                datetime.now(timezone.utc).isoformat(),
+                tool,
+                risk,
+                outcome,
+                success,
+                run_id,
+                session_id,
+                latency_ms,
+                risk,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def dispatch_tool_call(
@@ -335,6 +373,9 @@ def dispatch_tool_call(
     name, args = _parse(tc)
     decision = engine.classify(name, args)
     workspace_id = str(engine.workspace_root)
+    import time as _time
+
+    _t0 = _time.monotonic()
 
     # Helper för att skriva händelser under anropet
     def _emit(event_type: str, payload: dict, risk_level: str = "none", approval_id: str | None = None):
@@ -601,7 +642,15 @@ def dispatch_tool_call(
                 state=AuthoringState.READY,
                 publication_authorization=None,
             ))
-    _log_tool(name, decision.risk.value, result, success, run_id=run_id)
+    _log_tool(
+        name,
+        decision.risk.value,
+        "ran",
+        success,
+        run_id=run_id,
+        session_id=session_id,
+        latency_ms=int((_time.monotonic() - _t0) * 1000),
+    )
     if success:
         _emit("tool_call_completed", {"stdout_redacted_summary": result[:200]}, risk_level=decision.risk.value)
     else:

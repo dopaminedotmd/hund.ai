@@ -29,7 +29,7 @@ from ..tools.default_tools import register_defaults
 from ..tools.types import ToolCallContext
 from ..tools.url_provenance import get_url_provenance_store
 from .prompt_builder import build_system_prompt
-from .context import estimate_tokens, maybe_compress
+from .context import TaskState, estimate_tokens, maybe_compress
 from .safety import PermissionEngine
 from .tool_dispatch import dispatch_tool_call, preflight_check_tool_calls
 
@@ -645,9 +645,16 @@ def run_repl() -> int:
                 )
             run_id = uuid.uuid4().hex
             _session_save(session_id, "user", user, run_id=run_id)
+            # Senast bekräftade mål = aktuell user-prompt; bevaras av komprimering
+            # (agyB/5, Spår 4) och nollställs i finally efter turen.
+            rt.task_state = TaskState(source="user", goal=(user or "")[:300])
             # Komprimera om sessionen växer (Fas 5). Tool-output förblir data.
             tokens_before_compress = estimate_tokens(messages)
-            comp = maybe_compress(messages)
+            comp = maybe_compress(
+                messages,
+                context_window=getattr(cfg.provider, "context_window", None),
+                task_state=rt.task_state,
+            )
             if comp.compressed:
                 messages[:] = comp.messages
                 _restore_frozen_system_prompt(messages, frozen_system_prompt)
@@ -680,9 +687,16 @@ def run_repl() -> int:
                 _agent_turn(console, client, messages, schemas, engine, cfg, session_id, run_id=run_id)
             finally:
                 rt.pinned_skill = None
+                rt.task_state = None
                 # Ta bort dynamic_msg oavsett var den hamnat
                 if dynamic_msg is not None:
                     messages[:] = [m for m in messages if m is not dynamic_msg]
+                messages[:] = [
+                    m for m in messages
+                    if not (getattr(m, "content", "") or "").startswith(
+                        "[TASK_STATE"
+                    )
+                ]
                 messages[:] = [
                     m for m in messages
                     if not (getattr(m, "content", "") or "").startswith(
@@ -883,6 +897,7 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
     _trace_event(engine, session_id, run_id, "run_started", {"model": cfg.provider.model})
     _trace_event(engine, session_id, run_id, "turn_started", {}, turn_id=turn_id)
     consecutive_tool_errors = 0
+    turn_tool_calls = 0  # agyB/5: summa tool_calls över rundorna, för turn-ledger
     _memory_captured = False
 
     def _finalize_memory_capture() -> None:
@@ -1032,7 +1047,14 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                 _finalize_memory_capture()
                 _log_request(cfg, result, tool_calls=0, run_id=run_id)
                 _trace_event(engine, session_id, run_id, "final_claim", {"text": result.text}, turn_id=turn_id)
-                _trace_event(engine, session_id, run_id, "turn_completed", {}, turn_id=turn_id)
+                _trace_event(
+                    engine,
+                    session_id,
+                    run_id,
+                    "turn_completed",
+                    {"finish_reason": result.finish_reason, "tool_calls": turn_tool_calls},
+                    turn_id=turn_id,
+                )
                 _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": result.finish_reason})
                 _feedback_hook(session_id, run_id, str(engine.workspace_root))
                 _runtime_learning_hook(
@@ -1043,6 +1065,7 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                 return
 
             # Tool-anrop — logga, narration, pre-flight check, dispatch varje
+            turn_tool_calls += len(result.tool_calls)
             _log_request(cfg, result, tool_calls=len(result.tool_calls), run_id=run_id)
             messages.append(
                 Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
@@ -1152,15 +1175,23 @@ def _trace_event(engine, session_id: str | None, run_id: str, event_type: str, p
         pass
 
 
-def _log_request(cfg: HundConfig, result, tool_calls: int, *, run_id: str | None = None) -> None:
+def _log_request(
+    cfg: HundConfig,
+    result,
+    tool_calls: int,
+    *,
+    run_id: str | None = None,
+    db_path: Path | None = None,
+) -> None:
     """Logga request till logs/requests.db. Får ej krascha agentloopen."""
     try:
-        conn = connect_requests()
+        conn = connect_requests(db_path)
         conn.execute(
             """INSERT INTO requests
                (id, created_at, task_class, model_requested, model_actual, provider,
-                finish_reason, prompt_tokens, completion_tokens, latency_ms, run_id)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                finish_reason, prompt_tokens, completion_tokens, latency_ms, run_id,
+                tool_calls_emitted)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 str(uuid.uuid4()),
                 datetime.now(timezone.utc).isoformat(),
@@ -1173,6 +1204,7 @@ def _log_request(cfg: HundConfig, result, tool_calls: int, *, run_id: str | None
                 result.completion_tokens,
                 result.latency_ms,
                 run_id,
+                tool_calls,
             ),
         )
         conn.commit()
