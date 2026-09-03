@@ -159,12 +159,15 @@ class SynthesisCallOutput(BaseModel, extra="forbid"):
     @classmethod
     def validate_steps(cls, steps: list[str]) -> list[str]:
         cleaned = []
-        for s in steps:
+        for i, s in enumerate(steps):
             c = " ".join(s.split())
             if not c or len(c) > 300:
-                raise ValueError("each step must be between 1 and 300 characters")
-            if _INSTRUCTION_TERMS.search(c):
-                raise ValueError("step contains instruction terms")
+                raise ValueError(f"step {i} must be between 1 and 300 characters")
+            term = _INSTRUCTION_TERMS.search(c)
+            if term:
+                raise ValueError(
+                    f"step {i} contains instruction terms: '{term.group(0)}'"
+                )
             cleaned.append(c)
         if not (2 <= len(cleaned) <= 8):
             raise ValueError("steps must contain between 2 and 8 concrete steps")
@@ -175,16 +178,21 @@ class SynthesisCallOutput(BaseModel, extra="forbid"):
     def validate_triggers(cls, triggers: list[str]) -> list[str]:
         cleaned = []
         seen_lower = set()
-        for t in triggers:
+        for i, t in enumerate(triggers):
             c = " ".join(t.split())
             if not c or len(c) > 120:
-                raise ValueError("each trigger must be between 1 and 120 characters")
+                raise ValueError(f"trigger {i} must be between 1 and 120 characters")
             if any(ord(ch) < 32 for ch in c):
-                raise ValueError("trigger must not contain control characters")
+                raise ValueError(f"trigger {i} must not contain control characters")
             if not re.search(r"[\w\u00C0-\u017F]", c):
-                raise ValueError("trigger must contain at least one alphanumeric character")
-            if _INSTRUCTION_TERMS.search(c):
-                raise ValueError("trigger contains instruction terms")
+                raise ValueError(
+                    f"trigger {i} must contain at least one alphanumeric character"
+                )
+            term = _INSTRUCTION_TERMS.search(c)
+            if term:
+                raise ValueError(
+                    f"trigger {i} contains instruction terms: '{term.group(0)}'"
+                )
             if c.casefold() not in seen_lower:
                 seen_lower.add(c.casefold())
                 cleaned.append(c)
@@ -196,12 +204,17 @@ class SynthesisCallOutput(BaseModel, extra="forbid"):
     @classmethod
     def validate_verification(cls, verification: list[str]) -> list[str]:
         cleaned = []
-        for v in verification:
+        for i, v in enumerate(verification):
             c = " ".join(v.split())
             if not c or len(c) > 300:
-                raise ValueError("each verification check must be between 1 and 300 characters")
-            if _INSTRUCTION_TERMS.search(c):
-                raise ValueError("verification contains instruction terms")
+                raise ValueError(
+                    f"verification check {i} must be between 1 and 300 characters"
+                )
+            term = _INSTRUCTION_TERMS.search(c)
+            if term:
+                raise ValueError(
+                    f"verification check {i} contains instruction terms: '{term.group(0)}'"
+                )
             cleaned.append(c)
         if not (2 <= len(cleaned) <= 3):
             raise ValueError("verification must contain between 2 and 3 items")

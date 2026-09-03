@@ -716,6 +716,78 @@ def test_research_failure_sets_failed_state_and_returns_failed_view(tmp_path: Pa
             register_tool(old_tool)
 
 
+def test_validation_retry_exhaustion_marks_failed_with_reason(tmp_path: Path):
+    """Track 1: when every synthesis attempt fails validation the session ends FAILED
+    with an understandable reason after 3 attempts, so the user can start again."""
+    from hund.skills.authoring import (
+        AuthoringState,
+        SkillAuthoringIntent,
+        create_authoring_session,
+        get_authoring_registry,
+        transition_session,
+    )
+    from hund.skills.authoring_runtime import _build_ready
+
+    reg = get_authoring_registry()
+    reg.clear()
+
+    intent = SkillAuthoringIntent(
+        operation="create",
+        capability="changelog summarization",
+        target_scope="project",
+        referenced_name=None,
+        local_only=True,
+        requires_research=False,
+        confidence=1.0,
+        raw_prompt="create skill for changelog summarization",
+    )
+    session = create_authoring_session(intent, registry=reg)
+    session = transition_session(session, AuthoringState.SHAPING, registry=reg)
+
+    class AlwaysInvalidClient:
+        def __init__(self):
+            self.synthesis_calls = 0
+
+        def complete(self, messages, tools=None, **kwargs):
+            all_text = " ".join(str(m.content) for m in messages)
+            if "quality review" in all_text:
+                content = json.dumps({"approved": True, "score": 0.95, "issues": []})
+            else:
+                self.synthesis_calls += 1
+                # Only one step: violates the 2-8 step schema rule every time.
+                content = json.dumps({
+                    "when_to_use": "When summarizing changelogs for release notes.",
+                    "steps": ["Summarize the changelog entries."],
+                    "triggers": ["summarize changelog"],
+                    "verification": ["All entries covered.", "Notes are concise."],
+                    "examples": ["Changelog summarized for the release."],
+                })
+            return CompletionResult(text=content, prompt_tokens=100, completion_tokens=50)
+
+    client = AlwaysInvalidClient()
+    res = _build_ready(
+        session,
+        workspace=tmp_path,
+        registered_tools=_tools(),
+        registry=reg,
+        client=client,
+        run_id="run-val-retry-exhaust",
+    )
+
+    assert res.handled is True
+    sess = reg.get(session.session_id)
+    assert sess is not None
+    assert sess.state == AuthoringState.FAILED
+    assert client.synthesis_calls == 3
+    reason = sess.failure_reason or ""
+    assert "3 attempts" in reason
+    assert "steps" in reason
+
+    # The failed session does not block a fresh authoring attempt.
+    retry_session = create_authoring_session(intent, registry=reg)
+    assert retry_session.state == AuthoringState.RECOGNIZED
+
+
 def test_authoring_llm_requests_logged_to_requests_db(tmp_path: Path):
     from hund.store.sqlite import connect_requests
     from hund.skills.shaping import build_shaping_plan

@@ -10,6 +10,8 @@ import re
 from typing import Any, Sequence
 import uuid
 
+from pydantic import ValidationError
+
 from .authoring import (
     AuthoringSession,
     AuthoringSessionRegistry,
@@ -48,6 +50,35 @@ _INSTRUCTION_TERMS = re.compile(
     r"\b(ignore|system|instruction|prompt|bypass|override)\b",
     re.IGNORECASE,
 )
+
+
+def _format_error_location(loc: Sequence[Any]) -> str:
+    """Render a Pydantic error location, e.g. ("steps", 2) -> "steps[2]"."""
+    if not loc:
+        return "output"
+    text = str(loc[0])
+    for part in loc[1:]:
+        if isinstance(part, int):
+            text += f"[{part}]"
+        else:
+            text += f".{part}"
+    return text
+
+
+def _validation_error_feedback(exc: ValidationError) -> list[str]:
+    """Convert Pydantic validation errors into structured gate feedback.
+
+    Each item pinpoints field, list index (when available), and cause so the
+    synthesis revision can fix the exact offending content (Track 1).
+    """
+    feedback: list[str] = []
+    for err in exc.errors():
+        location = _format_error_location(err.get("loc", ()))
+        message = str(err.get("msg", "invalid value"))
+        # Field validators surface as "Value error, <reason>"; strip the prefix.
+        message = re.sub(r"^Value error,\s*", "", message)
+        feedback.append(f"{location}: {message}")
+    return feedback
 
 
 class AuthoringActionKind(str, Enum):
@@ -601,6 +632,14 @@ def _build_ready(
                 gate_feedback=gate_feedback if gate_feedback else None,
                 run_id=run_id,
             )
+        except ValidationError as exc:
+            # Track 1: schema/validation failures produce structured feedback
+            # and retry through the gate loop instead of killing the session.
+            # Fail-closed stays: after max attempts the session ends FAILED.
+            gate_feedback = _validation_error_feedback(exc) or [
+                "Synthesis output failed schema validation."
+            ]
+            continue
         except Exception as exc:
             failed = replace(
                 session,
