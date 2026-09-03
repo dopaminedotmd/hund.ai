@@ -6,8 +6,10 @@ PermissionEngine klassificerar; dubbel-check här = defense-in-depth.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import collections
 import difflib
 import fnmatch
+import itertools
 import logging
 import os
 import threading
@@ -77,6 +79,9 @@ def _is_binary(path: str, content: str) -> bool:
     return False
 
 
+_CHANGE_ID_COUNTER = itertools.count(1)
+
+
 class FileChangeResult(str):
     """Typed JSON-compatible file change result and string-compatible transport."""
 
@@ -90,6 +95,7 @@ class FileChangeResult(str):
     redacted: bool
     binary: bool
     error: str | None
+    change_id: int
 
     def __new__(
         cls,
@@ -103,6 +109,7 @@ class FileChangeResult(str):
         redacted: bool = False,
         binary: bool = False,
         error: str | None = None,
+        change_id: int | None = None,
     ) -> FileChangeResult:
         if status == "failed":
             text = f"[error] {error or 'file operation failed'}"
@@ -124,13 +131,15 @@ class FileChangeResult(str):
         object.__setattr__(instance, "redacted", bool(redacted))
         object.__setattr__(instance, "binary", bool(binary))
         object.__setattr__(instance, "error", str(error) if error is not None else None)
+        cid = change_id if change_id is not None else next(_CHANGE_ID_COUNTER)
+        object.__setattr__(instance, "change_id", int(cid))
         return instance
 
     def __repr__(self) -> str:
         return (
             f"FileChangeResult(operation={self.operation!r}, path={self.path!r}, "
             f"status={self.status!r}, content_type_or_language={self.content_type_or_language!r}, "
-            f"truncated={self.truncated}, redacted={self.redacted}, binary={self.binary}, error={self.error!r})"
+            f"truncated={self.truncated}, redacted={self.redacted}, binary={self.binary}, error={self.error!r}, change_id={self.change_id})"
         )
 
     def __eq__(self, other: Any) -> bool:
@@ -161,6 +170,7 @@ class FileChangeResult(str):
             "redacted": self.redacted,
             "binary": self.binary,
             "error": self.error,
+            "change_id": self.change_id,
         }
 
     @classmethod
@@ -176,10 +186,14 @@ class FileChangeResult(str):
             redacted=bool(data.get("redacted", False)),
             binary=bool(data.get("binary", False)),
             error=data.get("error"),
+            change_id=data.get("change_id"),
         )
 
 
 _LATEST_FILE_CHANGE: dict[int, FileChangeResult] = {}
+_CHANGE_HISTORY: collections.deque[FileChangeResult] = collections.deque(maxlen=200)
+_CHANGES_BY_ID: dict[int, FileChangeResult] = {}
+_UNCONSUMED_CHANGES: list[FileChangeResult] = []
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -189,37 +203,55 @@ def _record_latest_file_change(res: FileChangeResult, session_id: str | None = N
         ts = time.time()
         sid = session_id or getattr(res, "session_id", None)
         logger.debug(
-            "_record_latest_file_change: session_id=%s path=%s thread_id=%s timestamp=%s status=%s",
+            "_record_latest_file_change: session_id=%s path=%s thread_id=%s timestamp=%s status=%s change_id=%s",
             sid,
             getattr(res, "path", None),
             tid,
             ts,
             getattr(res, "status", None),
+            getattr(res, "change_id", None),
         )
         _LATEST_FILE_CHANGE[tid] = res
+        _CHANGE_HISTORY.append(res)
+        _CHANGES_BY_ID[res.change_id] = res
+        _UNCONSUMED_CHANGES.append(res)
+
+
+def get_file_change_by_id(change_id: int) -> FileChangeResult | None:
+    with _REGISTRY_LOCK:
+        return _CHANGES_BY_ID.get(change_id)
 
 
 def get_last_file_change_result() -> FileChangeResult | None:
     with _REGISTRY_LOCK:
-        return _LATEST_FILE_CHANGE.get(threading.get_ident())
+        if _UNCONSUMED_CHANGES:
+            return _UNCONSUMED_CHANGES[-1]
+        res = _LATEST_FILE_CHANGE.get(threading.get_ident())
+        if res is None and _CHANGE_HISTORY:
+            return _CHANGE_HISTORY[-1]
+        return res
 
 
 def pop_last_file_change_result(session_id: str | None = None) -> FileChangeResult | None:
     with _REGISTRY_LOCK:
         tid = threading.get_ident()
         ts = time.time()
-        res = _LATEST_FILE_CHANGE.pop(tid, None)
-        if res is None and _LATEST_FILE_CHANGE:
-            k = next(reversed(_LATEST_FILE_CHANGE))
-            res = _LATEST_FILE_CHANGE.pop(k, None)
+        if _UNCONSUMED_CHANGES:
+            res = _UNCONSUMED_CHANGES.pop(0)
+            _LATEST_FILE_CHANGE.pop(tid, None)
+        else:
+            res = _LATEST_FILE_CHANGE.pop(tid, None)
+            if res is None and _CHANGE_HISTORY:
+                res = _CHANGE_HISTORY[-1]
         sid = session_id or (getattr(res, "session_id", None) if res else None)
         logger.debug(
-            "pop_last_file_change_result: session_id=%s path=%s thread_id=%s timestamp=%s status=%s",
+            "pop_last_file_change_result: session_id=%s path=%s thread_id=%s timestamp=%s status=%s change_id=%s",
             sid,
             getattr(res, "path", None) if res else None,
             tid,
             ts,
             getattr(res, "status", None) if res else None,
+            getattr(res, "change_id", None) if res else None,
         )
         return res
 
