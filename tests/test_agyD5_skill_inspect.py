@@ -43,19 +43,22 @@ def _skill() -> SkillItem:
 def test_detail_is_exact_full_definition_without_curation():
     lines = skill_detail_lines(_skill())
     text = "\n".join(lines)
-    # Every trigger, step, verification rule and limitation appears in full.
+    # Every trigger, step, verification rule and limitation appears in full,
+    # human-readable (no JSON noise, nothing curated away).
     for fragment in (
+        "name: python-fastapi",
+        "safety: safe",
+        "scope: global",
+        "when_to_use:",
+        "Use when creating or maintaining FastAPI routes.",
         "fastapi endpoint",
         "pydantic schema",
         "Depends()",
-        "Define strongly typed Pydantic models.",
-        "Implement endpoint handler with APIRouter.",
-        "Verify behavior with pytest.",
-        "Routes return 200 or 201 on success.",
-        "No raw WebSocket handling (delegate to fast-ws).",
-        '"name": "python-fastapi"',
-        '"safety_level": "safe"',
-        '"scope": "global"',
+        "1. Define strongly typed Pydantic models.",
+        "3. Verify behavior with pytest.",
+        "- Routes return 200 or 201 on success.",
+        "- No raw WebSocket handling (delegate to fast-ws).",
+        "xp: 450 XP · level: 2 · Expert · progress: 78%",
     ):
         assert fragment in text
     assert "Procedure:" not in text  # curated summary is gone

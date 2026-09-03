@@ -114,13 +114,13 @@ def test_snapshot_skill_detail_exposes_canonical_procedure_and_identity() -> Non
 
     rendered = "\n".join(skill_detail_lines(item))
 
-    assert '"capability_id": "general/marketing"' in rendered
-    assert '"scope": "project"' in rendered
-    assert '"version": "1.0.0"' in rendered
-    assert '"Define the audience."' in rendered
-    assert '"verification"' in rendered
-    assert '"Confirm claims have evidence."' in rendered
-    assert '"No paid-media execution."' in rendered
+    assert "capability: general/marketing" in rendered
+    assert "scope: project" in rendered
+    assert "version: 1.0.0" in rendered
+    assert "1. Define the audience." in rendered
+    assert "verification:" in rendered
+    assert "- Confirm claims have evidence." in rendered
+    assert "- No paid-media execution." in rendered
 
 
 def test_cmd_skills_dispatch_and_inspection(skills_home: Path) -> None:

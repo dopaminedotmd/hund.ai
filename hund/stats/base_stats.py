@@ -94,7 +94,9 @@ def compute_precision(
 
         total = sum(1 for r in rows if r[0] == "ran")
         successful = sum(1 for r in rows if r[0] == "ran" and r[1] == 1)
-        rate = (successful / total * 100) if total > 0 else None
+        # Gate 3 QA: a single successful tool call must not show 100% - wait for
+        # a minimum sample before reporting a rate (like endurance v3).
+        rate = (successful / total * 100) if total >= 3 else None
     except Exception:
         rate = None
     return build_stat("precision", rate, thresholds=[40, 60, 75, 90], higher_better=True)
