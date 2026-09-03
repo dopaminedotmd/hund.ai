@@ -115,3 +115,27 @@ def test_search_empty_results_guidance_message():
     assert res.metadata["result_count"] == 0
     assert res.public_error == "inga resultat — bredda eller förenkla sökfrågan"
     assert res.to_llm_text() == "(inga resultat — bredda eller förenkla sökfrågan)"
+
+
+def test_search_fallback_uses_simplified_query_and_marks_degraded():
+    """Complex quoting is a known DDGS failure mode: retry with a cleaned query."""
+    seen_queries: list[str] = []
+
+    def _text(query: str, max_results: int):
+        seen_queries.append(query)
+        if '"' in query or "(" in query:
+            raise RuntimeError("ddgs parser error on complex query")
+        return [{"title": "T", "href": "https://example.com", "body": "b"}]
+
+    with patch("hund.tools.web_search._BACKOFF_SECONDS", 0.0), \
+         patch("hund.tools.web_search.DDGS") as mock_ddgs:
+        instance = MagicMock()
+        instance.text.side_effect = _text
+        mock_ddgs.return_value.__enter__.return_value = instance
+        res = search_web_typed({"query": '"exact phrase" (noise) widget'}, None)
+
+    assert res.status == ToolStatus.SUCCESS
+    assert res.metadata["degraded"] is True
+    assert res.metadata["result_count"] == 1
+    assert seen_queries[-1] == "exact phrase noise widget"
+    assert "[note: first search attempt failed" in res.payload

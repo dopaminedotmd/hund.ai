@@ -1,5 +1,6 @@
 """DuckDuckGo search with typed results and session URL provenance."""
 from __future__ import annotations
+import re
 import time
 from typing import Any
 from ddgs import DDGS
@@ -10,6 +11,13 @@ from .types import (
 
 MAX_RESULTS = 15
 _BACKOFF_SECONDS = 1.0
+
+
+def _simplified_query(query: str) -> str:
+    """Fallback variant of the query with quote/parenthetical noise removed."""
+    cleaned = re.sub(r"[\"'()\[\]{}]+", " ", query)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned if cleaned and cleaned != query else ""
 
 
 def search_web(args: dict) -> str:
@@ -27,17 +35,29 @@ def search_web_typed(args: dict[str, Any], context: ToolCallContext | None):
             metadata={"result_count": 0},
         )
 
+    # Attempt the original query, then a simplified variant as fallback
+    # (complex quoting/parentheses are a common DDGS parser failure mode).
+    attempt_queries = [query]
+    simplified = _simplified_query(query)
+    if simplified:
+        attempt_queries.append(simplified)
+
     results = None
     last_error: Exception | None = None
-    for attempt in range(2):
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.text(query, max_results=MAX_RESULTS))
+    degraded = False
+    for attempt_query in attempt_queries:
+        for attempt in range(2):
+            try:
+                with DDGS() as ddgs:
+                    results = list(ddgs.text(attempt_query, max_results=MAX_RESULTS))
+                break
+            except Exception as e:
+                last_error = e
+                degraded = True
+                if attempt == 0 and _BACKOFF_SECONDS > 0:
+                    time.sleep(_BACKOFF_SECONDS)
+        if results is not None:
             break
-        except Exception as e:
-            last_error = e
-            if attempt == 0 and _BACKOFF_SECONDS > 0:
-                time.sleep(_BACKOFF_SECONDS)
 
     if results is None:
         return create_error_result(
@@ -57,6 +77,11 @@ def search_web_typed(args: dict[str, Any], context: ToolCallContext | None):
 
     matched = results[:MAX_RESULTS]
     lines = []
+    if degraded:
+        lines.append(
+            "[note: first search attempt failed; results recovered via retry "
+            "with a simplified query — verify coverage before relying on them]"
+        )
     if len(matched) < 4:
         lines.append(f"[sparsamt resultat: {len(matched)} träffar — överväg breddad sökning]")
 
@@ -71,5 +96,5 @@ def search_web_typed(args: dict[str, Any], context: ToolCallContext | None):
     return create_success_result(
         kind=ToolKind.SEARCH,
         payload="\n\n".join(lines),
-        metadata={"result_count": len(matched)},
+        metadata={"result_count": len(matched), "degraded": degraded},
     )

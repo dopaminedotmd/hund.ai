@@ -150,6 +150,6 @@ def test_terminal_tool_utf8_output_swedish_characters(tmp_path) -> None:
 
     cmd = f'"{sys.executable}" -c "print(\'räksmörgås med citron och majonnäs\')"'
     res = run_term({"command": cmd})
-    assert "[exit 0]" in res
-    assert "räksmörgås med citron och majonnäs" in res
+    assert "[exit 0]" in res.to_llm_text()
+    assert "räksmörgås med citron och majonnäs" in res.to_llm_text()
 

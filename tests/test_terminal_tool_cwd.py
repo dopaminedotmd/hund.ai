@@ -30,8 +30,8 @@ def test_terminal_tool_runs_in_specified_cwd(tmp_path: Path) -> None:
         "command": "python -c \"import os; print(open('data.txt').read().strip())\"",
         "cwd": ".livetest/r2",
     })
-    assert "[exit 0]" in res
-    assert "42" in res
+    assert "[exit 0]" in res.to_llm_text()
+    assert "42" in res.to_llm_text()
 
 
 def test_terminal_tool_rejects_path_traversal_escape(tmp_path: Path) -> None:
@@ -42,8 +42,8 @@ def test_terminal_tool_rejects_path_traversal_escape(tmp_path: Path) -> None:
         "command": "echo test",
         "cwd": "../../outside",
     })
-    assert "[exit 1]" in res
-    assert "is outside workspace root" in res
+    assert "[exit 1]" in res.to_llm_text()
+    assert "is outside workspace root" in res.to_llm_text()
 
 
 def test_terminal_tool_rejects_non_existent_cwd(tmp_path: Path) -> None:
@@ -54,8 +54,8 @@ def test_terminal_tool_rejects_non_existent_cwd(tmp_path: Path) -> None:
         "command": "echo test",
         "cwd": "does_not_exist",
     })
-    assert "[exit 1]" in res
-    assert "does not exist or is not a directory" in res
+    assert "[exit 1]" in res.to_llm_text()
+    assert "does not exist or is not a directory" in res.to_llm_text()
 
 
 def test_terminal_tool_defaults_to_workspace_root_without_cwd(tmp_path: Path) -> None:
@@ -66,8 +66,8 @@ def test_terminal_tool_defaults_to_workspace_root_without_cwd(tmp_path: Path) ->
     res = run_terminal({
         "command": "python -c \"import os; print(open('root_data.txt').read().strip())\"",
     })
-    assert "[exit 0]" in res
-    assert "root_value" in res
+    assert "[exit 0]" in res.to_llm_text()
+    assert "root_value" in res.to_llm_text()
 
 
 def test_terminal_tool_cwd_utf8_encoding_swedish(tmp_path: Path) -> None:
@@ -85,6 +85,6 @@ def test_terminal_tool_cwd_utf8_encoding_swedish(tmp_path: Path) -> None:
         "command": f'"{sys.executable}" -c "import os; print(open(\'fil.txt\', encoding=\'utf-8\').read().strip())"',
         "cwd": "svenska_mappen",
     })
-    assert "[exit 0]" in res
-    assert "räksmörgås" in res
+    assert "[exit 0]" in res.to_llm_text()
+    assert "räksmörgås" in res.to_llm_text()
 

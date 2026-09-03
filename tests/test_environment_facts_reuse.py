@@ -196,6 +196,6 @@ def test_terminal_tool_pwd_shell_and_utf8(tmp_path: Path):
 
     import sys
     res = term({"command": f'"{sys.executable}" test_utf8.py'})
-    assert "[exit 0]" in res
-    assert "Hund ser åäö" in res
+    assert "[exit 0]" in res.to_llm_text()
+    assert "Hund ser åäö" in res.to_llm_text()
 
