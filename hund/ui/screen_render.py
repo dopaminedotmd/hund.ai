@@ -432,36 +432,39 @@ def skills_lines(snapshot: SkillsSnapshot, width: int, selected: int) -> list[st
     return lines
 
 
+def skill_definition_text(skill: SkillItem) -> str:
+    """Canonical machine-readable skill definition (vault JSON shape).
+
+    Gate 3 §2.5.1: this exact text is what [c] copies and D6's editor validates
+    and saves back, so it stays JSON-parseable.
+    """
+    data = {
+        "name": skill.name,
+        "domain": skill.domain,
+        "scope": skill.scope,
+        "version": skill.version,
+        "capability_id": skill.capability_id,
+        "safety_level": skill.safety_level,
+        "lifecycle_state": skill.lifecycle_state,
+        "vault_state": skill.vault_state,
+        "triggers": list(skill.triggers),
+        "tools": list(skill.tools),
+        "when_to_use": skill.when_to_use,
+        "steps": list(skill.steps),
+        "verification": list(skill.verification),
+        "limitations": list(skill.limitations),
+        "provenance": list(skill.provenance),
+        "xp": skill.xp,
+        "level": skill.level,
+        "tier": skill.tier,
+        "progress_percent": skill.percent,
+    }
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
+
 def skill_detail_lines(skill: SkillItem) -> list[str]:
-    lines = [
-        "",
-        _section(f"SKILL DETAIL · {skill.name}", 68),
-        f"Capability: {skill.capability_id or 'Unavailable'}",
-        f"Scope: {skill.scope} · Version: {skill.version}",
-        f"Domain: {skill.domain or 'general'}",
-        f"Lifecycle: {skill.lifecycle_state} · Vault: [{skill.vault_state}]",
-        f"XP: {skill.xp} · Level {skill.level} · [{skill.tier}] · {skill.percent}%",
-        f"Safety level: [{skill.safety_level}]",
-        f"Triggers: {', '.join(skill.triggers) if skill.triggers else 'None declared'}",
-        f"Tools: {', '.join(skill.tools) if skill.tools else 'None declared'}",
-        f"Provenance: {', '.join(skill.provenance) if skill.provenance else 'Unavailable'}",
-        "",
-        skill.when_to_use or "No usage description.",
-    ]
-    lines.extend(["", "Procedure:"])
-    lines.extend(
-        f"{index}. {step}" for index, step in enumerate(skill.steps, 1)
-    )
-    if not skill.steps:
-        lines.append("No procedure steps declared.")
-    lines.extend(["", "Verification:"])
-    lines.extend(f"- {rule}" for rule in skill.verification)
-    if not skill.verification:
-        lines.append("No verification rules declared.")
-    if skill.limitations:
-        lines.extend(["", "Limitations:"])
-        lines.extend(f"- {limitation}" for limitation in skill.limitations)
-    return lines
+    """Gate 3 §2.5.1: the exact, complete skill definition — no curation."""
+    return ["", *skill_definition_text(skill).splitlines()]
 
 
 def render_skills(
@@ -488,17 +491,22 @@ def render_skills(
         lines.extend(["", status])
 
     if detail:
+        # Gate 3 §2.5.1: dedicated title + meta; [c] copies the definition.
         footer = (
-            "<- Back * [Esc/q] Close"
+            "<- Back * [c] Copy All * [Esc/q] Close * ^v Scroll"
             if ascii_only
-            else "[←] Back · [Esc/q] Close"
+            else "[←] Back · [c] Copy All · [Esc/q] Close · ↑↓ Scroll"
         )
-    else:
-        footer = (
-            "<- Back * [Esc/q] Close * ^v Select * Enter Inspect/Manage * [n] New"
-            if ascii_only
-            else "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect/Manage · [n] New"
+        return fullscreen_frame(
+            f"SKILL DETAIL · {detail.name}", lines, width=width, height=height,
+            meta=f"L{detail.level} · {detail.percent}%",
+            footer=footer, scroll=scroll, ascii_only=ascii_only,
         )
+    footer = (
+        "<- Back * [Esc/q] Close * ^v Select * Enter Inspect/Manage * [n] New"
+        if ascii_only
+        else "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect/Manage · [n] New"
+    )
 
     return fullscreen_frame(
         "SKILLS", lines, width=width, height=height,

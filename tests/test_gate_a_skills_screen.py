@@ -76,7 +76,6 @@ class TestSkillsScreenTruthfulLabels:
         detail_rendered = render_skills(snap, width=80, height=24, detail_name="api-release-checklist")
         assert "SKILL DETAIL · api-release-checklist" in detail_rendered
         assert "When releasing APIs" in detail_rendered
-        assert "Procedure:" in detail_rendered
         assert "[←] Back" in detail_rendered
 
     def test_screen_controller_step_back_from_detail_restores_state(self):
