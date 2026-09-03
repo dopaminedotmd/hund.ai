@@ -80,6 +80,26 @@ _KNOWN_PREFIXES = (
 )
 
 
+def strip_unbalanced_raw_markers(text: str) -> str:
+    """Repair or strip raw unbalanced '**' markers in Swedish and English prose."""
+    if "**" not in text:
+        return text
+    text = re.sub(r"^\*\*U([A-ZÅÄÖa-zåäö])", r"\1", text)
+    text = re.sub(r"\*\*U\b", "", text)
+    count = text.count("**")
+    if count % 2 != 0:
+        if text.startswith("**") and not text.startswith("****"):
+            text = text[2:]
+        elif text.endswith("**") and not text.endswith("****"):
+            text = text[:-2]
+        else:
+            parts = text.rsplit("**", 1)
+            text = "".join(parts)
+    text = re.sub(r"(?<=\s)\*\*(?=\s|$)", "", text)
+    text = re.sub(r"(?<=^)\*\*(?=\s)", "", text)
+    return text
+
+
 def filter_leaked_protocol(text: str) -> str:
     """Filter known DSML and function-calling protocol markers and malformed blocks from model output."""
     if not text:
@@ -89,6 +109,7 @@ def filter_leaked_protocol(text: str) -> str:
         cleaned = pat.sub("", cleaned)
     for pat in _DANGLING_MARKER_PATTERNS:
         cleaned = pat.sub("", cleaned)
+    cleaned = strip_unbalanced_raw_markers(cleaned)
     return cleaned
 
 

@@ -74,6 +74,34 @@ _PERSONA_MECHANICS_DETECTION_RE = re.compile(
 )
 _MALFORMED_ADDRESS_RE = re.compile(r"\bVill\s+hund\b", re.IGNORECASE)
 
+# Numeric conflict detection: two discrete numbers presented side-by-side without explanation/flagging
+_NUMERIC_CONFLICT_RE = re.compile(
+    r"\b(\d{2,})\b.*?\b(?:mot|vs|versus|eller|or)\s+(\d{2,})\b",
+    re.IGNORECASE,
+)
+
+
+def detect_numeric_conflict(text: str) -> tuple[bool, str | None, str | None]:
+    """Detect two competing discrete numbers presented side-by-side without conflict acknowledgment."""
+    if not text:
+        return False, None, None
+    m = _NUMERIC_CONFLICT_RE.search(text)
+    if not m:
+        return False, None, None
+    n1, n2 = m.group(1), m.group(2)
+    if n1 == n2:
+        return False, None, None
+
+    lower = text.lower()
+    ack_words = (
+        "konflikt", "conflict", "avvikelse", "discrepancy", "differens",
+        "skillnad", "differ", "motstridig", "osäker", "validering", "förklaring"
+    )
+    if any(w in lower for w in ack_words):
+        return False, None, None
+
+    return True, n1, n2
+
 
 def extract_content_blocks(full_text: str) -> list[ContentBlock]:
     """Segment full response into narrative prose vs protected non-narrative blocks."""
@@ -151,6 +179,15 @@ def validate_narrative_text(narrative: str, language: str = "sv") -> tuple[bool,
     if _PERSONA_MECHANICS_DETECTION_RE.search(narrative):
         violations.append("persona_mechanics_recitation")
 
+    # 6. Unbalanced raw markers
+    if narrative.count("**") % 2 != 0 or re.search(r"^\*\*U", narrative):
+        violations.append("unbalanced_raw_markers")
+
+    # 7. Unresolved numeric conflict
+    has_conflict, n1, n2 = detect_numeric_conflict(narrative)
+    if has_conflict:
+        violations.append(f"unresolved_numeric_conflict:{n1}_vs_{n2}")
+
     return len(violations) == 0, violations
 
 
@@ -162,9 +199,10 @@ def repair_narrative_prose(narrative: str, language: str = "sv") -> str:
     repaired = _EMOJI_RE.sub("", repaired)
 
     # Strip raw protocol tokens and blocks
-    from ..providers.openai_compatible import filter_leaked_protocol
+    from ..providers.openai_compatible import filter_leaked_protocol, strip_unbalanced_raw_markers
     repaired = filter_leaked_protocol(repaired)
     repaired = _RAW_PROTOCOL_RE.sub("", repaired)
+    repaired = strip_unbalanced_raw_markers(repaired)
 
     # Repair malformed user address
     repaired = _MALFORMED_ADDRESS_RE.sub("Vill du att hund", repaired)
@@ -334,6 +372,15 @@ def validate_and_repair_response(
                 repaired_block = repair_narrative_prose(block.text, language=language)
 
             # Revalidate repaired narrative block
+            has_conflict, n1, n2 = detect_numeric_conflict(repaired_block)
+            if has_conflict:
+                flag = (
+                    f"[Konflikt: två motstridiga värden ({n1} mot {n2}) identifierades — kräver precisering] "
+                    if language.startswith("sv")
+                    else f"[Conflict: two contradictory values ({n1} vs {n2}) detected — requires clarification] "
+                )
+                repaired_block = flag + repaired_block
+
             re_valid, re_violations = validate_narrative_text(repaired_block, language=language)
             if re_valid:
                 reconstructed.append(repaired_block)
