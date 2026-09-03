@@ -384,6 +384,7 @@ def format_diff_block(
     width: int = 70,
     is_open: bool = False,
     is_limited: bool = False,
+    status: str = "",
 ) -> str:
     """Format a frameless diff artifact for both streaming presentation paths."""
     w = max(width, 24)
@@ -409,7 +410,9 @@ def format_diff_block(
         else:
             content_lines.append((" ", raw[1:] if raw.startswith(" ") else raw))
 
-    if not content_lines:
+    if status == "created" and not any(r.startswith(("+", "-")) for r in raw_lines):
+        content_lines = [("+", l) for l in raw_lines]
+    elif not content_lines:
         content_lines = [(" ", l) for l in raw_lines]
 
     body_lines: list[str] = []
@@ -436,17 +439,134 @@ def format_diff_block(
     counts = f"  (+{adds} -{dels})"
 
     # Handle narrow terminal formatting (<48 columns) without character clipping
-    header_base = f"  └ {filename or 'diff'}"
+    status_tag = f"[{status}] " if status else ""
+    header_base = f"  └ {status_tag}{filename or 'diff'}"
     if w < 48 and (cell_width(header_base) + cell_width(counts)) > w:
-        safe_fn, _ = slice_cells(filename or "diff", max(w - cell_width("  └ "), 1))
+        safe_fn, _ = slice_cells(f"{status_tag}{filename or 'diff'}", max(w - cell_width("  └ "), 1))
         lines = [f"  └ {safe_fn}", f"    {counts.strip()}", *body_lines]
     else:
-        safe_fn = _sanitize_block_label(filename or "diff", max(w - cell_width("  └ ") - cell_width(counts), 1))
+        safe_fn = _sanitize_block_label(f"{status_tag}{filename or 'diff'}", max(w - cell_width("  └ ") - cell_width(counts), 1))
         lines = [f"  └ {safe_fn}{counts}", *body_lines]
 
     if is_limited:
         lines.append("  … Diff preview limited.")
     return "\n".join(lines)
+
+
+def format_markdown_table(raw_lines: list[str], max_width: int) -> list[tuple[str, str, str]]:
+    """Format markdown table rows with aligned column widths and cell wrapping.
+
+    Falls back to stacked/linear view if max_width is below minimum column width threshold.
+    Returns list of (formatted_line, 'table', 'header'|'sep'|'row').
+    """
+    if not raw_lines:
+        return []
+
+    cleaned_lines = [l.replace("\r", "").strip() for l in raw_lines if l.strip()]
+    if not cleaned_lines:
+        return []
+
+    parsed_rows: list[list[str]] = []
+    is_sep_row: list[bool] = []
+    for line in cleaned_lines:
+        s = line
+        if s.startswith("|"):
+            s = s[1:]
+        if s.endswith("|"):
+            s = s[:-1]
+        cells = [c.strip() for c in s.split("|")]
+        parsed_rows.append(cells)
+        sep = bool(cells and all(re.match(r"^:?-+:?$", c) for c in cells if c))
+        is_sep_row.append(sep)
+
+    if not parsed_rows:
+        return []
+
+    header_cells: list[str] = []
+    data_rows: list[list[str]] = []
+    if len(parsed_rows) >= 2 and is_sep_row[1]:
+        header_cells = parsed_rows[0]
+        data_rows = [r for i, r in enumerate(parsed_rows[2:], 2) if not is_sep_row[i]]
+    else:
+        if is_sep_row[0]:
+            data_rows = [r for i, r in enumerate(parsed_rows[1:], 1) if not is_sep_row[i]]
+        else:
+            if len(parsed_rows) > 1:
+                header_cells = parsed_rows[0]
+                data_rows = [r for i, r in enumerate(parsed_rows[1:], 1) if not is_sep_row[i]]
+            else:
+                data_rows = [parsed_rows[0]]
+
+    all_rows = ([header_cells] if header_cells else []) + data_rows
+    if not all_rows:
+        return []
+
+    num_cols = max(len(r) for r in all_rows)
+    if num_cols == 0:
+        return []
+
+    for r in all_rows:
+        while len(r) < num_cols:
+            r.append("")
+
+    min_col_w = 6
+    border_overhead = 3 * num_cols + 1
+    min_table_w = num_cols * min_col_w + border_overhead
+
+    # Fallback to stacked/linear view if max_width is below min_table_w or narrow (<45)
+    if max_width < min_table_w or max_width < 45:
+        fallback_rows: list[tuple[str, str, str]] = []
+        for row_idx, d_row in enumerate(data_rows):
+            if row_idx > 0:
+                sep_line = "─" * min(max_width, 36)
+                fallback_rows.append((sep_line, "table", "sep"))
+            for c_idx, val in enumerate(d_row):
+                col_name = header_cells[c_idx] if (header_cells and c_idx < len(header_cells) and header_cells[c_idx]) else f"Col {c_idx + 1}"
+                line_str = f"• {col_name}: {val}"
+                for w_line in wrap_cells(line_str, max_width):
+                    fallback_rows.append((w_line, "table", "row"))
+        return fallback_rows
+
+    nat_widths = [max((cell_width(r[c]) for r in all_rows), default=1) for c in range(num_cols)]
+    avail_width = max(max_width - border_overhead, num_cols * min_col_w)
+    total_nat = sum(nat_widths)
+
+    if total_nat <= avail_width:
+        col_widths = list(nat_widths)
+    else:
+        col_widths = [max(min_col_w, int(avail_width * (w / total_nat))) for w in nat_widths]
+        while sum(col_widths) > avail_width:
+            max_idx = max(range(num_cols), key=lambda c: col_widths[c])
+            if col_widths[max_idx] <= min_col_w:
+                break
+            col_widths[max_idx] -= 1
+        while sum(col_widths) < avail_width:
+            min_idx = min(range(num_cols), key=lambda c: col_widths[c])
+            col_widths[min_idx] += 1
+
+    def format_row(cells: list[str], row_type: str) -> list[tuple[str, str, str]]:
+        wrapped_cols = [wrap_cells(cells[c], col_widths[c]) for c in range(num_cols)]
+        max_h = max(len(w) for w in wrapped_cols)
+        out_lines: list[tuple[str, str, str]] = []
+        for h in range(max_h):
+            chunks: list[str] = []
+            for c in range(num_cols):
+                text = wrapped_cols[c][h] if h < len(wrapped_cols[c]) else ""
+                pad = max(col_widths[c] - cell_width(text), 0)
+                chunks.append(f" {text}{' ' * pad} ")
+            out_lines.append(("|" + "|".join(chunks) + "|", "table", row_type))
+        return out_lines
+
+    result: list[tuple[str, str, str]] = []
+    if header_cells:
+        result.extend(format_row(header_cells, "header"))
+        sep_chunks = ["-" * (col_widths[c] + 2) for c in range(num_cols)]
+        result.append(("|" + "|".join(sep_chunks) + "|", "table", "sep"))
+
+    for d_row in data_rows:
+        result.extend(format_row(d_row, "row"))
+
+    return result
 
 
 def repad_diff_block(lines: list[str], width: int) -> list[str]:
@@ -1009,11 +1129,14 @@ def render_response_box_from_segments(
             for l in block_str.split("\n"):
                 formatted_content_lines.append((sanitize_display_line(l), "diff", diff_language))
         elif stype_str == "table":
-            for l in lines:
-                formatted_content_lines.append((sanitize_display_line(l), "table", ""))
+            table_lines = [l for l in lines]
+            table_formatted = format_markdown_table(table_lines, cw)
+            for t_line, t_stype, t_slang in table_formatted:
+                formatted_content_lines.append((sanitize_display_line(t_line), t_stype, t_slang))
         else:
             prose_lines = lines if isinstance(lines, (list, tuple)) else str(lines).splitlines()
             current_chunk: list[str] = []
+            table_chunk: list[str] = []
             for pl in prose_lines:
                 s = pl.strip()
                 if len(s) >= 2 and s.startswith("|") and s.endswith("|"):
@@ -1022,9 +1145,18 @@ def render_response_box_from_segments(
                         for l in wrapped:
                             formatted_content_lines.append((sanitize_display_line(l), "prose", ""))
                         current_chunk = []
-                    formatted_content_lines.append((sanitize_display_line(pl), "table", ""))
+                    table_chunk.append(pl)
                 else:
+                    if table_chunk:
+                        table_formatted = format_markdown_table(table_chunk, cw)
+                        for t_line, t_stype, t_slang in table_formatted:
+                            formatted_content_lines.append((sanitize_display_line(t_line), t_stype, t_slang))
+                        table_chunk = []
                     current_chunk.append(pl)
+            if table_chunk:
+                table_formatted = format_markdown_table(table_chunk, cw)
+                for t_line, t_stype, t_slang in table_formatted:
+                    formatted_content_lines.append((sanitize_display_line(t_line), t_stype, t_slang))
             if current_chunk:
                 wrapped = wrap_cells("\n".join(current_chunk), cw)
                 for l in wrapped:

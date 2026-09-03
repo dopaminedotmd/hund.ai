@@ -1373,6 +1373,25 @@ class _OutputLexer(Lexer):
                             parsed = [("class:secondary", indent_str), ("class:secondary", cur)]
                         else:
                             parsed = _lex_pygments_code(cur, indent_str, slang or "python")
+                    elif stype == "table":
+                        if slang == "sep" or set(cur.strip()) <= {"|", "-", "+", "┼", "─"}:
+                            parsed = [("class:secondary", indent_str), ("class:secondary", cur)]
+                        elif slang == "header":
+                            parts = cur.split("|")
+                            toks: list[tuple[str, str]] = [("class:secondary", indent_str)]
+                            for p_idx, part in enumerate(parts):
+                                if p_idx > 0:
+                                    toks.append(("class:secondary", "|"))
+                                toks.append(("class:accent bold", part))
+                            parsed = toks
+                        else:
+                            parts = cur.split("|")
+                            toks = [("class:secondary", indent_str)]
+                            for p_idx, part in enumerate(parts):
+                                if p_idx > 0:
+                                    toks.append(("class:secondary", "|"))
+                                toks.append(("class:primary", part))
+                            parsed = toks
                     elif stype == "diff":
                         if cur.startswith("──"):
                             parsed = [("class:secondary", indent_str), ("class:accent bold", cur)]
@@ -3193,11 +3212,13 @@ def create_fullscreen_app(
             # Typed File Change Rendering nested directly under the tool activity
             file_change = None
             try:
-                from ..tools.file_tool import FileChangeResult, pop_last_file_change_result
+                from ..tools.file_tool import FileChangeResult, pop_last_file_change_result, get_file_change_by_id
                 if isinstance(shown, FileChangeResult):
                     file_change = shown
                 elif isinstance(shown, dict) and "committed_content_or_diff" in shown:
                     file_change = FileChangeResult.from_dict(shown)
+                elif hasattr(shown, "change_id"):
+                    file_change = get_file_change_by_id(getattr(shown, "change_id"))
                 elif name in {"write_file", "edit_file", "patch", "apply_patch", "replace_file_content"}:
                     file_change = pop_last_file_change_result()
             except Exception:
@@ -3210,6 +3231,7 @@ def create_fullscreen_app(
                 committed = getattr(file_change, "committed_content_or_diff", "")
                 path = getattr(file_change, "path", "")
                 lang = getattr(file_change, "content_type_or_language", "")
+                cid = getattr(file_change, "change_id", None)
 
                 diff_content = ""
                 if status == "created" and preview:
@@ -3233,6 +3255,7 @@ def create_fullscreen_app(
                             self._active_tool_event_id,
                             artifact_block.splitlines(),
                             eff_lang,
+                            change_id=cid,
                         )
 
             if self._active_tool_event_id is not None:

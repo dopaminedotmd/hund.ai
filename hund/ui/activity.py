@@ -50,6 +50,7 @@ class ToolActivity:
     attached_error_lines: tuple[str, ...] | None = None
     attached_diff_language: str = ""
     subagent_depth: int = 0
+    change_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ class ActivityTimeline:
         event_id: int,
         diff_lines: list[str] | tuple[str, ...],
         language: str = "",
+        change_id: int | None = None,
     ) -> None:
         """Attach formatted diff lines directly to an existing tool event."""
         for index, event in enumerate(self._events):
@@ -218,6 +220,7 @@ class ActivityTimeline:
                     event,
                     attached_diff_lines=tuple(diff_lines),
                     attached_diff_language=language,
+                    change_id=change_id if change_id is not None else event.change_id,
                 )
                 return
 
