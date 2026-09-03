@@ -31,7 +31,7 @@ from ..tools.url_provenance import get_url_provenance_store
 from .prompt_builder import build_system_prompt
 from .context import estimate_tokens, maybe_compress
 from .safety import PermissionEngine
-from .tool_dispatch import dispatch_tool_call
+from .tool_dispatch import dispatch_tool_call, preflight_check_tool_calls
 
 HELP = "[dim]/exit · /stats · /profile · /tools[/dim]"
 MAX_TOOL_ROUNDS = 8
@@ -90,6 +90,8 @@ def _dynamic_context_message(
     user_text: str,
     workspace_id: str,
     domain_hint: str = "",
+    pinned_skill: Any | None = None,
+    rt: Any | None = None,
 ) -> Message | None:
     """Best-effort turn-local dynamic context.
 
@@ -98,11 +100,29 @@ def _dynamic_context_message(
     answer a prior assistant tool_call_id.
     """
     sections: list[str] = []
+    pinned = pinned_skill if pinned_skill is not None else getattr(rt, "pinned_skill", None)
+    if pinned is not None:
+        try:
+            from ..skills.matcher import instructions as _instructions
+
+            pinned_blocks = _instructions([pinned], "")
+            if pinned_blocks:
+                sections.append("## Nyligen skapad & aktiv skill (prio: instruktioner)")
+                sections.append(pinned_blocks[0][:4000])
+        except Exception:
+            pass
+
     try:
         from ..skills.matcher import summaries as _summaries
 
-        matched = _summaries(skills or [], user_text) if user_text else []
+        candidate_skills = [
+            s for s in (skills or [])
+            if not (pinned is not None and getattr(s, "name", None) == getattr(pinned, "name", None))
+        ]
+        matched = _summaries(candidate_skills, user_text) if user_text else []
         if matched:
+            if sections:
+                sections.append("")
             sections.append("## Relevanta skills (turn-lokal data)")
             sections.extend(f"- {line}" for line in matched)
     except Exception:
@@ -275,7 +295,7 @@ def _init_runtime():
         cfg=cfg, key=key, workspace=workspace, schemas=schemas, engine=engine,
         profile=profile, persona=persona, domain_hint=domain_hint, knowledge=knowledge,
         policy_rules=policy_rules, skills=skills, memory_lines=memory_lines,
-        client=client, messages=messages, session_id=session_id,
+        client=client, messages=messages, session_id=session_id, pinned_skill=None,
     )
 
 
@@ -301,6 +321,7 @@ class AuthoringRuntimeOutcome:
     outputs: tuple[str, ...] = ()
     view: object | None = None
     receipt: object | None = None
+    skill: object | None = None
 
 
 def _run_authoring_runtime(
@@ -335,6 +356,8 @@ def _run_authoring_runtime(
             width=width,
             ascii_only=ascii_only,
             shaping_client=client,
+            client=client,
+            run_id=run_id,
         )
     else:
         result = handle_authoring_action(
@@ -344,6 +367,8 @@ def _run_authoring_runtime(
             registered_tools=tool_names,
             width=width,
             ascii_only=ascii_only,
+            client=client,
+            run_id=run_id,
         )
     if not result.handled:
         return AuthoringRuntimeOutcome(False)
@@ -375,7 +400,20 @@ def _run_authoring_runtime(
                 turn_id=turn_id,
                 tool_context=tool_context,
             )
-            if not outcome.startswith(("[error]", "[blocked]", "[declined")):
+            if not outcome.startswith(("[error]", "[blocked]", "[declined", "[empty]")):
+                summaries.append(outcome)
+        if not summaries and getattr(result, "research_fallback_query", ""):
+            outcome = dispatch_tool_call(
+                {"function": {"name": "web_search", "arguments": json.dumps({"query": result.research_fallback_query})}},
+                engine,
+                console,
+                hooks=hooks,
+                run_id=run_id,
+                session_id=session_id,
+                turn_id=turn_id,
+                tool_context=tool_context,
+            )
+            if not outcome.startswith(("[error]", "[blocked]", "[declined", "[empty]")):
                 summaries.append(outcome)
         if summaries:
             completed = complete_authoring_research(
@@ -385,13 +423,31 @@ def _run_authoring_runtime(
                 registered_tools=tool_names,
                 width=width,
                 ascii_only=ascii_only,
+                client=client,
+                run_id=run_id,
             )
             if completed.rendered:
                 if not transient:
                     outputs.append(completed.rendered)
-                current_view = completed.view
+            current_view = completed.view
         else:
-            outputs.append("Research did not complete. Choose local authoring or approve research again.")
+            from ..skills.authoring import transition_session, AuthoringState, get_authoring_registry
+            from ..skills.authoring_runtime import _authoring_view
+            reg = get_authoring_registry()
+            sess = reg.get(session_id)
+            if sess is not None:
+                failed = transition_session(sess, AuthoringState.FAILED, registry=reg)
+                from dataclasses import replace
+                failed = replace(
+                    failed,
+                    failure_reason="Research failed: no sources retrieved.",
+                    updated_at=datetime.now(timezone.utc).isoformat(),
+                )
+                reg.save(failed)
+                current_view = _authoring_view(failed)
+                outputs.append("Skill authoring failed: Research failed to retrieve sources.")
+            else:
+                outputs.append("Research did not complete.")
 
     publication_outcome = ""
     if result.publication_args is not None:
@@ -413,6 +469,11 @@ def _run_authoring_runtime(
 
     session = get_authoring_registry().get(session_id)
     receipt = session.publication_receipt if session is not None else None
+    published_skill = (
+        session.draft.skill
+        if (session is not None and getattr(session, "draft", None) is not None)
+        else None
+    )
     if receipt is not None:
         current_view = None
     elif transient and publication_outcome:
@@ -422,6 +483,7 @@ def _run_authoring_runtime(
         tuple(outputs),
         view=current_view,
         receipt=receipt,
+        skill=published_skill,
     )
 
 def run_repl() -> int:
@@ -554,6 +616,15 @@ def run_repl() -> int:
                 run_id=authoring_run_id,
             )
             if authoring_outcome.handled:
+                if authoring_outcome.receipt is not None:
+                    if getattr(authoring_outcome, "skill", None) is not None:
+                        rt.pinned_skill = authoring_outcome.skill
+                    else:
+                        from ..skills.vault import SkillVault
+                        vault = SkillVault()
+                        skill_name = getattr(authoring_outcome.receipt, "skill_name", "")
+                        if skill_name:
+                            rt.pinned_skill = vault.find_skill(skill_name, workspace=workspace)
                 authoring_outputs = list(authoring_outcome.outputs)
                 messages.append(Message(role="user", content=user))
                 _session_save(session_id, "user", user, run_id=authoring_run_id)
@@ -601,12 +672,14 @@ def run_repl() -> int:
                 user_text=user,
                 workspace_id=str(workspace),
                 domain_hint=rt.domain_hint,
+                pinned_skill=getattr(rt, "pinned_skill", None),
             )
             if dynamic_msg is not None:
                 messages.append(dynamic_msg)  # lägg sist, agenten läser top-down
             try:
                 _agent_turn(console, client, messages, schemas, engine, cfg, session_id, run_id=run_id)
             finally:
+                rt.pinned_skill = None
                 # Ta bort dynamic_msg oavsett var den hamnat
                 if dynamic_msg is not None:
                     messages[:] = [m for m in messages if m is not dynamic_msg]
@@ -841,6 +914,12 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
 
     if sink is not None:
         sink.thinking()
+    registered_tool_names = [
+        s["function"]["name"] if isinstance(s, dict) and "function" in s else (s.get("name") if isinstance(s, dict) else getattr(s, "name", ""))
+        for s in (schemas or [])
+    ]
+    registered_tool_names = sorted({n for n in registered_tool_names if n} | {t.name for t in registry.all_tools()})
+    correction_attempts = 0
     try:
         for round_index in range(MAX_TOOL_ROUNDS):
             if _is_sink_cancelled():
@@ -905,6 +984,30 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                 _feedback_hook(session_id, run_id, str(engine.workspace_root))
                 return
 
+            # Dead-final check before validate_and_repair_response.
+            # If the model announced intent to execute a tool without emitting tool_calls,
+            # allow at most 1 correction attempt to call the tool or provide the answer.
+            if not result.tool_calls and result.text:
+                from .narrative_validation import detect_unexecuted_tool_intent
+
+                if (
+                    detect_unexecuted_tool_intent(result.text, registered_tool_names)
+                    and correction_attempts < 1
+                    and round_index < MAX_TOOL_ROUNDS - 1
+                ):
+                    correction_attempts += 1
+                    messages.append(Message(role="assistant", content=result.text))
+                    _session_save(session_id, "assistant", result.text, run_id=run_id)
+                    correction_prompt = (
+                        "You announced intent to use a tool, but emitted no tool call. "
+                        "Execute the tool call now or provide the final answer without unexecuted plans."
+                    )
+                    messages.append(Message(role="system", content=correction_prompt))
+                    _session_save(session_id, "system", correction_prompt, run_id=run_id)
+                    if sink is not None and hasattr(sink, "narrate"):
+                        sink.narrate(result.text)
+                    continue
+
             # Buffer provider output until this provider-independent boundary has
             # validated it. Streaming raw chunks would leak the text before repair.
             if result.text:
@@ -917,14 +1020,13 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                 )
                 result.text = repaired_text
 
-            if result.text and sink is not None:
-                if not result.tool_calls:
+            if not result.tool_calls:
+                if result.text and sink is not None:
                     sink.chunk(result.text)
                     sink.end_assistant()
-            elif result.text:
-                console.print(result.text, markup=False, highlight=False)
+                elif result.text:
+                    console.print(result.text, markup=False, highlight=False)
 
-            if not result.tool_calls:
                 messages.append(Message(role="assistant", content=result.text))
                 _session_save(session_id, "assistant", result.text, run_id=run_id)
                 _finalize_memory_capture()
@@ -940,12 +1042,49 @@ def _agent_turn(console, client, messages, schemas, engine, cfg, session_id, *, 
                     console.print()
                 return
 
-            # Tool-anrop — logga, dispatch varje (med användarens godkännande)
+            # Tool-anrop — logga, narration, pre-flight check, dispatch varje
             _log_request(cfg, result, tool_calls=len(result.tool_calls), run_id=run_id)
             messages.append(
                 Message(role="assistant", content=result.text or "", tool_calls=result.tool_calls)
             )
             _session_save(session_id, "assistant", result.text or "", run_id=run_id)
+
+            if result.text and sink is not None:
+                if hasattr(sink, "narrate"):
+                    sink.narrate(result.text)
+                else:
+                    sink.chunk(result.text)
+            elif result.text:
+                console.print(result.text, markup=False, highlight=False)
+
+            if not preflight_check_tool_calls(
+                result.tool_calls,
+                engine,
+                console,
+                hooks=sink,
+                session_id=session_id,
+                turn_id=turn_id,
+                noninteractive=getattr(cfg, "noninteractive", False),
+            ):
+                cancel_msg = "Åtgärden avbröts. Inga filer skrevs eller kommandon kördes."
+                for tc in result.tool_calls:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else None
+                    messages.append(Message(role="tool", content="[declined by user]", tool_call_id=tc_id))
+                    _session_save(session_id, "tool", "[declined by user]", run_id=run_id)
+                _finalize_memory_capture()
+                _trace_event(engine, session_id, run_id, "turn_completed", {"cancelled": True}, turn_id=turn_id)
+                _trace_event(engine, session_id, run_id, "run_completed", {"finish_reason": "cancelled"})
+                _feedback_hook(session_id, run_id, str(engine.workspace_root))
+                if sink is not None:
+                    sink.clear_thinking()
+                    sink.chunk(cancel_msg)
+                    sink.end_assistant()
+                else:
+                    console.print(f"[yellow]{cancel_msg}[/yellow]\n")
+                messages.append(Message(role="assistant", content=cancel_msg))
+                _session_save(session_id, "assistant", cancel_msg, run_id=run_id)
+                return
+
             for tc in result.tool_calls:
                 if _is_sink_cancelled():
                     return

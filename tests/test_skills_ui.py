@@ -231,3 +231,60 @@ def test_receipt_rendering_width_and_ascii():
     rendered_ascii = render_publication_receipt(receipt, width=80, ascii_only=True)
     assert "·" not in rendered_ascii
     assert "|" in rendered_ascii or "*" in rendered_ascii
+
+
+def test_dynamic_context_message_pinned_skill_injection():
+    from hund.agent.loop import _dynamic_context_message
+    from hund.skills.model import Skill
+
+    pinned = Skill(
+        schema_version=1,
+        name="pinned-css-formatter",
+        domain="styling",
+        status="active",
+        triggers=("format css", "style css"),
+        when_to_use="When formatting CSS style sheets.",
+        steps=("Sort declarations alphabetically.", "Indent 2 spaces."),
+        required_tools=(),
+        forbidden_actions=(),
+        safety_level="read_only",
+        verification=("CSS syntax is valid.",),
+        lifecycle_state="active",
+        vault_state="equipped",
+    )
+
+    other = Skill(
+        schema_version=1,
+        name="other-skill",
+        domain="general",
+        status="active",
+        triggers=("other trigger",),
+        when_to_use="When doing other stuff.",
+        steps=("Step 1",),
+        required_tools=(),
+        forbidden_actions=(),
+        safety_level="read_only",
+        verification=("Other passes.",),
+        lifecycle_state="active",
+        vault_state="equipped",
+    )
+
+    # When pinned_skill is provided:
+    # 1. It appears under the pinned header with instructions
+    msg = _dynamic_context_message(
+        skills=[pinned, other],
+        user_text="format css and other trigger",
+        workspace_id="test_ws",
+        pinned_skill=pinned,
+    )
+    assert msg is not None
+    content = msg.content
+    assert "## Nyligen skapad & aktiv skill (prio: instruktioner)" in content
+    assert "pinned-css-formatter" in content
+    assert "Sort declarations alphabetically." in content
+    # 2. Pinned skill is filtered from summaries to avoid duplication
+    if "## Relevanta skills" in content:
+        summaries_part = content.split("## Relevanta skills")[1]
+        assert "pinned-css-formatter" not in summaries_part
+        assert "other-skill" in summaries_part
+

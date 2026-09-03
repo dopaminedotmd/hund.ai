@@ -140,7 +140,7 @@ def test_tcb_dispatch_research_grant_enforcement(tmp_path: Path):
     assert "external research not authorized" not in res_normal
 
 
-def test_tcb_dispatch_direct_chat_skill_uses_standard_confirmation(
+def test_tcb_dispatch_direct_chat_skill_rejected_without_authoring_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -180,11 +180,11 @@ def test_tcb_dispatch_direct_chat_skill_uses_standard_confirmation(
         session_id=context.session_id,
     )
 
-    assert len(hooks.confirmed_calls) == 1
-    assert not result.startswith("[declined")
+    assert result.startswith("[declined:")
+    assert "unconfirmed or modified skill payload" in result
+    assert hooks.confirmed_calls == []
     stored = SkillVault().find_skill("direct-chat-review", workspace=tmp_path)
-    assert stored is not None
-    assert stored.name == "direct-chat-review"
+    assert stored is None
 
 
 def test_tcb_dispatch_direct_chat_skill_decline_writes_nothing(
@@ -226,8 +226,8 @@ def test_tcb_dispatch_direct_chat_skill_decline_writes_nothing(
         session_id=context.session_id,
     )
 
-    assert len(hooks.confirmed_calls) == 1
-    assert result == "[declined by user]"
+    assert result.startswith("[declined:")
+    assert hooks.confirmed_calls == []
     assert SkillVault().find_skill("declined-direct-chat", workspace=tmp_path) is None
 
 
@@ -269,11 +269,11 @@ def test_tcb_dispatch_direct_chat_skill_noninteractive_writes_nothing(
         session_id=context.session_id,
     )
 
-    assert "requires approval" in result
+    assert result.startswith("[declined:")
     assert SkillVault().find_skill("noninteractive-direct-chat", workspace=tmp_path) is None
 
 
-def test_tcb_dispatch_active_authoring_chat_call_confirmation_is_authorization(
+def test_tcb_dispatch_active_authoring_chat_call_without_token_is_rejected(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -320,14 +320,12 @@ def test_tcb_dispatch_active_authoring_chat_call_confirmation_is_authorization(
         session_id=context.session_id,
     )
 
-    # Chat confirmation IS the authorization (BYGGE_7): the confirm modal
-    # fires and approval publishes the skill without any stepper-issued token.
-    assert len(hooks.confirmed_calls) == 1
-    assert not result.startswith("[declined")
-    assert SkillVault().find_skill("active-without-binding", workspace=tmp_path) is not None
+    assert result.startswith("[declined:")
+    assert hooks.confirmed_calls == []
+    assert SkillVault().find_skill("active-without-binding", workspace=tmp_path) is None
 
 
-def test_tcb_dispatch_terminal_authoring_session_can_use_standard_confirmation(
+def test_tcb_dispatch_terminal_authoring_session_rejects_tokenless_call(
     tmp_path: Path,
 ):
     from hund.tools.default_tools import register_defaults
@@ -372,8 +370,8 @@ def test_tcb_dispatch_terminal_authoring_session_can_use_standard_confirmation(
         session_id=context.session_id,
     )
 
-    assert len(hooks.confirmed_calls) == 1
-    assert result == "[declined by user]"
+    assert result.startswith("[declined:")
+    assert hooks.confirmed_calls == []
 
 
 def test_tcb_dispatch_terminal_authoring_session_rejects_exact_publication_token(

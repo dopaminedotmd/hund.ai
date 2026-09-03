@@ -74,7 +74,12 @@ class SessionAllowlist:
         entries = self._allowed.get(session_id, set())
         if tool == "terminal":
             return any(
-                entry_tool == tool and entry_policy == policy_id and entry_risk == risk_str
+                entry_tool == tool
+                and (
+                    entry_policy == policy_id
+                    or (entry_policy in ("terminal.compound", "terminal.unknown") and policy_id in ("terminal.compound", "terminal.unknown"))
+                )
+                and entry_risk == risk_str
                 for entry_tool, entry_policy, entry_risk, _entry_args in entries
             )
         return (tool, policy_id, risk_str, canonical) in entries
@@ -175,6 +180,7 @@ class SessionAllowlist:
 
 _SESSION_ALLOWLIST = SessionAllowlist()
 _TURN_TERMINAL_ALLOWLIST: set[tuple[str, str]] = set()
+_PREFLIGHT_ALLOWLIST: set[tuple[str, str, str, str]] = set()
 
 
 def _parse(tc: dict) -> tuple[str, dict]:
@@ -183,8 +189,102 @@ def _parse(tc: dict) -> tuple[str, dict]:
     raw = fn.get("arguments", "{}") or "{}"
     try:
         return name, json.loads(raw)
-    except json.JSONDecodeError:
-        return name, {"_raw_arguments": raw}
+    except Exception:
+        return name, {}
+
+
+def preflight_check_tool_calls(
+    tool_calls: list[dict],
+    engine: PermissionEngine,
+    console: Console,
+    *,
+    hooks=None,
+    session_id: str | None = None,
+    turn_id: str | None = None,
+    noninteractive: bool = False,
+) -> bool:
+    """Classify all tool calls in advance.
+
+    If any call requires confirmation and is not already allowlisted,
+    prompt the user before executing any tool in the turn.
+    Returns False if the user denies confirmation (cancelling the whole chain),
+    or True if execution should proceed.
+    """
+    for tc in tool_calls:
+        name, args = _parse(tc)
+        decision = engine.classify(name, args)
+        canonical_args = _canonical_args_str(args)
+
+        if decision.risk is not RiskLevel.CONFIRM:
+            continue
+
+        if (
+            name == "terminal"
+            and session_id
+            and turn_id
+            and (session_id, turn_id) in _TURN_TERMINAL_ALLOWLIST
+        ):
+            continue
+
+        if (
+            decision.session_allowable
+            and _SESSION_ALLOWLIST.is_allowed(session_id, name, decision.policy_id, args=args, risk=decision.risk)
+        ):
+            continue
+
+        if (
+            session_id
+            and turn_id
+            and (session_id, turn_id, name, canonical_args) in _PREFLIGHT_ALLOWLIST
+        ):
+            continue
+
+        if noninteractive:
+            return False
+
+        request = ConfirmRequest(
+            tool_name=name,
+            args=args,
+            risk=decision.risk.value,
+            reason=decision.reason,
+            policy_id=decision.policy_id or "",
+            session_allowable=decision.session_allowable,
+            turn_allowable=name == "terminal" and decision.risk is RiskLevel.CONFIRM,
+        )
+
+        if hooks is not None:
+            response = normalize_confirm_response(hooks.confirm(request))
+        else:
+            preview = json.dumps(args, ensure_ascii=False)
+            if len(preview) > 200:
+                preview = preview[:200] + "…"
+            prompt = (
+                f"[yellow]{decision.risk.upper()}[/yellow] "
+                "hund wants to run a potentially dangerous command: "
+                f"[bold]{name}[/bold] {preview} — allow? [y/N]"
+            )
+            ans = console.input(prompt + " ").strip().lower()
+            if ans in {"y", "yes", "j", "ja"}:
+                response = ConfirmResponse(ConfirmVerdict.APPROVE_ONCE)
+            else:
+                response = ConfirmResponse(ConfirmVerdict.DENY)
+
+        verdict = response.verdict
+        if verdict is ConfirmVerdict.DENY:
+            return False
+        elif verdict is ConfirmVerdict.ALLOW_SESSION:
+            _SESSION_ALLOWLIST.allow(session_id, name, decision, args=args)
+        elif verdict is ConfirmVerdict.ALLOW_TURN and name == "terminal":
+            if session_id and turn_id:
+                _TURN_TERMINAL_ALLOWLIST.add((session_id, turn_id))
+        elif verdict is ConfirmVerdict.APPROVE_ONCE:
+            if session_id and turn_id:
+                _PREFLIGHT_ALLOWLIST.add((session_id, turn_id, name, canonical_args))
+        elif verdict is ConfirmVerdict.EDIT:
+            if session_id and turn_id:
+                _PREFLIGHT_ALLOWLIST.add((session_id, turn_id, name, canonical_args))
+
+    return True
 
 
 TOOL_DOMAIN_MAP = {
@@ -272,6 +372,16 @@ def dispatch_tool_call(
     ):
         decision = Decision(RiskLevel.SAFE, allowed=True, reason="Approved terminal commands for this turn")
 
+    canonical_args = _canonical_args_str(args)
+    if (
+        decision.risk is RiskLevel.CONFIRM
+        and session_id
+        and turn_id
+        and (session_id, turn_id, name, canonical_args) in _PREFLIGHT_ALLOWLIST
+    ):
+        _PREFLIGHT_ALLOWLIST.discard((session_id, turn_id, name, canonical_args))
+        decision = Decision(RiskLevel.SAFE, allowed=True, reason="Pre-flight approved tool call")
+
     # A session grant only applies to the exact policy category, risk and arguments that were approved.
     if (
         decision.risk is RiskLevel.CONFIRM
@@ -333,36 +443,33 @@ def dispatch_tool_call(
         auth = auth_session.publication_authorization if auth_session is not None else None
         requested_scope = str(skill_payload.get("scope", "global")) if isinstance(skill_payload, dict) else ""
         requested_disposition = str(args.get("desired_disposition", "auto"))
-        # Chat calls carry no pre-minted authorization: the user's approval
-        # (confirm modal) IS the authorization. The exact-draft gate applies
-        # only to calls that claim a stepper-issued authorization token
-        # (replay/tamper protection stays hard for that path).
         terminal_authoring_states = {
             AuthoringState.PUBLISHED,
             AuthoringState.CANCELLED,
+            AuthoringState.FAILED,
         }
-        attempts_exact_publication = bool(supplied_hash or supplied_auth_id)
-        if attempts_exact_publication:
-            if (
-                auth_session is None
-                or auth_session.state in terminal_authoring_states
-                or auth is None
-                or not isinstance(skill_payload, dict)
-                or supplied_hash != actual_hash
-                or supplied_auth_id != auth.authorization_id
-                or effective_sid != auth.session_id
-                or requested_scope != auth.scope
-                or requested_disposition != auth.disposition
-                or not auth.is_valid(actual_hash)
-            ):
-                reason = "unconfirmed or modified skill payload requires explicit user acceptance"
-                _emit("tool_call_declined", {"reason": reason}, risk_level=decision.risk.value)
-                if hooks is not None:
-                    hooks.declined(name, reason)
-                else:
-                    console.print(f"[yellow]DECLINED[/yellow] {name} — {reason}")
-                return f"[declined: {reason}]"
-            publication_binding = (effective_sid, supplied_auth_id, actual_hash)
+        if (
+            auth_session is None
+            or auth_session.state in terminal_authoring_states
+            or auth is None
+            or not isinstance(skill_payload, dict)
+            or not supplied_hash
+            or not supplied_auth_id
+            or supplied_hash != actual_hash
+            or supplied_auth_id != auth.authorization_id
+            or effective_sid != auth.session_id
+            or requested_scope != auth.scope
+            or requested_disposition != auth.disposition
+            or not auth.is_valid(actual_hash)
+        ):
+            reason = "unconfirmed or modified skill payload requires explicit user acceptance"
+            _emit("tool_call_declined", {"reason": reason}, risk_level=decision.risk.value)
+            if hooks is not None:
+                hooks.declined(name, reason)
+            else:
+                console.print(f"[yellow]DECLINED[/yellow] {name} — {reason}")
+            return f"[declined: {reason}]"
+        publication_binding = (effective_sid, supplied_auth_id, actual_hash)
 
     if publication_binding is None and not (
         decision.risk is RiskLevel.SAFE and auto_approve_safe

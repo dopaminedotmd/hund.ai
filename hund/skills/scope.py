@@ -100,8 +100,35 @@ _SWEDISH_TO_ENGLISH_TERMS = {
     "gränssnitt": "interface",
     "ändringar": "changes",
     "ändra": "modify",
+    "ändrar": "modify",
     "uppdatera": "update",
+    "uppdaterar": "update",
     "uppdatering": "update",
+    "sida": "page",
+    "sidor": "pages",
+    "sidan": "page",
+    "sidorna": "pages",
+    "designa": "design",
+    "designar": "design",
+    "utforma": "design",
+    "utformar": "design",
+    "generera": "generate",
+    "genererar": "generate",
+    "planerar": "planning",
+    "bygger": "build",
+    "testar": "testing",
+    "felsöker": "debugging",
+    "refaktorerar": "refactoring",
+    "granskar": "review",
+    "skapar": "creation",
+    "filen": "file",
+    "filerna": "files",
+    "optimerar": "optimize",
+    "hanterar": "manage",
+    "analyserar": "analysis",
+    "översätter": "translation",
+    "migrerar": "migration",
+    "driftsätter": "deployment",
     "språk": "language",
     "prompt": "prompt",
     "prompter": "prompts",
@@ -146,10 +173,26 @@ _STOP_WORDS = {
     "mycket", "much", "bra", "good", "såhär", "sahar", "lite", "här", "har", "där", "dar",
     "eh", "öhm", "ohm", "ehm", "um", "uh", "liksom", "typ", "upp", "ner", "nerå", "sådär", "sån", "sånt",
     "hjälp", "hjalp", "hjälpa", "hjalpa", "hjälper", "hjalper", "help", "helps", "helping", "helped",
+    # Swedish & English marketing buzzwords / hype to filter from technical slugs
+    "extremt", "extrem", "extreme", "hög", "hog", "high", "bästa", "basta", "best",
+    "grym", "grymt", "awesome", "fantastisk", "otrolig", "super", "mega", "ultra", "value",
     # Generic action verbs when preceding a domain noun
     "skriver", "skriva", "skriv", "write", "writes", "writing", "author", "authoring",
     "skapa", "skapar", "create", "creates", "creating", "bygga", "bygger", "build", "builds", "building",
+    "designa", "designar", "designs", "designing", "utforma", "utformar", "generera", "genererar",
 }
+
+_MARKETING_BUZZWORDS = frozenset({
+    "extremt", "extrem", "extreme",
+    "hög", "hog", "high",
+    "bästa", "basta", "best",
+    "grym", "grymt", "awesome",
+    "fantastisk", "otrolig",
+    "super", "mega", "ultra",
+    "value",
+    "världsklass", "varldsklass", "world-class", "worldclass",
+    "världsledande", "varldsledande", "top-tier", "best-in-class", "world",
+})
 
 
 def _slug(value: str) -> str:
@@ -158,11 +201,21 @@ def _slug(value: str) -> str:
     if not raw:
         return "learned-skill"
 
+    # Normalize multi-word buzzword phrases before splitting
+    raw = re.sub(r"\bworld\s+class\b", "worldclass", raw)
+    raw = re.sub(r"\bi\s+v[äa]rldsklass\b", "varldsklass", raw)
+    raw = re.sub(r"\btop\s+tier\b", "top-tier", raw)
+    raw = re.sub(r"\bbest\s+in\s+class\b", "best-in-class", raw)
+    raw = re.sub(r"\bv[äa]rldsledande\b", "varldsledande", raw)
+    raw = re.sub(r"\bworld\s+leading\b", "world-leading", raw)
+    if not raw:
+        return "learned-skill"
+
     # Split into words
     words = re.findall(r"[a-z0-9åäöéèü_-]+", raw)
     english_parts: list[str] = []
     for w in words:
-        if w in _STOP_WORDS:
+        if w in _STOP_WORDS or w in _MARKETING_BUZZWORDS:
             continue
         if w in _SWEDISH_TO_ENGLISH_TERMS:
             english_parts.append(_SWEDISH_TO_ENGLISH_TERMS[w])
@@ -170,7 +223,7 @@ def _slug(value: str) -> str:
             # Normalize Swedish vowels if unmapped
             cleaned_word = w.replace("å", "a").replace("ä", "a").replace("ö", "o").replace("é", "e").replace("ü", "u")
             cleaned_word = re.sub(r"[^a-z0-9_-]+", "", cleaned_word)
-            if cleaned_word and cleaned_word not in _STOP_WORDS:
+            if cleaned_word and cleaned_word not in _STOP_WORDS and cleaned_word not in _MARKETING_BUZZWORDS:
                 english_parts.append(cleaned_word)
 
     # De-duplicate consecutive identical parts and limit to 4 key terms
@@ -178,7 +231,7 @@ def _slug(value: str) -> str:
     for p in english_parts:
         # Split terms like planning-files
         for sub in p.split("-"):
-            if sub and sub not in _STOP_WORDS and (not filtered or filtered[-1] != sub):
+            if sub and sub not in _STOP_WORDS and sub not in _MARKETING_BUZZWORDS and (not filtered or filtered[-1] != sub):
                 filtered.append(sub)
 
     combined = "-".join(filtered[:4])
@@ -186,15 +239,61 @@ def _slug(value: str) -> str:
     return (combined or "learned-skill")[:40]
 
 
+def derive_technical_skill_name(
+    topic: str,
+    shaping_answers: dict[str, Any] | None = None,
+    base_name: str | None = None,
+) -> str:
+    """Derive clean technical skill name from topic and shaping answers, filtering marketing buzzwords."""
+    shaping_parts: list[str] = []
+    if shaping_answers:
+        for key in ("style", "content", "format", "framework", "target", "focus", "domain", "type"):
+            val = str(shaping_answers.get(key, "")).strip().casefold()
+            if val:
+                for word in re.findall(r"[a-z0-9åäöéèü_-]+", val):
+                    slug_w = _slug(word)
+                    for part in slug_w.split("-"):
+                        if (
+                            part
+                            and part != "learned-skill"
+                            and part not in _MARKETING_BUZZWORDS
+                            and part not in _STOP_WORDS
+                            and part not in shaping_parts
+                        ):
+                            shaping_parts.append(part)
+
+    raw_topic = base_name or topic or ""
+    slug_topic = _slug(raw_topic)
+    topic_parts = [
+        p for p in slug_topic.split("-")
+        if p and p != "learned-skill" and p not in _MARKETING_BUZZWORDS and p not in _STOP_WORDS
+    ]
+
+    combined_parts: list[str] = []
+    for p in shaping_parts:
+        if p not in combined_parts and p not in _MARKETING_BUZZWORDS and p not in _STOP_WORDS:
+            combined_parts.append(p)
+    for p in topic_parts:
+        if p not in combined_parts and p not in _MARKETING_BUZZWORDS and p not in _STOP_WORDS:
+            combined_parts.append(p)
+
+    if combined_parts:
+        name = "-".join(combined_parts[:4])
+        return re.sub(r"-+", "-", name).strip("-")[:40]
+
+    return "learned-skill"
+
+
 def resolve_scope_and_overlap(
     intent: Any,  # SkillAuthoringIntent
     workspace_key: str,
     existing_skills: list[Skill],
     builtins: list[Skill],
+    shaping_answers: dict[str, Any] | None = None,
 ) -> ScopeResolution:
     """Resolve target scope, lineage update, overlap, and collision against existing skills."""
     raw_name = getattr(intent, "referenced_name", None) or getattr(intent, "capability", "")
-    target_name = _slug(raw_name)
+    target_name = derive_technical_skill_name(raw_name, shaping_answers=shaping_answers)
     capability_id = f"general/{target_name}"
 
     # 1. Builtin collision check — fail closed to REJECTED

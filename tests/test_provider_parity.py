@@ -8,78 +8,43 @@ from hund.tools.skill_tool import make_handler, parse_create_skill_args
 from hund.tools.types import ToolStatus
 
 
-def test_provider_parity_claude_request_format(tmp_path: Path):
+def test_provider_parity_direct_request_format_rejected():
     claude_args = {
         "request": "create a skill for formatting markdown tables",
         "target_scope": "project",
         "desired_disposition": "equip",
     }
-    parsed = parse_create_skill_args(claude_args)
-    assert parsed.request == "create a skill for formatting markdown tables"
-    assert parsed.target_scope == "project"
-    assert parsed.desired_disposition == "equip"
-
-    handler = make_handler(home=tmp_path, workspace_path=tmp_path)
-    res = handler(claude_args)
-    assert res.status is ToolStatus.SUCCESS
-    assert "Saved skill" in res.to_llm_text()
+    with pytest.raises(ValueError, match="not supported"):
+        parse_create_skill_args(claude_args)
 
 
-def test_provider_parity_openai_request_format(tmp_path: Path):
-    openai_args = {
-        "request": "create a skill to run unit tests with coverage",
+def test_provider_parity_structured_skill_parsing():
+    skill_dict = {
+        "schema_version": 1,
+        "name": "parity-helper",
+        "domain": "general",
+        "status": "draft",
+        "triggers": ["parity helper"],
+        "when_to_use": "When using parity helper.",
+        "steps": ["Step 1: check parity."],
+        "required_tools": [],
+        "forbidden_actions": sorted(list(BANNED_ACTIONS)),
+        "safety_level": "read_only",
+        "verification": ["Verify parity."],
     }
-    parsed = parse_create_skill_args(openai_args)
-    assert parsed.request == "create a skill to run unit tests with coverage"
-    assert parsed.target_scope == "unresolved"
-    assert parsed.desired_disposition == "auto"
-
-    handler = make_handler(home=tmp_path, workspace_path=tmp_path)
-    res = handler(openai_args)
-    assert res.status is ToolStatus.SUCCESS
-    assert "Saved skill" in res.to_llm_text()
-
-
-def test_provider_parity_gemini_format(tmp_path: Path):
-    gemini_args = {
-        "request": "create a skill for semantic git commit messages",
-        "target_scope": "global",
+    args = {
+        "session_id": "sess-1",
+        "authorization_id": "auth-1",
+        "payload_hash": "hash-1",
         "desired_disposition": "vault",
+        "skill": skill_dict,
     }
-    parsed = parse_create_skill_args(gemini_args)
-    assert parsed.request == "create a skill for semantic git commit messages"
-    assert parsed.target_scope == "global"
+    parsed = parse_create_skill_args(args)
+    assert parsed.legacy_skill == skill_dict
+    assert parsed.session_id == "sess-1"
+    assert parsed.authorization_id == "auth-1"
+    assert parsed.payload_hash == "hash-1"
     assert parsed.desired_disposition == "vault"
-
-    handler = make_handler(home=tmp_path, workspace_path=tmp_path)
-    res = handler(gemini_args)
-    assert res.status is ToolStatus.SUCCESS
-    assert "Saved skill" in res.to_llm_text()
-
-
-def test_provider_parity_ollama_legacy_skill_object_format(tmp_path: Path):
-    ollama_legacy_args = {
-        "skill": {
-            "schema_version": 1,
-            "name": "ollama-helper",
-            "domain": "general",
-            "status": "draft",
-            "triggers": ["ollama help"],
-            "when_to_use": "When using ollama helper.",
-            "steps": ["Step 1: check ollama"],
-            "required_tools": [],
-            "forbidden_actions": list(BANNED_ACTIONS),
-            "safety_level": "read_only",
-            "verification": ["Verify ollama."],
-        }
-    }
-    parsed = parse_create_skill_args(ollama_legacy_args)
-    assert parsed.legacy_skill is not None
-
-    handler = make_handler(home=tmp_path, workspace_path=tmp_path)
-    res = handler(ollama_legacy_args)
-    assert res.status is ToolStatus.SUCCESS
-    assert "Saved skill 'ollama-helper'" in res.to_llm_text()
 
 
 def test_openai_compatible_protocol_filter_complete():

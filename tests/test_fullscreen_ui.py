@@ -613,7 +613,8 @@ def test_output_lexer_rich_markdown_tokens() -> None:
     toks1 = get_line(1)
     assert any(t[0] == "class:number" and "9." in t[1] for t in toks1)
     assert any(t[0] == "class:header" and "python-project-workflow" in t[1] for t in toks1)
-    assert any(t[0] == "class:secondary" and "safety_level" in t[1] for t in toks1)
+    assert any(t[0] == "class:secondary" and "—" in t[1] for t in toks1)
+    assert any(t[0] == "class:label" and "safety_level:" in t[1] for t in toks1)
 
     # Line 2: Bullet item with label
     toks2 = get_line(2)
@@ -849,7 +850,7 @@ def test_authoring_stepper_is_inline_after_prompt_and_replaced_in_place() -> Non
     assert any(style == "class:growth_gold" and "│" in text for style, text in fragments)
     inline_text = ctx["output_buffer"].text
     assert inline_text.startswith(transcript_before)
-    assert inline_text.count("SKILL AUTHORING · Shaping 1/2") == 1
+    assert inline_text.count("SKILL AUTHORING · Supplementary Question 1 of 2") == 1
 
     output.set_size(cols=60, rows=24)
     ctx["_reflow_borders"]()
@@ -857,7 +858,7 @@ def test_authoring_stepper_is_inline_after_prompt_and_replaced_in_place() -> Non
     ctx["_move_authoring_selection"](1)
     assert ctx["authoring_selected"][0] == 1
     replaced_text = ctx["output_buffer"].text
-    assert replaced_text.count("SKILL AUTHORING · Shaping 1/2") == 1
+    assert replaced_text.count("SKILL AUTHORING · Supplementary Question 1 of 2") == 1
     assert "› Validate marketing" in replaced_text
     assert len(replaced_text) != len(inline_text) or replaced_text != inline_text
 
@@ -867,7 +868,7 @@ def test_inline_authoring_lexer_applies_gold_semantics() -> None:
 
     text = (
         "❯ Create a marketing skill\n\n"
-        "  ◆  SKILL AUTHORING · Shaping 1/2\n"
+        "  ◆  SKILL AUTHORING · Supplementary Question 1 of 2\n"
         "  │\n"
         "  │  Primary Marketing Outcome\n"
         "  │  Choose the result so checks match.\n"
@@ -884,6 +885,55 @@ def test_inline_authoring_lexer_applies_gold_semantics() -> None:
     assert get_line(7)[-1][0] == "class:growth_gold bold"
     assert get_line(8)[-1][0] == "class:secondary"
     assert get_line(9)[-1][0] == "class:growth_gold"
+
+
+def test_authoring_fragments_wrapped_selected_option_preserves_gold_bold() -> None:
+    from hund.ui.fullscreen import create_fullscreen_app
+    from hund.skills.authoring import AuthoringState
+    from hund.skills.authoring_runtime import AuthoringOption, AuthoringView
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock(theme_name="marshmallow", extra={}, start_time=0.0)
+    output = ResizableOutput(cols=50, rows=24)
+    _app, ctx = create_fullscreen_app(rt, state, output=output)
+
+    long_selected_label = "Automate Shopify product descriptions across all store items using GraphQL API"
+    short_unselected_label = "Short second option"
+
+    ctx["authoring_view"][0] = AuthoringView(
+        session_id="stepper_wrapped",
+        phase=AuthoringState.SHAPING,
+        subject="shopify",
+        title="Primary Focus",
+        question_key="focus",
+        step_index=1,
+        step_total=2,
+        options=(
+            AuthoringOption("answer", long_selected_label, long_selected_label),
+            AuthoringOption("answer", short_unselected_label, short_unselected_label),
+        ),
+    )
+    ctx["authoring_selected"][0] = 0
+
+    fragments = ctx["_authoring_fragments"]()
+    selected_fragments = [
+        (style, text) for style, text in fragments
+        if any(word in text for word in ("Automate", "Shopify", "descriptions", "across", "GraphQL"))
+    ]
+    assert len(selected_fragments) >= 2
+    for style, text in selected_fragments:
+        assert style == "class:growth_gold bold", f"Expected gold bold for '{text}', got {style}"
+
+    unselected_fragments = [
+        (style, text) for style, text in fragments
+        if "Short second option" in text
+    ]
+    assert unselected_fragments
+    for style, text in unselected_fragments:
+        assert style == "class:secondary", f"Expected secondary for unselected '{text}', got {style}"
 
 
 def test_fullscreen_has_explicit_ctrl_d_exit_binding() -> None:
@@ -1016,7 +1066,7 @@ def test_theme_tokens_and_selection_styling() -> None:
     tokens = skin["tokens"]
 
     # Verify lifted contrast tokens
-    assert tokens["secondary"] == "#7E889B"
+    assert tokens["secondary"] == "#9AA5B8"
     assert tokens["meta_accent"] == "#D896C7"
     assert tokens["mascot_status"] == "#959EAE"
     assert tokens["modal_footer"] == "#A2ABC0"
@@ -1030,3 +1080,113 @@ def test_theme_tokens_and_selection_styling() -> None:
     assert "selected" in style_dict
     assert "bg:#ffffff" in style_dict["selected"].lower()
     assert "fg:#000000" in style_dict["selected"].lower()
+
+
+def test_output_window_includes_scrollbar_margin() -> None:
+    from prompt_toolkit.layout.margins import ScrollbarMargin
+    from hund.ui.fullscreen import create_fullscreen_app, _MinimalScrollbarMargin
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock(theme_name="marshmallow", extra={}, start_time=0.0)
+    app, ctx = create_fullscreen_app(rt, state, output=DummyOutput())
+    output_window = ctx["output_window"]
+    assert any(isinstance(m, ScrollbarMargin) for m in output_window.right_margins)
+    assert any(isinstance(m, _MinimalScrollbarMargin) for m in output_window.right_margins)
+
+
+def test_minimal_scrollbar_margin_hidden_in_vila_and_shows_thumb_when_scrolled() -> None:
+    from hund.ui.fullscreen import _MinimalScrollbarMargin
+    from prompt_toolkit.layout.containers import WindowRenderInfo
+
+    render_info = MagicMock(spec=WindowRenderInfo)
+    render_info.content_height = 100
+    render_info.window_height = 20
+    render_info.displayed_lines = list(range(20))
+
+    # Case 1: In vila because tail-follow is True (width is always 1, no button/thumb)
+    tail_following = [True]
+    render_info.vertical_scroll = 80
+    margin = _MinimalScrollbarMargin(tail_follow_getter=lambda: tail_following[0])
+    assert margin.get_width(lambda: None) == 1
+    tuples = margin.create_margin(render_info, width=1, height=20)
+    assert not any("scrollbar.button" in style for style, _ in tuples)
+    assert all(style == "" for style, text in tuples if text == " ")
+
+    # Case 2: In vila because content fits in window
+    render_info_short = MagicMock(spec=WindowRenderInfo)
+    render_info_short.content_height = 10
+    render_info_short.window_height = 20
+    render_info_short.displayed_lines = list(range(10))
+    render_info_short.vertical_scroll = 0
+    tail_following[0] = False
+    tuples_short = margin.create_margin(render_info_short, width=1, height=20)
+    assert not any("scrollbar.button" in style for style, _ in tuples_short)
+
+    # Case 3: Scrolled up (tail-follow is False, vertical_scroll is 40 < 80)
+    tail_following[0] = False
+    render_info.vertical_scroll = 40
+    tuples_scrolled = margin.create_margin(render_info, width=1, height=20)
+    button_tuples = [text for style, text in tuples_scrolled if "scrollbar.button" in style]
+    assert len(button_tuples) > 0  # Thumb is visible
+
+
+
+def test_resize_preserves_bottom_anchored_scroll_distance() -> None:
+    from hund.ui.fullscreen import create_fullscreen_app
+
+    rt = MagicMock()
+    rt.cfg = MagicMock(reduced_motion=True, screen_reader=False)
+    rt.profile = None
+    rt.messages = []
+    state = MagicMock(theme_name="marshmallow", extra={}, start_time=0.0)
+    out = ResizableOutput(cols=80, rows=24)
+    app, ctx = create_fullscreen_app(rt, state, output=out)
+
+    output_buffer = ctx["output_buffer"]
+    output_window = ctx["output_window"]
+    tail_following = ctx["tail_following"]
+    reflow = ctx["_reflow_borders"]
+
+    # Populate lines
+    text = "\n".join(f"Line {i:03d}" for i in range(100))
+    output_buffer.set_document(Document(text, cursor_position=0), bypass_readonly=True)
+    # User scrolled up to line 70, not following tail
+    tail_following[0] = False
+    output_window.vertical_scroll = 70
+    old_doc_len = text.count("\n") + 1
+    dist = old_doc_len - 1 - 70  # 29 lines from the bottom
+
+    # Resize output width and reflow
+    out.set_size(60, 24)
+    reflow()
+
+    # After reflow, distance from bottom must be preserved
+    new_doc_len = output_buffer.text.count("\n") + 1
+    expected_scroll = max(0, new_doc_len - 1 - dist)
+    assert output_window.vertical_scroll == expected_scroll
+
+
+def test_lexer_skill_emdash_parsing() -> None:
+    from hund.ui.fullscreen import _parse_semantic_line
+
+    line = "1. Item — description with `inline_code` and text"
+    tokens = _parse_semantic_line(line)
+
+    # 1. Number part is class:number
+    assert tokens[0] == ("class:number", "1. ")
+    # 2. Header/item name is class:header
+    assert tokens[1] == ("class:header", "Item")
+    # 3. ONLY the emdash separator is class:secondary
+    assert tokens[2] == ("class:secondary", " — ")
+    # 4. Description is parsed semantically, not flattened to secondary
+    token_styles = [t[0] for t in tokens[3:]]
+    token_texts = [t[1] for t in tokens[3:]]
+    assert "class:secondary" not in token_styles
+    # inline code inside description is styled as class:code
+    assert any("code" in s for s in token_styles)
+    assert any("inline_code" in t for t in token_texts)
+
+

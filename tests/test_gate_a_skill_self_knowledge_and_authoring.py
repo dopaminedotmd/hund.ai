@@ -109,17 +109,39 @@ class TestQualityGateAndRichSynthesis:
         assert any("boilerplate" in f.lower() or "when_to_use" in f.lower() for f in result.failures)
 
     def test_synthesize_skill_proposal_creates_rich_domain_steps(self):
+        import json
         from hund.skills.authoring_runtime import synthesize_skill_proposal_content
         from hund.skills.authoring import SkillDraft, run_deterministic_quality_checks
-        from hund.skills.model import Skill
+        from hund.skills.model import BANNED_ACTIONS, Skill
+        from hund.providers.base import CompletionResult
 
+        class _SynthesisClient:
+            def complete(self, messages, tools=None, **kwargs):
+                content = json.dumps({
+                    "when_to_use": "When executing structured domain workflows with explicit verification.",
+                    "steps": [
+                        "Analyze the current state and verify constraints before starting.",
+                        "Execute the primary domain procedure with safe defaults.",
+                        "Verify outcomes against required operational criteria.",
+                    ],
+                    "triggers": ["domain task", "domain workflow"],
+                    "verification": [
+                        "Primary execution logs indicate clean completion.",
+                        "Output conforms to expected domain invariants.",
+                    ],
+                    "examples": ["Execute structured domain operation cleanly."],
+                })
+                return CompletionResult(text=content, prompt_tokens=100, completion_tokens=50)
+
+        client = _SynthesisClient()
         domains = ["planning-files", "git-rebase", "database-migration", "b2b-outreach", "customer-support"]
         for d in domains:
-            when_to_use, steps, triggers, verification = synthesize_skill_proposal_content(
+            when_to_use, steps, triggers, verification, examples = synthesize_skill_proposal_content(
                 subject=d,
                 target_name=d,
                 shaping_answers={},
                 workspace_configs=(),
+                client=client,
             )
             assert len(steps) >= 3
             assert len(when_to_use) > 30
@@ -134,7 +156,7 @@ class TestQualityGateAndRichSynthesis:
                 when_to_use=when_to_use,
                 steps=steps,
                 required_tools=(),
-                forbidden_actions=(),
+                forbidden_actions=sorted(list(BANNED_ACTIONS)),
                 safety_level="read_only",
                 verification=verification,
                 lifecycle_state="draft",
@@ -149,13 +171,17 @@ class TestQualityGateAndRichSynthesis:
             assert res.passed, f"Domain {d} failed quality check: {res.failures}"
 
     def test_markdown_json_parsing_and_memory_inclusion(self):
-        from hund.skills.shaping import _parse_model_plan, sanitized_shaping_context
+        from hund.skills.shaping import ShapingCallOutput, build_knowledge_packet, _extract_json_block
         from hund.skills.authoring import SkillAuthoringIntent, LocalInspectionSnapshot
 
         raw_llm_markdown = (
             "Here is the shaping plan:\n"
             "```json\n"
             "{\n"
+            '  "mini_draft": {\n'
+            '    "when_to_use": "When managing planning files.",\n'
+            '    "steps": ["Step 1: Check ADRs.", "Step 2: Write plan."]\n'
+            "  },\n"
             '  "questions": [\n'
             "    {\n"
             '      "key": "spec_depth",\n'
@@ -165,16 +191,17 @@ class TestQualityGateAndRichSynthesis:
             '      "default_option": "High detail with ADRs"\n'
             "    }\n"
             "  ],\n"
-            '  "confidence": 0.95\n'
+            '  "research_queries": []\n'
             "}\n"
             "```\n"
         )
-        plan = _parse_model_plan(raw_llm_markdown, "planeringsfiler")
-        assert plan is not None
-        assert len(plan.questions) == 1
-        assert plan.questions[0].key == "spec_depth"
-        assert plan.questions[0].title == "Specification Depth"
-        assert len(plan.questions[0].options) == 3
+        json_str = _extract_json_block(raw_llm_markdown)
+        parsed = ShapingCallOutput.model_validate_json(json_str)
+        assert parsed is not None
+        assert len(parsed.questions) == 1
+        assert parsed.questions[0].key == "spec_depth"
+        assert parsed.questions[0].title == "Specification Depth"
+        assert len(parsed.questions[0].options) == 3
 
         intent = detect_explicit_skill_intent("Skapa en skill för planeringsfiler.")
         assert intent is not None
@@ -187,13 +214,13 @@ class TestQualityGateAndRichSynthesis:
             scoped_skills=(),
             declared_dependencies=("pytest", "prompt_toolkit"),
         )
-        ctx = sanitized_shaping_context(
-            intent,
-            snapshot,
+        packet = build_knowledge_packet(
+            intent=intent,
+            snapshot=snapshot,
             user_memories=["User prefers strict TypeScript and test-driven development."],
             project_memories=["Repository uses Next.js app router with ADRs in docs/decisions."],
         )
-        assert "user_profile" in ctx
-        assert "User prefers strict TypeScript" in ctx["user_profile"][0]
-        assert "project_profile" in ctx
-        assert "Repository uses Next.js" in ctx["project_profile"][0]
+        assert "user_profile" in packet
+        assert "User prefers strict TypeScript" in packet["user_profile"][0]
+        assert "project_profile" in packet
+        assert "Repository uses Next.js" in packet["project_profile"][0]

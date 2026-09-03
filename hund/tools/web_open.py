@@ -296,7 +296,10 @@ class WebOpenService:
 
     def _fetch(self, url: str, context: ToolCallContext) -> ToolResult:
         if context.url_provenance is None or not context.url_provenance.is_allowed(url):
-            return self._error(ToolStatus.BLOCKED, "URL not in session provenance allowlist")
+            return self._error(
+                ToolStatus.BLOCKED,
+                "URL:en är inte i sessionens provenienslista — öppna endast URL:er från web_search-resultat eller användaren",
+            )
         try:
             current = canonicalize_url(url)
         except ValueError as exc:
@@ -317,7 +320,24 @@ class WebOpenService:
             except BodyTooLarge as exc:
                 return self._error(ToolStatus.NETWORK_ERROR, "Response exceeded 1 MiB limit", str(exc))
             except Exception as exc:
-                return self._error(ToolStatus.NETWORK_ERROR, "Network request failed", str(exc))
+                try:
+                    host = urlsplit(current).hostname or ""
+                    ips = self.resolver(host)
+                    if not ips:
+                        raise OSError("no public addresses")
+                    response = self.transport.fetch(current, ips[0], impersonate="firefox")
+                    if len(response.body) > MAX_BODY_BYTES:
+                        raise BodyTooLarge("response exceeded 1 MiB")
+                except PermissionError as p_exc:
+                    return self._error(ToolStatus.SSRF_BLOCKED, "Destination address blocked", str(p_exc))
+                except BodyTooLarge as b_exc:
+                    return self._error(ToolStatus.NETWORK_ERROR, "Response exceeded 1 MiB limit", str(b_exc))
+                except Exception as retry_exc:
+                    return self._error(
+                        ToolStatus.NETWORK_ERROR,
+                        "nätverksfel — försök igen en gång eller välj annan källa",
+                        f"{exc}; fallback: {retry_exc}",
+                    )
 
             if response.status_code in {301, 302, 303, 307, 308}:
                 location = response.headers.get("location")
@@ -345,7 +365,11 @@ class WebOpenService:
                     ToolStatus.NETWORK_ERROR, "Response exceeded 1 MiB limit", str(exc)
                 )
             except Exception as exc:
-                return self._error(ToolStatus.NETWORK_ERROR, "Browser fallback failed", str(exc))
+                return self._error(
+                    ToolStatus.NETWORK_ERROR,
+                    "nätverksfel — försök igen en gång eller välj annan källa",
+                    str(exc),
+                )
         status_map = {
             401: (ToolStatus.AUTH_REQUIRED, "Authentication required"),
             404: (ToolStatus.NOT_FOUND, "Page not found"),
@@ -355,9 +379,16 @@ class WebOpenService:
             status, message = status_map[response.status_code]
             return self._error(status, message)
         if response.status_code in {403, 406}:
-            return self._error(ToolStatus.BOT_CHALLENGE, "Site rejected automated inspection")
+            return self._error(
+                ToolStatus.BOT_CHALLENGE,
+                "sajten blockerar automatisk läsning — gå vidare till nästa källa",
+            )
         if not 200 <= response.status_code < 300:
-            return self._error(ToolStatus.NETWORK_ERROR, f"HTTP {response.status_code}")
+            return self._error(
+                ToolStatus.NETWORK_ERROR,
+                "nätverksfel — försök igen en gång eller välj annan källa",
+                f"HTTP {response.status_code}",
+            )
 
         raw_content_type = response.headers.get("content-type", "").strip()
         content_type = raw_content_type.split(";", 1)[0].strip().casefold()
@@ -366,11 +397,17 @@ class WebOpenService:
         text = _decode(response.body, raw_content_type)
         lower = text.casefold()
         if any(marker in lower for marker in ("cf-chl-", "cloudflare challenge", "captcha")):
-            return self._error(ToolStatus.BOT_CHALLENGE, "Site presented a bot challenge")
+            return self._error(
+                ToolStatus.BOT_CHALLENGE,
+                "sajten blockerar automatisk läsning — gå vidare till nästa källa",
+            )
         title, regions = _semantic_regions(text, content_type, current)
         if not regions:
             if "<script" in lower:
-                return self._error(ToolStatus.JAVASCRIPT_REQUIRED, "Page requires JavaScript")
+                return self._error(
+                    ToolStatus.JAVASCRIPT_REQUIRED,
+                    "sidan kräver JavaScript som inte kan köras — välj en annan källa från sökresultaten",
+                )
             return ToolResult(ToolStatus.EMPTY, ToolKind.WEB_PAGE)
 
         page = PageState(uuid.uuid4().hex[:12], current, title, regions, self.clock())

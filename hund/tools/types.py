@@ -58,6 +58,46 @@ def sanitize_url_for_citation(url: str) -> str:
         return redact_text(url).text
 
 
+def relativize_user_granted_path(text: str, target_root: str | Path | None) -> str:
+    """Relativize absolute paths under target_root to relative paths (.\\...) using strict segment matching.
+
+    Ensures that paths under user-granted folders remain legible to the model while true private/evil paths
+    remain subject to standard redaction.
+    """
+    if not text or not target_root or not isinstance(text, str):
+        return text
+
+    try:
+        root_path = Path(target_root).resolve()
+    except Exception:
+        return text
+
+    # Match Windows drive paths (e.g. C:\... or C:/...) and POSIX absolute paths (/...)
+    # Exclude surrounding whitespace, quotes, angle brackets, commas, semicolons, brackets, etc.
+    path_pat = re.compile(
+        r"""(?P<p>(?:[A-Za-z]:[\\/]|/)[^\s"'`<>*?|()\[\]{},\t\r\n;]+)"""
+    )
+
+    def _replace_match(match: re.Match) -> str:
+        cand_str = match.group("p")
+        try:
+            cand_path = Path(cand_str).resolve()
+            rel = cand_path.relative_to(root_path)
+            sep = "\\" if "\\" in cand_str else "/"
+            rel_str = str(rel)
+            if sep == "/":
+                rel_str = rel_str.replace("\\", "/")
+            else:
+                rel_str = rel_str.replace("/", "\\")
+            if rel_str == ".":
+                return f".{sep}"
+            return f".{sep}{rel_str}"
+        except (ValueError, RuntimeError, OSError):
+            return cand_str
+
+    return path_pat.sub(_replace_match, text)
+
+
 _UNSUPPORTED = object()
 
 
@@ -67,6 +107,8 @@ def _sanitize_json_value(value: Any, *, provenance: bool = False, key: str = "")
         if isinstance(value, str):
             if provenance and key.casefold() == "url":
                 return sanitize_url_for_citation(value)
+            if key.casefold() == "target_root":
+                return value
             return redact_text(value).text
         return value
     if isinstance(value, float):
@@ -187,7 +229,9 @@ class ToolResult:
         """Render clean, status-adapted text for the LLM context window and TUI."""
         if self.status == ToolStatus.SUCCESS:
             if isinstance(self.payload, str):
-                body = redact_text(self.payload).text
+                target_root = self.metadata.get("target_root") if self.metadata else None
+                text_to_redact = relativize_user_granted_path(self.payload, target_root) if target_root else self.payload
+                body = redact_text(text_to_redact, max_chars=50_000).text
             else:
                 clean_payload = _sanitize_json_value(self.payload)
                 if clean_payload is _UNSUPPORTED:
@@ -207,6 +251,9 @@ class ToolResult:
             return body
 
         if self.status == ToolStatus.EMPTY:
+            if self.public_error:
+                msg = redact_text(self.public_error).text
+                return f"({msg})"
             return "(inga resultat)"
 
         if self.status == ToolStatus.NOT_FOUND:
@@ -222,8 +269,25 @@ class ToolResult:
             return f"[declined] {msg}"
 
         if self.status == ToolStatus.JAVASCRIPT_REQUIRED:
-            msg = redact_text(self.public_error or "page requires JavaScript").text
+            msg = redact_text(
+                self.public_error
+                or "sidan kräver JavaScript som inte kan köras — välj en annan källa från sökresultaten"
+            ).text
             return f"[javascript_required] {msg}"
+
+        if self.status == ToolStatus.BOT_CHALLENGE:
+            msg = redact_text(
+                self.public_error
+                or "sajten blockerar automatisk läsning — gå vidare till nästa källa"
+            ).text
+            return f"[bot_challenge] {msg}"
+
+        if self.status == ToolStatus.NETWORK_ERROR:
+            msg = redact_text(
+                self.public_error
+                or "nätverksfel — försök igen en gång eller välj annan källa"
+            ).text
+            return f"[network_error] {msg}"
 
         if self.status == ToolStatus.SSRF_BLOCKED:
             msg = redact_text(self.public_error or "destination address blocked").text

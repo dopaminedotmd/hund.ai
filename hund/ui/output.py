@@ -33,7 +33,7 @@ from rich.markdown import Markdown
 from . import theme
 from .phrases import select_thinking_phrase
 from .activity import describe_tool
-from .render import box_bottom, box_top, response_padding
+from .render import box_bottom, box_top, render_intermediate_capsule, response_padding
 from ..agent.types import ConfirmRequest, ConfirmVerdict
 from ..learning.redactor import redact_text
 from .confirmation import confirmation_options, prompt_edits
@@ -75,6 +75,12 @@ class SegmentType(str, Enum):
     PROSE = "prose"
     CODE = "code"
     DIFF = "diff"
+    TABLE = "table"
+
+
+def _is_table_line(line: str) -> bool:
+    s = line.strip()
+    return len(s) >= 2 and s.startswith("|") and s.endswith("|")
 
 
 @dataclass
@@ -142,11 +148,18 @@ class StreamingMarkdownFilter:
     def get_segments(self) -> list[FrozenSemanticSegment]:
         res = list(self._segments)
         active_lines = list(self._active_segment.lines)
+        active_type = self._active_segment.type
         if self._prose_line and not self._in_fence:
-            active_lines.append("".join(self._prose_line))
+            pending = "".join(self._prose_line)
+            if _is_table_line(pending) and active_type != SegmentType.TABLE:
+                if active_lines:
+                    res.append(SemanticSegment(type=active_type, lines=active_lines).freeze())
+                    active_lines = []
+                active_type = SegmentType.TABLE
+            active_lines.append(pending)
         if active_lines or (self._in_fence and self._active_segment.is_open):
             seg = SemanticSegment(
-                type=self._active_segment.type,
+                type=active_type,
                 language=self._active_segment.language,
                 filename=self._active_segment.filename,
                 lines=active_lines,
@@ -155,6 +168,21 @@ class StreamingMarkdownFilter:
             )
             res.append(seg.freeze())
         return res
+
+    def _append_prose_or_table_line(self, line_str: str) -> None:
+        if _is_table_line(line_str):
+            if self._active_segment.type != SegmentType.TABLE:
+                if self._active_segment.lines:
+                    self._active_segment.is_open = False
+                    self._segments.append(self._active_segment.freeze())
+                self._active_segment = SemanticSegment(type=SegmentType.TABLE, is_open=True)
+            self._active_segment.lines.append(line_str)
+        else:
+            if self._active_segment.type == SegmentType.TABLE:
+                self._active_segment.is_open = False
+                self._segments.append(self._active_segment.freeze())
+                self._active_segment = SemanticSegment(type=SegmentType.PROSE, is_open=True)
+            self._active_segment.lines.append(line_str)
 
     def _render_fence(self, is_open: bool = False) -> str:
         from .render import format_code_block, format_diff_block
@@ -272,7 +300,7 @@ class StreamingMarkdownFilter:
                             break
                         fence_header = "".join(self._chars[i + 3 : nl_pos]).strip()
                         if self._prose_line:
-                            self._active_segment.lines.append("".join(self._prose_line))
+                            self._append_prose_or_table_line("".join(self._prose_line))
                             self._prose_line = []
                         if self._active_segment.lines:
                             self._active_segment.is_open = False
@@ -320,11 +348,9 @@ class StreamingMarkdownFilter:
 
             if ch == "\n":
                 out.append("\n")
-                if self._prose_line:
-                    self._active_segment.lines.append("".join(self._prose_line))
-                    self._prose_line = []
-                else:
-                    self._active_segment.lines.append("")
+                line_str = "".join(self._prose_line) if self._prose_line else ""
+                self._prose_line = []
+                self._append_prose_or_table_line(line_str)
                 self._at_line_start = True
                 i += 1
             else:
@@ -375,10 +401,10 @@ class StreamingMarkdownFilter:
             self._fence_info = ""
         else:
             if self._prose_line:
-                self._active_segment.lines.append("".join(self._prose_line))
+                self._append_prose_or_table_line("".join(self._prose_line))
                 self._prose_line = []
             elif rem_str:
-                self._active_segment.lines.append(rem_str)
+                self._append_prose_or_table_line(rem_str)
                 out.append(rem_str)
 
             if self._active_segment.lines:
@@ -604,8 +630,15 @@ def interactive_confirm_menu(request: ConfirmRequest) -> ConfirmVerdict:
 class StreamingSink:
     """Streams agent tokens and renders boxed tool cards to a Rich Console."""
 
-    def __init__(self, console: Console, *, stream_delay_s: float | None = None):
+    def __init__(
+        self,
+        console: Console,
+        *,
+        stream_delay_s: float | None = None,
+        reduced_motion: bool = False,
+    ):
         self.console = console
+        self.reduced_motion = reduced_motion
         self._thinking_active = False
         self._thinking_text = "hund is reading..."
         self._thinking_past: str | None = None
@@ -616,17 +649,28 @@ class StreamingSink:
         self._at_line_start = True
         self._line_len = 0
         self._turn_start_time = 0.0
+        self._in_tool_loop = False
+        self._tool_loop_started = False
+        self._pending_intermediate: str | None = None
         if stream_delay_s is None:
-            raw_delay = os.environ.get("HUND_STREAM_DELAY_S", "")
-            try:
-                stream_delay_s = float(raw_delay) if raw_delay else _DEFAULT_STREAM_DELAY_S
-            except ValueError:
-                stream_delay_s = _DEFAULT_STREAM_DELAY_S
+            if self.reduced_motion:
+                stream_delay_s = 0.0
+            else:
+                raw_delay = os.environ.get("HUND_STREAM_DELAY_S", "")
+                try:
+                    stream_delay_s = float(raw_delay) if raw_delay else _DEFAULT_STREAM_DELAY_S
+                except ValueError:
+                    stream_delay_s = _DEFAULT_STREAM_DELAY_S
+        elif self.reduced_motion:
+            stream_delay_s = 0.0
         self.stream_delay_s = max(0.0, min(stream_delay_s, 0.02))
 
     def set_user_input(self, text: str) -> None:
         self._user_input = text or ""
         self._tool_switched = False
+        self._in_tool_loop = False
+        self._tool_loop_started = False
+        self._pending_intermediate = None
         self._turn_start_time = time.time()
 
     # -- streaming protocol ----------------------------------------------
@@ -689,6 +733,18 @@ class StreamingSink:
         self._at_line_start = True
         self._line_len = 0
 
+    def narrate(self, text: str) -> None:
+        self.clear_thinking()
+        self._close_box()
+        capsule = render_intermediate_capsule(text, width=self._width(), elapsed_s=None)
+        for line in capsule.splitlines():
+            if line.startswith("  │ ") or line.startswith("  | "):
+                pipe = line[:4]
+                body = line[4:]
+                self.console.print(f"[dim]{pipe}[/dim]{body}")
+            else:
+                self.console.print(f"[dim]{line}[/dim]")
+
     def chunk(self, text: str) -> None:
         self.clear_thinking()
         filtered = self._stream_filter.feed(text)
@@ -723,6 +779,8 @@ class StreamingSink:
 
     def end_assistant(self) -> None:
         self.clear_thinking()
+        self._in_tool_loop = False
+        self._tool_loop_started = False
         leftover = self._stream_filter.flush()
         if leftover:
             if not self._box_open:
@@ -833,6 +891,14 @@ class StreamingSink:
         return verdict
 
     def tool_start(self, name: str, args) -> None:
+        if self._pending_intermediate:
+            dur = (time.time() - self._turn_start_time) if self._turn_start_time else 0.0
+            capsule = render_intermediate_capsule(self._pending_intermediate, width=self._width(), elapsed_s=dur)
+            self.console.print(f"[dim]{capsule}[/dim]")
+            self._pending_intermediate = None
+
+        self._tool_loop_started = True
+        self._in_tool_loop = True
         if self._thinking_active and not self._tool_switched:
             f = self.console.file
             try:
@@ -862,6 +928,12 @@ class StreamingSink:
             f"\r{' ' * min(self._width(), 160)}\r[dim]  ┊ [/dim][green]✓[/green] "
             f"[magenta]{desc}[/magenta] [dim]{duration:.1f}s[/dim]"
         )
+        if self._pending_intermediate:
+            dur = (time.time() - self._turn_start_time) if self._turn_start_time else duration
+            capsule = render_intermediate_capsule(self._pending_intermediate, width=self._width(), elapsed_s=dur)
+            self.console.print(f"[dim]{capsule}[/dim]")
+            self._pending_intermediate = None
+        self._in_tool_loop = False
 
     def blocked(self, name: str, reason: str) -> None:
         desc = getattr(self, "_tool_description", describe_tool(name))

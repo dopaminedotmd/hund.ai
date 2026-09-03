@@ -8,7 +8,7 @@ class _FakeClient:
         self.response_text = response_text
         self.calls = []
 
-    def complete(self, messages, tools=None, model=None):
+    def complete(self, messages, tools=None, model=None, **kwargs):
         self.calls.append(messages)
         return CompletionResult(text=self.response_text)
 
@@ -81,3 +81,20 @@ def test_tcb_not_in_compress_target():
     # Systemprompten skickas INTE till LLM
     sent_text = client.calls[0][1].content  # user-meddelandet till LLM
     assert "TCB REGEL" not in sent_text
+
+
+def test_maybe_compress_with_client_preserves_system_and_invokes_llm():
+    """Verify that maybe_compress with client uses LLM and returns method='llm'."""
+    client = _FakeClient("[SUMMERAD] Kärnpunkter bevarade.")
+    msgs = [Message(role="system", content="SYS PROMPT")]
+    for i in range(40):
+        msgs.append(Message(role="user", content=f"long prompt turn {i} " * 20))
+        msgs.append(Message(role="assistant", content=f"long answer turn {i} " * 20))
+
+    res = maybe_compress(msgs, max_tokens=100, keep_recent=4, client=client)
+    assert res.compressed is True
+    assert res.method == "llm"
+    assert res.messages[0].content == "SYS PROMPT"
+    assert "[KOMPRIMERAD via LLM" in res.messages[1].content
+    assert len(client.calls) == 1
+

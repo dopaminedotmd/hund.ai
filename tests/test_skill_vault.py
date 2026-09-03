@@ -28,10 +28,10 @@ def test_vault_initialization_defaults_fresh(tmp_path: Path):
     vaulted = vault.list_vaulted()
     core = vault.get_core_skills()
 
-    # Fresh install has 0 domain skills and 12 core instincts
+    # Fresh install has 0 domain skills and 13 core instincts
     assert len(active) == 0
     assert len(vaulted) == 0
-    assert len(core) == 12
+    assert len(core) == 13
     assert any(s.name == "shell-command-safety" for s in core)
     assert any(s.name == "skill-authoring" for s in core)
 
@@ -101,7 +101,7 @@ def test_vault_cleans_legacy_builtins_from_state_file(tmp_path: Path):
     assert len(vault.get_active_skills()) == 0
     assert len(vault.list_vaulted()) == 0
     # Core instincts remain available
-    assert len(vault.get_core_skills()) == 12
+    assert len(vault.get_core_skills()) == 13
 
 
 def test_vault_invalid_skill_names(tmp_path: Path):

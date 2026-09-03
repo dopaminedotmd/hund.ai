@@ -455,7 +455,12 @@ def render_usage(
 
 
 THEME_OPTIONS = (
-    ("marshmallow", "Clean white & cyan glow"),
+    ("marshmallow", "Clean white & cyan"),
+    ("dracula", "Dark vampire neon"),
+    ("tokyonight", "Cyberpunk midnight"),
+    ("nord", "Arctic cold slate"),
+    ("monokai", "Classic pro dark"),
+    ("gruvbox", "Warm retro groove"),
 )
 
 

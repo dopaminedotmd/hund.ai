@@ -14,7 +14,7 @@ class _FakeClient:
         self.response_text = response_text
         self.completions = []
 
-    def complete(self, messages, tools=None):
+    def complete(self, messages, tools=None, **kwargs):
         self.completions.append(messages)
         # Om sista meddelandet har tool calls, returnera ett svar utan tool_calls för att stoppa loopen
         last_msg = messages[-1]

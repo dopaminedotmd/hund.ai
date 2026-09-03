@@ -18,7 +18,15 @@ def register_defaults(workspace: Path) -> None:
         registry.Tool(
             name="read_file",
             description="Läs en fils innehåll (inom workspace).",
-            parameters={"type": "object", "properties": {"path": _PATH_PARAM}, "required": ["path"]},
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": _PATH_PARAM,
+                    "offset": {"type": "integer", "description": "1-based starting line number (optional, default 1)"},
+                    "limit": {"type": "integer", "description": "Maximum number of lines to read (optional, default 500)"},
+                },
+                "required": ["path"],
+            },
             base_risk="safe",
             handler=handlers["read_file"],
         ),
@@ -53,12 +61,16 @@ def register_defaults(workspace: Path) -> None:
         ),
         registry.Tool(
             name="terminal",
-            description="Kör ett terminalkommando (cwd = workspace).",
+            description="Run a terminal command. cwd (optional): working directory relative to workspace root - use this instead of cd. Prefer python or find over cmd for /r; cmd doubles % in batch contexts.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string"},
-                    "timeout": {"type": "integer", "default": 60},
+                    "command": {"type": "string", "description": "Command to run."},
+                    "cwd": {
+                        "type": "string",
+                        "description": "Optional working directory relative to workspace root. Use this instead of cd.",
+                    },
+                    "timeout": {"type": "integer", "default": 60, "description": "Command timeout in seconds."},
                 },
                 "required": ["command"],
             },
@@ -74,11 +86,8 @@ def register_defaults(workspace: Path) -> None:
     registry.register(registry.Tool(
         name="create_skill",
         description=(
-            "Publish a Hund skill from the current chat. Provide the complete "
-            "schema_version 1 skill object. User confirmation in the chat is "
-            "the authorization; no external authorization token is needed. "
-            "session_id/authorization_id/payload_hash belong to the UI "
-            "stepper flow only and should be omitted from chat calls."
+            "Persist a validated Hund skill draft from the active authoring runtime. "
+            "Requires an active authoring session with consumed exact-draft authorization."
         ),
         parameters={
             "type": "object",
@@ -95,7 +104,7 @@ def register_defaults(workspace: Path) -> None:
                     "description": "Complete schema_version 1 skill payload.",
                 },
             },
-            "required": ["skill"],
+            "required": ["session_id", "authorization_id", "payload_hash", "skill"],
         },
         base_risk="confirm",
         handler=skill_handler(workspace_path=workspace),

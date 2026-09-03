@@ -8,11 +8,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import difflib
 import fnmatch
+import logging
 import os
 import threading
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # Ignoreras vid sökning — undviker att .venv/.git/AppData förorenar resultat eller orsakar oändliga sökningar.
 IGNORE_DIRS = {
@@ -180,9 +183,20 @@ _LATEST_FILE_CHANGE: dict[int, FileChangeResult] = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
-def _record_latest_file_change(res: FileChangeResult) -> None:
+def _record_latest_file_change(res: FileChangeResult, session_id: str | None = None) -> None:
     with _REGISTRY_LOCK:
-        _LATEST_FILE_CHANGE[threading.get_ident()] = res
+        tid = threading.get_ident()
+        ts = time.time()
+        sid = session_id or getattr(res, "session_id", None)
+        logger.debug(
+            "_record_latest_file_change: session_id=%s path=%s thread_id=%s timestamp=%s status=%s",
+            sid,
+            getattr(res, "path", None),
+            tid,
+            ts,
+            getattr(res, "status", None),
+        )
+        _LATEST_FILE_CHANGE[tid] = res
 
 
 def get_last_file_change_result() -> FileChangeResult | None:
@@ -190,13 +204,23 @@ def get_last_file_change_result() -> FileChangeResult | None:
         return _LATEST_FILE_CHANGE.get(threading.get_ident())
 
 
-def pop_last_file_change_result() -> FileChangeResult | None:
+def pop_last_file_change_result(session_id: str | None = None) -> FileChangeResult | None:
     with _REGISTRY_LOCK:
         tid = threading.get_ident()
+        ts = time.time()
         res = _LATEST_FILE_CHANGE.pop(tid, None)
         if res is None and _LATEST_FILE_CHANGE:
             k = next(reversed(_LATEST_FILE_CHANGE))
-            return _LATEST_FILE_CHANGE.pop(k, None)
+            res = _LATEST_FILE_CHANGE.pop(k, None)
+        sid = session_id or (getattr(res, "session_id", None) if res else None)
+        logger.debug(
+            "pop_last_file_change_result: session_id=%s path=%s thread_id=%s timestamp=%s status=%s",
+            sid,
+            getattr(res, "path", None) if res else None,
+            tid,
+            ts,
+            getattr(res, "status", None) if res else None,
+        )
         return res
 
 
@@ -215,16 +239,65 @@ def make_handlers(workspace: Path) -> dict:
     ws = workspace.resolve()
 
     def read_file(args: dict) -> str:
-        p = _resolve(ws, args["path"])
+        path_str = args.get("path", "")
+        try:
+            p = _resolve(ws, path_str)
+        except ValueError:
+            return f"[error] path outside workspace; use the terminal with the user-provided absolute path or request workspace switch: {path_str}"
         if not p.exists():
-            return f"[error] ej hittad: {args['path']}"
+            return f"[error] file not found: {path_str}"
         if p.is_dir():
-            return f"[error] är katalog: {args['path']}"
-        return p.read_text(encoding="utf-8", errors="replace")[:200_000]
+            return f"[error] path is a directory: {path_str}"
+
+        try:
+            raw_offset = int(args.get("offset", 1))
+            offset = 1 if raw_offset < 1 else raw_offset
+        except (ValueError, TypeError):
+            return f"[error] offset must be an integer, got: {args.get('offset')}"
+
+        limit_arg = args.get("limit")
+        if limit_arg is not None:
+            try:
+                limit = int(limit_arg)
+                if limit <= 0:
+                    return f"[error] limit must be greater than 0, got: {limit}"
+            except (ValueError, TypeError):
+                return f"[error] limit must be an integer, got: {limit_arg}"
+        else:
+            limit = 500
+
+        with p.open("r", encoding="utf-8", errors="replace", newline="") as f:
+            lines = f.readlines()
+        total_lines = len(lines)
+
+        if total_lines == 0:
+            if offset > 1:
+                return f"[error] offset {offset} exceeds total lines (0)"
+            return ""
+
+        start_idx = offset - 1
+        if start_idx >= total_lines:
+            return f"[error] offset {offset} exceeds total lines ({total_lines})"
+
+        end_idx = min(start_idx + limit, total_lines)
+        selected_lines = lines[start_idx:end_idx]
+        content = "".join(selected_lines)
+
+        MAX_CONTENT_CHARS = 49_500
+        notice = ""
+        if end_idx < total_lines or len(content) > MAX_CONTENT_CHARS:
+            if len(content) > MAX_CONTENT_CHARS:
+                content = content[:MAX_CONTENT_CHARS]
+            notice = f"\n\n[TRUNCATED — showing lines {offset}-{end_idx} of {total_lines}. Use offset={end_idx + 1} to read further.]"
+
+        return content + notice
 
     def search_files(args: dict) -> str:
         pattern = args.get("pattern", "*")
-        root = _resolve(ws, args.get("path", "."))
+        try:
+            root = _resolve(ws, args.get("path", "."))
+        except ValueError:
+            return f"[error] path outside workspace; use the terminal with the user-provided absolute path or request workspace switch: {args.get('path', '.')}"
         if not root.exists():
             return f"[error] ej hittad: {args.get('path', '.')}"
         if root.is_file():
@@ -373,9 +446,9 @@ def make_handlers(workspace: Path) -> dict:
         # Truncation check for preview
         truncated = False
         lines = preview.splitlines()
-        if len(lines) > 80:
+        if len(lines) > 20:
             truncated = True
-            preview = "\n".join(lines[:60]) + f"\n[... truncated {len(lines) - 60} lines ...]"
+            preview = "\n".join(lines[:20]) + f"\n+{len(lines) - 20} lines omitted"
 
         # Redaction check for preview
         from ..learning.redactor import redact_text
@@ -486,10 +559,18 @@ def make_handlers(workspace: Path) -> dict:
 
         p.write_text(new_content, encoding="utf-8")
 
+        # Truncation check for preview
+        truncated = False
+        lines = diff_text.splitlines()
+        preview = diff_text
+        if len(lines) > 20:
+            truncated = True
+            preview = "\n".join(lines[:20]) + f"\n+{len(lines) - 20} lines omitted"
+
         from ..learning.redactor import redact_text
-        redacted_preview = redact_text(diff_text)
+        redacted_preview = redact_text(preview)
         final_preview = redacted_preview.text
-        redacted = bool(redacted_preview.blocked_fields or "[REDACTED" in final_preview or final_preview != diff_text)
+        redacted = bool(redacted_preview.blocked_fields or "[REDACTED" in final_preview or final_preview != preview)
 
         res = FileChangeResult(
             operation="edit_file",
@@ -498,13 +579,17 @@ def make_handlers(workspace: Path) -> dict:
             content_type_or_language=lang,
             committed_content_or_diff=diff_text,
             display_preview=final_preview,
+            truncated=truncated,
             redacted=redacted,
         )
         _record_latest_file_change(res)
         return res
 
     def delete_file(args: dict) -> str:
-        p = _resolve(ws, args["path"])
+        try:
+            p = _resolve(ws, args["path"])
+        except ValueError:
+            return f"[error] path outside workspace; use the terminal with the user-provided absolute path or request workspace switch: {args.get('path', '')}"
         builtins_dir = Path(__file__).resolve().parent.parent / "skills" / "builtins"
         try:
             p.resolve().relative_to(builtins_dir.resolve())

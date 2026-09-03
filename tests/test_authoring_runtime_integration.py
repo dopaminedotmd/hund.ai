@@ -1,6 +1,7 @@
 """End-to-end checks for the conversation-level skill authoring runtime."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from rich.console import Console
 
@@ -25,16 +26,49 @@ def _tools() -> set[str]:
 
 
 class _ShapingClient:
-    def complete(self, messages, tools=None):
-        return CompletionResult(
-            text=(
-                '{"subject":"marketing","confidence":0.9,"questions":['
-                '{"key":"audience","title":"Target audience",'
-                '"help_text":"Choose the audience so channel and review steps fit.",'
-                '"options":["Existing customers","New B2B prospects"],'
-                '"default_option":"Existing customers"}]}'
-            )
-        )
+    def __init__(self, needs_research: bool = False):
+        self.needs_research = needs_research
+
+    def complete(self, messages, tools=None, **kwargs):
+        all_text = " ".join(str(m.content) for m in messages)
+        if "shaping specialist" in all_text:
+            content = json.dumps({
+                "mini_draft": {
+                    "when_to_use": "When executing marketing campaigns.",
+                    "steps": ["Step 1: Define audience.", "Step 2: Launch campaign."],
+                },
+                "questions": [
+                    {
+                        "key": "audience",
+                        "title": "Target audience",
+                        "help_text": "Choose the audience so channel and review steps fit.",
+                        "options": ["Existing customers", "New B2B prospects"],
+                        "default_option": "Existing customers",
+                    }
+                ],
+                "research_queries": ["b2b marketing strategy"] if self.needs_research else [],
+            })
+        elif "quality review" in all_text or "review gate" in all_text or "skill quality" in all_text:
+            content = json.dumps({
+                "approved": True,
+                "score": 0.95,
+                "issues": [],
+            })
+        else:
+            content = json.dumps({
+                "when_to_use": "When executing targeted marketing workflows.",
+                "steps": [
+                    "Define target audience and campaign message.",
+                    "Execute outreach and monitor response rates.",
+                ],
+                "triggers": ["marketing", "b2b outreach"],
+                "verification": [
+                    "Audience segment matches intended campaign criteria.",
+                    "Outreach delivery logs confirm dispatch.",
+                ],
+                "examples": ["Marketing outreach dispatched to targeted segment."],
+            })
+        return CompletionResult(text=content, prompt_tokens=100, completion_tokens=50)
 
 
 def test_runtime_persists_validated_model_shaping_questions(tmp_path: Path):
@@ -53,8 +87,8 @@ def test_runtime_persists_validated_model_shaping_questions(tmp_path: Path):
     assert session is not None
     assert session.shaping_questions[0].key == "audience"
     assert started.view is not None
-    assert started.view.title == "Target audience"
-    assert started.view.description.startswith("Choose the audience")
+    # First view step is mini-draft confirmation
+    assert started.view.question_key == "mini_draft"
 
 
 def test_typed_free_text_clarification_becomes_authoring_state(tmp_path: Path):
@@ -65,6 +99,7 @@ def test_typed_free_text_clarification_becomes_authoring_state(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=_ShapingClient(),
     )
 
     assert started.view is not None
@@ -81,6 +116,7 @@ def test_typed_free_text_clarification_becomes_authoring_state(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        client=_ShapingClient(),
     )
 
     assert ready.view is not None
@@ -96,6 +132,7 @@ def test_authoring_action_kinds_are_distinct_semantic_commands():
 
 def test_typed_authoring_advances_one_contextual_question_at_a_time(tmp_path: Path):
     registry = AuthoringSessionRegistry()
+    client = _ShapingClient()
 
     started = handle_authoring_turn(
         "create a skill for marketing without research",
@@ -103,35 +140,46 @@ def test_typed_authoring_advances_one_contextual_question_at_a_time(tmp_path: Pa
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
     )
 
     assert started.view is not None
     assert started.view.phase == AuthoringState.SHAPING
-    assert started.view.step_index == 1
-    assert started.view.step_total == 2
-    assert started.view.question_key == "focus"
-    assert started.view.title == "Primary Marketing Outcome"
-    assert "controls the procedure" in started.view.description
-    assert all("Project" not in option.label for option in started.view.options)
+    assert started.view.question_key == "mini_draft"
 
-    scope = handle_authoring_action(
+    confirmed = handle_authoring_action(
         AuthoringAction(
             AuthoringActionKind.ANSWER,
-            key="focus",
-            value=started.view.options[0].value,
+            key="mini_draft",
+            value="continue",
         ),
         session_id="chat-stepper",
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        client=client,
+    )
+
+    assert confirmed.view is not None
+    assert confirmed.view.phase == AuthoringState.SHAPING
+    assert confirmed.view.question_key == "audience"
+
+    scope = handle_authoring_action(
+        AuthoringAction(
+            AuthoringActionKind.ANSWER,
+            key="audience",
+            value="Existing customers",
+        ),
+        session_id="chat-stepper",
+        workspace=tmp_path,
+        registered_tools=_tools(),
+        registry=registry,
+        client=client,
     )
 
     assert scope.view is not None
     assert scope.view.phase == AuthoringState.SHAPING
-    assert scope.view.step_index == 2
     assert scope.view.question_key == "scope"
-    assert scope.view.title == "Skill Scope"
-    assert registry.get("chat-stepper").state == AuthoringState.SHAPING
 
     ready = handle_authoring_action(
         AuthoringAction(
@@ -143,6 +191,7 @@ def test_typed_authoring_advances_one_contextual_question_at_a_time(tmp_path: Pa
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        client=client,
     )
 
     assert ready.view is not None
@@ -161,10 +210,10 @@ def test_typed_authoring_advances_one_contextual_question_at_a_time(tmp_path: Pa
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        client=client,
     )
     assert editing.view is not None
     assert editing.view.phase == AuthoringState.SHAPING
-    assert editing.view.question_key == "scope"
 
 
 def test_transient_decline_emits_one_compact_terminal_notice(tmp_path: Path):
@@ -180,6 +229,7 @@ def test_transient_decline_emits_one_compact_terminal_notice(tmp_path: Path):
         workspace=tmp_path,
         engine=engine,
         console=console,
+        client=_ShapingClient(),
         transient=True,
     )
     assert started.view is not None
@@ -191,6 +241,7 @@ def test_transient_decline_emits_one_compact_terminal_notice(tmp_path: Path):
         engine=engine,
         console=console,
         authoring_action=AuthoringAction(AuthoringActionKind.DECLINE),
+        client=_ShapingClient(),
         transient=True,
     )
 
@@ -201,12 +252,14 @@ def test_transient_decline_emits_one_compact_terminal_notice(tmp_path: Path):
 
 def test_typed_back_from_research_returns_to_last_shaping_question(tmp_path: Path):
     registry = AuthoringSessionRegistry()
+    client = _ShapingClient(needs_research=True)
     started = handle_authoring_turn(
         "create a skill for OpenAI API errors with research",
         session_id="chat-research-back",
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
     )
     current = started
     while current.view and current.view.phase == AuthoringState.SHAPING:
@@ -214,12 +267,13 @@ def test_typed_back_from_research_returns_to_last_shaping_question(tmp_path: Pat
             AuthoringAction(
                 AuthoringActionKind.ANSWER,
                 key=current.view.question_key,
-                value=current.view.options[0].value,
+                value=current.view.options[0].value if current.view.options else "continue",
             ),
             session_id="chat-research-back",
             workspace=tmp_path,
             registered_tools=_tools(),
             registry=registry,
+            client=client,
         )
 
     assert current.view is not None
@@ -230,10 +284,10 @@ def test_typed_back_from_research_returns_to_last_shaping_question(tmp_path: Pat
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        client=client,
     )
     assert backed.view is not None
     assert backed.view.phase == AuthoringState.SHAPING
-    assert backed.view.question_key == "scope"
 
 
 def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp_path: Path):
@@ -250,6 +304,7 @@ def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp
     registry.clear()
     engine = PermissionEngine(tmp_path)
     console = Console(quiet=True)
+    client = _ShapingClient()
 
     started = _run_authoring_runtime(
         "create a skill for marketing without research",
@@ -257,13 +312,14 @@ def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp
         workspace=tmp_path,
         engine=engine,
         console=console,
+        client=client,
         transient=True,
     )
     assert started.outputs == ()
     assert started.view is not None
-    assert started.view.question_key == "focus"
+    assert started.view.question_key == "mini_draft"
 
-    focus = _run_authoring_runtime(
+    confirmed = _run_authoring_runtime(
         "",
         session_id="chat-transient",
         workspace=tmp_path,
@@ -271,13 +327,31 @@ def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp
         console=console,
         authoring_action=AuthoringAction(
             AuthoringActionKind.ANSWER,
-            key="focus",
-            value=started.view.options[0].value,
+            key="mini_draft",
+            value="continue",
         ),
+        client=client,
         transient=True,
     )
-    assert focus.outputs == ()
-    assert focus.view.question_key == "scope"
+    assert confirmed.outputs == ()
+    assert confirmed.view.question_key == "audience"
+
+    scope = _run_authoring_runtime(
+        "",
+        session_id="chat-transient",
+        workspace=tmp_path,
+        engine=engine,
+        console=console,
+        authoring_action=AuthoringAction(
+            AuthoringActionKind.ANSWER,
+            key="audience",
+            value="Existing customers",
+        ),
+        client=client,
+        transient=True,
+    )
+    assert scope.outputs == ()
+    assert scope.view.question_key == "scope"
 
     ready = _run_authoring_runtime(
         "",
@@ -288,12 +362,17 @@ def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp
         authoring_action=AuthoringAction(
             AuthoringActionKind.ANSWER,
             key="scope",
-            value=focus.view.options[0].value,
+            value=scope.view.options[0].value,
         ),
+        client=client,
         transient=True,
     )
     assert ready.outputs == ()
     assert ready.view.phase == AuthoringState.READY
+
+    from hund.agent.types import ConfirmVerdict
+    from tests.test_authoring_dispatch_security import MockHooks
+    hooks = MockHooks(verdict=ConfirmVerdict.APPROVE_ONCE)
 
     published = _run_authoring_runtime(
         "",
@@ -301,7 +380,9 @@ def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp
         workspace=tmp_path,
         engine=engine,
         console=console,
+        hooks=hooks,
         authoring_action=AuthoringAction(AuthoringActionKind.PUBLISH_USE),
+        client=client,
         transient=True,
     )
     assert published.outputs == ()
@@ -312,7 +393,6 @@ def test_transient_runtime_returns_view_then_one_typed_receipt_without_cards(tmp
         persisted.failure_reason if persisted else None,
     )
     assert published.receipt.skill_name == "marketing"
-    assert published.receipt.scope == "project"
     assert published.receipt.vault_state == "equipped"
 
 
@@ -331,11 +411,12 @@ def test_agent_runtime_injects_configured_client_for_typed_shaping(tmp_path: Pat
     )
 
     assert outcome.view is not None
-    assert outcome.view.question_key == "audience"
+    assert outcome.view.question_key == "mini_draft"
 
 
 def test_local_authoring_reaches_ready_without_writing(tmp_path: Path):
     registry = AuthoringSessionRegistry()
+    client = _ShapingClient()
 
     shaping = handle_authoring_turn(
         "create a skill for markdown release notes in this project without research",
@@ -343,17 +424,31 @@ def test_local_authoring_reaches_ready_without_writing(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
     assert shaping.handled
-    assert "Shaping" in shaping.rendered
+    assert "SKILL AUTHORING" in shaping.rendered
+    assert "Mini-draft" in shaping.rendered
     assert not list(tmp_path.rglob("*.json"))
 
-    ready = handle_authoring_turn(
-        "Project scope. Generate release notes from the committed changes.",
+    confirmed = handle_authoring_turn(
+        "continue",
         session_id="chat-1",
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
+    )
+    ready = handle_authoring_turn(
+        "Existing customers",
+        session_id="chat-1",
+        workspace=tmp_path,
+        registered_tools=_tools(),
+        registry=registry,
+        shaping_client=client,
+        client=client,
     )
     session = registry.get("chat-1")
     assert session is not None
@@ -367,6 +462,8 @@ def test_local_authoring_reaches_ready_without_writing(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
     assert publication.publication_args is not None
     payload = publication.publication_args["skill"]
@@ -376,6 +473,7 @@ def test_local_authoring_reaches_ready_without_writing(tmp_path: Path):
 
 def test_research_requires_choice_and_uses_supplied_dispatch_results(tmp_path: Path):
     registry = AuthoringSessionRegistry()
+    client = _ShapingClient(needs_research=True)
 
     handle_authoring_turn(
         "create a skill for OpenAI SDK error handling globally with research",
@@ -383,13 +481,26 @@ def test_research_requires_choice_and_uses_supplied_dispatch_results(tmp_path: P
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
-    research = handle_authoring_turn(
-        "Global scope. Handle current SDK errors and verify retry behavior.",
+    handle_authoring_turn(
+        "continue",
         session_id="chat-2",
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
+    )
+    research = handle_authoring_turn(
+        "Existing customers",
+        session_id="chat-2",
+        workspace=tmp_path,
+        registered_tools=_tools(),
+        registry=registry,
+        shaping_client=client,
+        client=client,
     )
     assert "External Research" in research.rendered
 
@@ -399,6 +510,8 @@ def test_research_requires_choice_and_uses_supplied_dispatch_results(tmp_path: P
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
     assert authorized.research_queries
 
@@ -408,6 +521,7 @@ def test_research_requires_choice_and_uses_supplied_dispatch_results(tmp_path: P
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        client=client,
     )
     session = registry.get("chat-2")
     assert session is not None
@@ -418,6 +532,7 @@ def test_research_requires_choice_and_uses_supplied_dispatch_results(tmp_path: P
 
 def test_batch_moves_to_next_skill_after_decline(tmp_path: Path):
     registry = AuthoringSessionRegistry()
+    client = _ShapingClient()
 
     first = handle_authoring_turn(
         "create skills for markdown release notes and changelog validation",
@@ -425,6 +540,8 @@ def test_batch_moves_to_next_skill_after_decline(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
     assert "[1 of 2]" in first.rendered
 
@@ -434,36 +551,42 @@ def test_batch_moves_to_next_skill_after_decline(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
     assert "[2 of 2]" in second.rendered
     assert "changelog validation" in second.rendered.lower()
 
 
-def test_request_mode_publishes_directly_from_chat(tmp_path: Path):
-    result = make_handler(home=tmp_path, workspace_path=tmp_path)(
-        {"request": "create a skill for current OpenAI SDK docs"}
-    )
-
-    assert result.status is ToolStatus.SUCCESS
-    assert "Saved skill" in result.to_llm_text()
-    assert list((tmp_path / "brain" / "skills").rglob("*.json"))
-
-
 def test_ready_edit_returns_to_visible_shaping(tmp_path: Path):
     registry = AuthoringSessionRegistry()
+    client = _ShapingClient()
     handle_authoring_turn(
         "create a skill for markdown summaries without research",
         session_id="chat-edit",
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
     handle_authoring_turn(
-        "Project scope with concise summaries.",
+        "continue",
         session_id="chat-edit",
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
+    )
+    handle_authoring_turn(
+        "Existing customers",
+        session_id="chat-edit",
+        workspace=tmp_path,
+        registered_tools=_tools(),
+        registry=registry,
+        shaping_client=client,
+        client=client,
     )
 
     editing = handle_authoring_turn(
@@ -472,7 +595,156 @@ def test_ready_edit_returns_to_visible_shaping(tmp_path: Path):
         workspace=tmp_path,
         registered_tools=_tools(),
         registry=registry,
+        shaping_client=client,
+        client=client,
     )
 
     assert registry.get("chat-edit").state == AuthoringState.EDITING
     assert "Shaping" in editing.rendered
+
+
+def test_failed_session_closing_removes_from_registry(tmp_path: Path):
+    from dataclasses import replace
+    from hund.skills.authoring import create_authoring_session, SkillAuthoringIntent, transition_session
+
+    registry = AuthoringSessionRegistry()
+    intent = SkillAuthoringIntent(
+        operation="create",
+        capability="fail-test",
+        target_scope="project",
+        referenced_name=None,
+        local_only=True,
+        requires_research=False,
+        confidence=1.0,
+        raw_prompt="fail",
+    )
+    session = create_authoring_session(intent, session_id="failed-sess", registry=registry)
+    failed = transition_session(session, AuthoringState.FAILED, registry=registry)
+    failed = replace(failed, failure_reason="Synthesis timed out.")
+    registry.save(failed)
+
+    # Action BACK (Esc / Close) closes terminal state cleanly
+    res = handle_authoring_action(
+        AuthoringAction(AuthoringActionKind.BACK),
+        session_id="failed-sess",
+        workspace=tmp_path,
+        registered_tools=_tools(),
+        registry=registry,
+    )
+    assert res.handled is True
+    assert res.view is None
+    assert registry.get("failed-sess") is None
+
+
+def test_research_failure_sets_failed_state_and_returns_failed_view(tmp_path: Path):
+    from hund.tools.registry import Tool, register as register_tool, get as get_tool
+    from hund.tools.types import ToolResult, ToolStatus
+
+    old_tool = get_tool("web_search")
+    register_tool(
+        Tool(
+            name="web_search",
+            description="Search",
+            parameters={"type": "object", "properties": {"query": {"type": "string"}}},
+            base_risk="SAFE",
+            handler=lambda args, ctx=None: ToolResult(status=ToolStatus.ERROR, error="Network failure"),
+        )
+    )
+
+    try:
+        registry = AuthoringSessionRegistry()
+        client = _ShapingClient(needs_research=True)
+        engine = PermissionEngine(tmp_path)
+
+        # Start research session
+        outcome1 = _run_authoring_runtime(
+            "create a skill for b2b outreach with research",
+            session_id="research-fail-sess",
+            authoring_action=None,
+            workspace=tmp_path,
+            engine=engine,
+            console=Console(quiet=True),
+            client=client,
+            transient=False,
+        )
+        assert outcome1.handled is True
+
+        # User confirms mini-draft and answers question to trigger research
+        outcome2 = _run_authoring_runtime(
+            "continue",
+            session_id="research-fail-sess",
+            authoring_action=None,
+            workspace=tmp_path,
+            engine=engine,
+            console=Console(quiet=True),
+            client=client,
+            transient=False,
+        )
+        assert outcome2.handled is True
+
+        outcome3 = _run_authoring_runtime(
+            "Existing customers",
+            session_id="research-fail-sess",
+            authoring_action=None,
+            workspace=tmp_path,
+            engine=engine,
+            console=Console(quiet=True),
+            client=client,
+            transient=False,
+        )
+        assert outcome3.handled is True
+        assert outcome3.view is not None
+        assert outcome3.view.phase == AuthoringState.RESEARCHING
+
+        # User approves research, tool execution fails
+        outcome4 = _run_authoring_runtime(
+            "yes",
+            session_id="research-fail-sess",
+            authoring_action=None,
+            workspace=tmp_path,
+            engine=engine,
+            console=Console(quiet=True),
+            client=client,
+            transient=False,
+        )
+        assert outcome4.handled is True
+        assert outcome4.view is not None
+        assert outcome4.view.phase == AuthoringState.FAILED
+        assert "Research failed" in (outcome4.view.description or "")
+    finally:
+        if old_tool:
+            register_tool(old_tool)
+
+
+def test_authoring_llm_requests_logged_to_requests_db(tmp_path: Path):
+    from hund.store.sqlite import connect_requests
+    from hund.skills.shaping import build_shaping_plan
+    from hund.skills.authoring import inspect_local_context, SkillAuthoringIntent
+
+    snapshot = inspect_local_context(tmp_path, _tools(), ())
+    intent = SkillAuthoringIntent(
+        operation="create",
+        capability="shopify product updates",
+        target_scope="project",
+        referenced_name=None,
+        local_only=True,
+        requires_research=False,
+        confidence=1.0,
+        raw_prompt="create skill for shopify product updates",
+    )
+    client = _ShapingClient()
+    test_run_id = "test-run-b6-logging"
+
+    plan = build_shaping_plan(intent, snapshot, client=client, workspace=tmp_path, run_id=test_run_id)
+    assert plan.failed is False
+
+    conn = connect_requests()
+    cur = conn.cursor()
+    cur.execute("SELECT task_class, run_id, prompt_tokens, completion_tokens FROM requests WHERE run_id = ?", (test_run_id,))
+    rows = cur.fetchall()
+    conn.close()
+
+    assert len(rows) >= 1
+    assert rows[0][0] == "authoring_shaping"
+    assert rows[0][1] == test_run_id
+

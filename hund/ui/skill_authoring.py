@@ -35,9 +35,26 @@ def render_authoring_stepper(
 
     if view.phase == AuthoringState.READY:
         name = view.skill_name or view.subject
-        heading = f"SKILL READY · {name}"
+        heading = f"SKILL READY · [{name}]"
     elif view.phase == AuthoringState.SHAPING:
-        heading = f"SKILL AUTHORING · Shaping {view.step_index}/{view.step_total}"
+        if view.question_key in ("mini_draft", "correct_mini_draft"):
+            heading = "SKILL AUTHORING · Mini-draft"
+        elif view.question_key == "clarification":
+            heading = "SKILL AUTHORING · Clarification"
+        elif view.question_key == "confirmed":
+            heading = "SKILL AUTHORING · Shaping"
+        elif getattr(view, "step_total", 0) > 0:
+            heading = f"SKILL AUTHORING · Supplementary Question {view.step_index} of {view.step_total}"
+        else:
+            heading = f"SKILL AUTHORING · {view.title}"
+    elif view.phase == AuthoringState.RESEARCHING:
+        heading = "SKILL AUTHORING · Research"
+    elif view.phase == AuthoringState.QUALITY_CHECKING:
+        heading = "SKILL AUTHORING · Quality checking"
+    elif view.phase == AuthoringState.FAILED:
+        heading = "SKILL AUTHORING · Failed"
+    elif view.phase == AuthoringState.CANCELLED:
+        heading = "SKILL AUTHORING · Cancelled"
     else:
         heading = f"SKILL AUTHORING · {view.title}"
     lines = [_fit(f"{indent}{diamond}  {heading}", width), f"{indent}{rail}"]
@@ -46,19 +63,41 @@ def render_authoring_stepper(
         if not text:
             lines.append(f"{indent}{rail}")
             return
-        for part in wrap_cells(text, body_width):
-            lines.append(_fit(f"{prefix}{part}", width))
+        for paragraph in text.splitlines():
+            if not paragraph:
+                lines.append(f"{indent}{rail}")
+                continue
+            import re
+            lead_indent = ""
+            if re.match(r"^[>›]\s+", paragraph):
+                lead_indent = "  "
+            else:
+                m_lead = re.match(r"^(\s+)", paragraph)
+                if m_lead:
+                    lead_indent = m_lead.group(1)
+            parts = wrap_cells(paragraph, body_width)
+            for idx, part in enumerate(parts):
+                if idx > 0 and lead_indent and not part.startswith(lead_indent):
+                    part = lead_indent + part
+                lines.append(_fit(f"{prefix}{part}", width))
 
     if view.phase == AuthoringState.READY:
         if view.description:
             add(view.description)
             add()
         if getattr(view, "scope", ""):
-            add(f"SCOPE  {view.scope.title()}")
+            add(f"SCOPE        {view.scope.title()}")
         for limitation in getattr(view, "limitations", ())[:2]:
-            add(f"LIMITATION  {limitation}")
+            add(f"LIMITATION   {limitation}")
+        if getattr(view, "lineage_text", ""):
+            add(f"LINEAGE      {view.lineage_text}")
         add()
         add("Choose what happens to this verified draft:")
+    elif view.phase in (AuthoringState.FAILED, AuthoringState.CANCELLED):
+        if getattr(view, "description", ""):
+            add(view.description)
+        else:
+            add(view.title)
     else:
         add(view.title)
         if getattr(view, "description", ""):
@@ -71,15 +110,23 @@ def render_authoring_stepper(
         for index, option in enumerate(view.options):
             focus = marker if index == selected else " "
             add(f"{focus} {option.label}")
-    elif view.question_key == "clarification":
+    elif view.question_key in ("clarification", "correct_mini_draft"):
         add("Type your answer in the input field.")
+    elif view.phase in (AuthoringState.FAILED, AuthoringState.CANCELLED, AuthoringState.PUBLISHED):
+        pass
     else:
         add("Working...")
 
-    if view.question_key == "clarification":
+    if view.question_key == "mini_draft":
+        controls = "Up/Down Select · Enter Continue · Esc Cancel" if ascii_only else "↑↓ Select · Enter Continue · Esc Cancel"
+    elif view.question_key in ("clarification", "correct_mini_draft"):
         controls = "Enter Continue · Esc Back"
+    elif view.phase == AuthoringState.READY:
+        controls = "Up/Down Select · Enter Confirm · Esc Cancel" if ascii_only else "↑↓ Select · Enter Confirm · Esc Cancel"
+    elif view.phase in (AuthoringState.FAILED, AuthoringState.CANCELLED):
+        controls = "Enter Close · Esc Close"
     else:
-        controls = "Up/Down Select · Enter Confirm · Esc Back" if ascii_only else "↑↓ Select · Enter Confirm · Esc Back"
+        controls = "Up/Down Select · Enter Continue · Esc Back" if ascii_only else "↑↓ Select · Enter Continue · Esc Back"
     lines.append(_fit(f"{indent}{end}  {controls}", width))
     return "\n".join(lines)
 
@@ -95,12 +142,12 @@ def render_publication_receipt(
     diamond = "#" if ascii_only else "◆"
     rail = "|" if ascii_only else "│"
     end = "`" if ascii_only else "└"
-    action = "UPDATED" if receipt.action == "updated" else "CREATED"
-    if receipt.scope == "project":
+    action = "UPDATED" if getattr(receipt, "action", "created") == "updated" else "CREATED"
+    if getattr(receipt, "scope", "") == "project":
         location = "this project"
     else:
         location = "all projects"
-    availability = "Active in" if receipt.vault_state == "equipped" else "Saved for"
+    availability = "Active in" if getattr(receipt, "vault_state", "equipped") == "equipped" else "Saved for"
     lines = [
         f"  {diamond}  SKILL {action} · {receipt.skill_name}",
         f"  {rail}  {availability} {location} · Version {receipt.artifact_version}",
@@ -111,16 +158,16 @@ def render_publication_receipt(
 
 def render_authoring_shaping(
     session: AuthoringSession,
-    questions: Sequence[ShapingQuestion] = (),
+    questions: Sequence[Any] = (),
     width: int = 80,
     *,
     ascii_only: bool = False,
+    compact: bool = False,
 ) -> str:
-    """Render the in-flight Shaping card with context summary and max 3 gap questions."""
+    """Render active shaping turn with questions."""
     width = max(32, width)
-    compact = width < 60
     rail = "|" if ascii_only else "│"
-    diamond = "<>" if ascii_only else "◇"
+    diamond = "#" if ascii_only else "◆"
     end = "`" if ascii_only else "└"
     indent = "  "
     prefix = f"{indent}{rail}  "
@@ -132,9 +179,20 @@ def render_authoring_shaping(
         if not text:
             lines.append(f"{indent}{rail}")
             return
-        wrapped = wrap_cells(text, body_width)
-        for part in wrapped:
-            lines.append(f"{prefix}{part}")
+        for paragraph in text.splitlines():
+            if not paragraph:
+                lines.append(f"{indent}{rail}")
+                continue
+            import re
+            lead_indent = ""
+            m_lead = re.match(r"^(\s+)", paragraph)
+            if m_lead:
+                lead_indent = m_lead.group(1)
+            parts = wrap_cells(paragraph, body_width)
+            for idx, part in enumerate(parts):
+                if idx > 0 and lead_indent and not part.startswith(lead_indent):
+                    part = lead_indent + part
+                lines.append(f"{prefix}{part}")
 
     add(f"Subject    {session.request_subject}")
     add(f"Scope      {session.target_scope.title()}")
@@ -276,6 +334,14 @@ def render_authoring_ready(
         if session.draft_hash:
             short_hash = session.draft_hash[:16] + "..." if len(session.draft_hash) > 16 else session.draft_hash
             add(f"DRAFT HASH   {short_hash}")
+        event_id = skill.created_from_event_ids[0] if skill.created_from_event_ids else None
+        event_str = f"event {event_id}" if event_id else "event pending"
+        attempts = max(1, session.gate_attempts)
+        first_pass_str = f"first pass: {'yes' if attempts == 1 else 'no'}"
+        r_count = len(session.research_sources)
+        research_str = f"research: {r_count} {'source' if r_count == 1 else 'sources'}"
+        lineage_line = f"{event_str} · attempt {attempts} · {first_pass_str} · {research_str}"
+        add(f"LINEAGE      {lineage_line}")
         add()
         add("Triggers:")
         for t in skill.triggers:
@@ -293,9 +359,9 @@ def render_authoring_ready(
 
     add()
     if width >= 100:
-        action_bar = "[u] Publish & use now     [v] Publish to vault     [e] Edit     [d] Decline     [f] Fix with Hund     [i] Details"
+        action_bar = "[u] Publish & use now   [v] Save to vault   [e] Edit draft   [d] Decline   [f] Fix with Hund   [i] Details"
     elif width >= 60:
-        action_bar = "[u] Publish & use  [v] Vault  [e] Edit  [d] Decline  [f] Fix  [i] Details"
+        action_bar = "[u] Publish & use now  [v] Save to vault  [e] Edit draft  [d] Decline"
     else:
         action_bar = "[u] Use now  [v] Vault  [e] Edit  [d] Decline"
 

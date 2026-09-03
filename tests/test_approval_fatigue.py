@@ -5,7 +5,13 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from hund.agent.safety import PermissionEngine
-from hund.agent.tool_dispatch import _SESSION_ALLOWLIST, dispatch_tool_call
+from hund.agent.tool_dispatch import (
+    _PREFLIGHT_ALLOWLIST,
+    _SESSION_ALLOWLIST,
+    _TURN_TERMINAL_ALLOWLIST,
+    dispatch_tool_call,
+    preflight_check_tool_calls,
+)
 from hund.agent.types import ConfirmRequest, ConfirmVerdict
 from hund.ui.confirmation import confirmation_options
 from hund.ui.fullscreen import _confirm_options
@@ -17,8 +23,12 @@ from hund.tools.types import ToolKind, create_success_result
 @pytest.fixture(autouse=True)
 def clear_allowlist():
     _SESSION_ALLOWLIST.clear()
+    _TURN_TERMINAL_ALLOWLIST.clear()
+    _PREFLIGHT_ALLOWLIST.clear()
     yield
     _SESSION_ALLOWLIST.clear()
+    _TURN_TERMINAL_ALLOWLIST.clear()
+    _PREFLIGHT_ALLOWLIST.clear()
 
 
 def _terminal_call(command: str) -> dict:
@@ -181,3 +191,91 @@ def test_confirmation_display_redacts_and_bounds_untrusted_text():
     assert "\n" not in detail
     assert len(detail) <= 160
     assert "\n" not in reason
+
+
+def test_preflight_check_cancels_turn_when_denied(tmp_path):
+    register_defaults(tmp_path)
+    engine = PermissionEngine(tmp_path)
+    console = MagicMock()
+    hooks = MagicMock()
+    hooks.confirm.return_value = ConfirmVerdict.DENY
+
+    tool_calls = [
+        {
+            "id": "tc-1",
+            "function": {
+                "name": "write_file",
+                "arguments": json.dumps({"path": "halsning.html", "content": "<h1>Hej</h1>"}),
+            },
+        },
+        _terminal_call("start halsning.html"),
+    ]
+
+    # Pre-flight check detects the terminal CONFIRM call and prompts
+    ok = preflight_check_tool_calls(
+        tool_calls, engine, console, hooks=hooks, session_id="sess-1", turn_id="turn-1"
+    )
+    assert ok is False
+    hooks.confirm.assert_called_once()
+    assert hooks.confirm.call_args.args[0].tool_name == "terminal"
+
+
+def test_preflight_check_allows_turn_and_avoids_duplicate_prompt(tmp_path):
+    register_defaults(tmp_path)
+    engine = PermissionEngine(tmp_path)
+    console = MagicMock()
+    hooks = MagicMock()
+    hooks.confirm.return_value = ConfirmVerdict.APPROVE_ONCE
+
+    tool_calls = [
+        {
+            "id": "tc-1",
+            "function": {
+                "name": "write_file",
+                "arguments": json.dumps({"path": "halsning.html", "content": "<h1>Hej</h1>"}),
+            },
+        },
+        _terminal_call("powershell -NoProfile -Command Write-Output 1"),
+    ]
+
+    ok = preflight_check_tool_calls(
+        tool_calls, engine, console, hooks=hooks, session_id="sess-1", turn_id="turn-1"
+    )
+    assert ok is True
+    hooks.confirm.assert_called_once()
+
+    # When tools are subsequently dispatched, terminal does not prompt a second time
+    hooks.confirm.reset_mock()
+    hooks.confirm.side_effect = AssertionError("Should not prompt twice")
+    with patch("hund.agent.tool_dispatch.registry.call_typed", return_value=create_success_result(ToolKind.EXECUTION, "ok")):
+        out1 = dispatch_tool_call(tool_calls[0], engine, console, hooks=hooks, session_id="sess-1", turn_id="turn-1")
+        out2 = dispatch_tool_call(tool_calls[1], engine, console, hooks=hooks, session_id="sess-1", turn_id="turn-1")
+    assert out1 == "ok"
+    assert out2 == "ok"
+    hooks.confirm.assert_not_called()
+
+
+def test_preflight_check_safe_only_turn_does_not_prompt(tmp_path):
+    register_defaults(tmp_path)
+    engine = PermissionEngine(tmp_path)
+    console = MagicMock()
+    hooks = MagicMock()
+    hooks.confirm.side_effect = AssertionError("Safe turn should never prompt confirm")
+
+    tool_calls = [
+        {
+            "id": "tc-1",
+            "function": {
+                "name": "write_file",
+                "arguments": json.dumps({"path": "halsning.html", "content": "<h1>Hej</h1>"}),
+            },
+        },
+        _terminal_call("ls"),
+    ]
+
+    ok = preflight_check_tool_calls(
+        tool_calls, engine, console, hooks=hooks, session_id="sess-1", turn_id="turn-1"
+    )
+    assert ok is True
+    hooks.confirm.assert_not_called()
+

@@ -25,6 +25,8 @@ def _fit_width(line: str, width: int) -> str:
     return slice_cells(line, width - 1)[0] + "…"
 
 
+
+
 class ActivityStatus(str, Enum):
     RUNNING = "running"
     COMPLETE = "complete"
@@ -44,6 +46,16 @@ class ToolActivity:
     detail: str = ""
     required_confirmation: bool = False
     security_relevant: bool | None = None
+    attached_diff_lines: tuple[str, ...] | None = None
+    attached_error_lines: tuple[str, ...] | None = None
+    attached_diff_language: str = ""
+    subagent_depth: int = 0
+
+
+@dataclass(frozen=True)
+class NarrationActivity:
+    text: str
+    event_id: int = 0
 
 
 def activity_group(tool_name: str, *, verification: bool = False) -> str:
@@ -104,7 +116,11 @@ def describe_tool(tool_name: str, args: dict | None = None, *, max_len: int = 45
                 return "ran targeted tests"
         except Exception:
             pass
-        return f"ran {sanitize(cmd, 'command')}"
+        cmd_lines = [l.strip() for l in cmd.splitlines() if l.strip()]
+        summary_cmd = cmd_lines[0] if cmd_lines else ""
+        if len(cmd_lines) > 1:
+            summary_cmd += " …"
+        return f"ran {sanitize(summary_cmd, 'command')}"
     if tool_name == "web_search":
         q = sanitize(args.get("query"), "")
         return f"searched the web for {q}" if q else "searched official sources"
@@ -131,16 +147,30 @@ class ActivityTimeline:
     """Reduce tool hook events and render a bounded, replaceable activity block."""
 
     def __init__(self) -> None:
-        self._events: list[ToolActivity] = []
+        self._events: list[ToolActivity | NarrationActivity] = []
         self._next_id = 1
 
     @property
-    def events(self) -> tuple[ToolActivity, ...]:
+    def events(self) -> tuple[ToolActivity | NarrationActivity, ...]:
         return tuple(self._events)
 
     def clear(self) -> None:
         self._events.clear()
         self._next_id = 1
+
+    def add_narration(self, text: str) -> int:
+        """Record a model narration event chronologically into the activity timeline."""
+        if not text or not text.strip():
+            return 0
+        safe_text = redact_text(text.strip()).text
+        if self._events and isinstance(self._events[-1], NarrationActivity):
+            event_id = self._events[-1].event_id
+            self._events[-1] = NarrationActivity(text=safe_text, event_id=event_id)
+            return event_id
+        event_id = self._next_id
+        self._next_id += 1
+        self._events.append(NarrationActivity(text=safe_text, event_id=event_id))
+        return event_id
 
     def start(
         self,
@@ -150,6 +180,7 @@ class ActivityTimeline:
         group: str | None = None,
         required_confirmation: bool = False,
         security_relevant: bool | None = None,
+        subagent_depth: int = 0,
     ) -> int:
         event_id = self._next_id
         self._next_id += 1
@@ -162,6 +193,7 @@ class ActivityTimeline:
                 description=safe_desc,
                 required_confirmation=required_confirmation,
                 security_relevant=security_relevant,
+                subagent_depth=subagent_depth,
             )
         )
         return event_id
@@ -169,8 +201,38 @@ class ActivityTimeline:
     def mark_confirmation(self, event_id: int) -> None:
         """Mark a specific tool activity as having required user confirmation."""
         for index, event in enumerate(self._events):
-            if event.event_id == event_id:
+            if isinstance(event, ToolActivity) and event.event_id == event_id:
                 self._events[index] = replace(event, required_confirmation=True)
+                return
+
+    def attach_diff(
+        self,
+        event_id: int,
+        diff_lines: list[str] | tuple[str, ...],
+        language: str = "",
+    ) -> None:
+        """Attach formatted diff lines directly to an existing tool event."""
+        for index, event in enumerate(self._events):
+            if isinstance(event, ToolActivity) and event.event_id == event_id:
+                self._events[index] = replace(
+                    event,
+                    attached_diff_lines=tuple(diff_lines),
+                    attached_diff_language=language,
+                )
+                return
+
+    def attach_error(
+        self,
+        event_id: int,
+        error_lines: list[str] | tuple[str, ...],
+    ) -> None:
+        """Attach error lines directly to an existing tool event."""
+        for index, event in enumerate(self._events):
+            if isinstance(event, ToolActivity) and event.event_id == event_id:
+                self._events[index] = replace(
+                    event,
+                    attached_error_lines=tuple(error_lines),
+                )
                 return
 
     def finish(
@@ -183,124 +245,28 @@ class ActivityTimeline:
     ) -> None:
         safe_detail = redact_text(detail).text if detail else ""
         for index, event in enumerate(self._events):
-            if event.event_id == event_id:
+            if isinstance(event, ToolActivity) and event.event_id == event_id:
+                # Invariant: An ERROR status cannot be downgraded back to COMPLETE
+                new_status = status
+                if event.status is ActivityStatus.ERROR and status is ActivityStatus.COMPLETE:
+                    new_status = ActivityStatus.ERROR
                 self._events[index] = replace(
                     event,
-                    status=status,
+                    status=new_status,
                     duration_s=max(0.0, duration_s),
-                    detail=safe_detail,
+                    detail=safe_detail or event.detail,
                 )
                 return
 
-    def render_lines(self, width: int | None = None) -> list[str]:
-        if not self._events:
-            return []
-
-        # 8-point Fast-Turn Collapse constraint check (TUI Facit §5.7)
-        if len(self._events) == 1:
-            ev = self._events[0]
-            is_readonly = ev.group in {"read", "inspection", "web_read", "search", "web_search"}
-            is_safe_complete = ev.status is ActivityStatus.COMPLETE
-            is_fast = ev.duration_s <= 0.70
-            is_not_verif = ev.group != "verification"
-            is_not_error = ev.status not in {ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED}
-            no_confirm = not ev.required_confirmation
-            is_explicitly_not_security = (ev.security_relevant is False)
-            no_detail = not ev.detail
-
-            if (
-                is_readonly
-                and is_safe_complete
-                and is_fast
-                and is_not_verif
-                and is_not_error
-                and no_confirm
-                and is_explicitly_not_security
-                and no_detail
-            ):
-                dur_str = f"{ev.duration_s:.1f}s" if ev.duration_s > 0 else "0.1s"
-                desc = redact_text(ev.description).text
-                return [f"  hund {desc}.            {dur_str}"]
-
-        # Presentation-only consecutive event grouping
-        raw_items: list[tuple[str, str, float, ActivityStatus, str]] = []
-        # (symbol, desc, duration, status, detail)
-
-        i = 0
-        n = len(self._events)
-        while i < n:
-            ev = self._events[i]
-
-            # Group consecutive compatible completed events in "read", "inspection", "search", "web_read", "web_search"
-            if (
-                ev.status is ActivityStatus.COMPLETE
-                and ev.group in {"read", "inspection", "search", "web_read", "web_search"}
-            ):
-                group_name = ev.group
-                group_events = [ev]
-                j = i + 1
-                while j < n and self._events[j].status is ActivityStatus.COMPLETE and self._events[j].group == group_name:
-                    group_events.append(self._events[j])
-                    j += 1
-
-                if len(group_events) > 1:
-                    tot_dur = sum(e.duration_s for e in group_events)
-                    if group_name in {"read", "inspection"}:
-                        desc = f"read relevant files    {len(group_events)} files"
-                    elif group_name == "search":
-                        desc = f"searched workspace     {len(group_events)} queries"
-                    elif group_name == "web_search":
-                        desc = f"searched official sources    {len(group_events)} queries"
-                    elif group_name == "web_read":
-                        desc = f"read relevant pages          {len(group_events)} sources"
-                    else:
-                        desc = f"inspected {len(group_events)} items"
-                    raw_items.append(("✓", desc, tot_dur, ActivityStatus.COMPLETE, ""))
-                    i = j
-                    continue
-
-            symbol = "⟳" if ev.status is ActivityStatus.RUNNING else "✓"
-            if ev.status in {ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED}:
-                symbol = "✗"
-            raw_items.append((symbol, ev.description, ev.duration_s, ev.status, ev.detail))
-            i += 1
-
-        # Enforce bounded presentation cap (max 8 visible events) while preserving running events
-        if len(raw_items) > 8:
-            running_items = [it for it in raw_items if it[3] is ActivityStatus.RUNNING]
-            completed_items = [it for it in raw_items if it[3] is not ActivityStatus.RUNNING]
-            keep_completed_count = max(8 - len(running_items), 1)
-            raw_items = completed_items[-keep_completed_count:] + running_items
-
-        lines: list[str] = []
-        for symbol, desc, duration, status, detail in raw_items:
-            suffix = f" · {duration:.1f}s" if duration > 0 and status is not ActivityStatus.RUNNING else ""
-            if detail and status is not ActivityStatus.COMPLETE:
-                desc = f"{desc} — {detail}"
-            lines.append(f"  ┊ {symbol} {desc}{suffix}")
-
-        # Completion summary capsule
-        if self._events and all(ev.status is not ActivityStatus.RUNNING for ev in self._events):
-            statuses = {ev.status for ev in self._events}
-            total = sum(event.duration_s for event in self._events)
-            has_verification = any(ev.group == "verification" for ev in self._events)
-            has_edits = any(ev.group == "edit" for ev in self._events)
-            has_web = any(ev.group in {"web_search", "web_read"} for ev in self._events)
-
-            if statuses & {ActivityStatus.ERROR, ActivityStatus.BLOCKED, ActivityStatus.DECLINED}:
-                lines.append(f"  ╰─ stopped · {total:.1f}s")
-            elif has_edits and has_verification:
-                lines.append(f"  ╰─ change holds · {total:.1f}s")
-            elif has_verification:
-                lines.append(f"  ╰─ clean run · {total:.1f}s")
-            elif has_web and len(self._events) >= 2:
-                lines.append(f"  ╰─ cross-checked · {total:.1f}s")
-            elif len(self._events) >= 3:
-                lines.append(f"  ╰─ completed · {len(self._events)} steps · {total:.1f}s")
-
+    def render_flow(self, width: int | None = None, *, past_intent: str = "") -> tuple[Any, ...]:
+        from .render import format_tool_flow
         available_width = width or max(shutil.get_terminal_size((80, 24)).columns - 1, 1)
-        return [_fit_width(line, available_width) for line in lines]
+        return format_tool_flow(self._events, available_width, past_intent=past_intent)
 
-    def render(self) -> str:
-        lines = self.render_lines()
+    def render_lines(self, width: int | None = None, *, past_intent: str = "") -> list[str]:
+        flow_rows = self.render_flow(width, past_intent=past_intent)
+        return [row.text for row in flow_rows]
+
+    def render(self, width: int | None = None, *, past_intent: str = "") -> str:
+        lines = self.render_lines(width, past_intent=past_intent)
         return "\n".join(lines) + ("\n" if lines else "")
