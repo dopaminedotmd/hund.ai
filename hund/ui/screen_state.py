@@ -28,6 +28,8 @@ class OverlayView(str, Enum):
     AUTH_KEY = "auth_key"
     AUTH_CUSTOM = "auth_custom"
     AUTH_FORGET_CONFIRM = "auth_forget_confirm"
+    # Gate 3 §2.4: confirm parking (removing from active role) a spec member.
+    SPEC_MEMBER_REMOVE = "spec_member_remove"
 
 
 @dataclass
@@ -95,6 +97,10 @@ class ScreenController:
         ):
             self.panel_focus[self.destination.value] = "left"
             return "panel"
+        if self.detail.get(f"{self.destination.value}_spec"):
+            # Gate 3 §2.4: specialisation two-pane closes back to the catalog.
+            self.detail[f"{self.destination.value}_spec"] = None
+            return "detail"
         if self.detail.get(self.destination.value):
             self.detail[self.destination.value] = None
             return "detail"
@@ -133,6 +139,10 @@ class ScreenController:
         ):
             self.panel_focus[self.destination.value] = "left"
             return "panel"
+        if self.detail.get(f"{self.destination.value}_spec"):
+            # Gate 3 §2.4: specialisation two-pane closes back to the catalog.
+            self.detail[f"{self.destination.value}_spec"] = None
+            return "detail"
         if self.detail.get(self.destination.value):
             self.detail[self.destination.value] = None
             return "detail"

@@ -97,6 +97,9 @@ class SkillsSnapshot:
     parked: tuple[SkillItem, ...]
     proposals: tuple[SkillProposalItem, ...] = ()
     specialisations: tuple[CatalogSpecialisation, ...] = ()
+    # Gate 3 §2.4: domains whose members are all parked — managed from the
+    # specialisation window's left VAULT section, not the /skills catalog.
+    vaulted_specialisations: tuple[CatalogSpecialisation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -329,28 +332,40 @@ def collect_skills(
     equipped = tuple(convert(skill) for skill in equipped_skills)
     parked = tuple(convert(skill) for skill in parked_skills)
 
-    # Gate 3 §2.3: specialisations = equipped domains with member names from
-    # every skill (equipped or parked) sharing that domain.
+    # Gate 3 §2.3-2.4: specialisations = non-general domains, grouped from every
+    # domain skill. A domain with >=1 equipped skill is an active specialisation
+    # (shown in the /skills catalog); all-parked domains are vaulted
+    # specialisations (managed from the two-pane window's VAULT section).
     equipped_by_capability = {item.capability_id: item for item in equipped}
     domains_in_order: dict[str, list[Any]] = {}
-    for skill in equipped_skills:
+    for skill in all_domain:
         if skill.domain and skill.domain != "general":
             domains_in_order.setdefault(skill.domain, []).append(skill)
     specialisations: list[CatalogSpecialisation] = []
+    vaulted_specialisations: list[CatalogSpecialisation] = []
     for domain, raw_members in domains_in_order.items():
-        items = [equipped_by_capability[s.capability_id] for s in raw_members]
-        member_names = tuple(
-            s.name for s in all_domain if s.domain == domain
-        )
-        specialisations.append(
-            CatalogSpecialisation(
-                domain,
-                max(item.level for item in items),
-                round(sum(item.percent for item in items) / len(items)),
-                member_names,
+        equipped_in_domain = [
+            s for s in raw_members if s.vault_state == "equipped"
+        ]
+        items = [
+            equipped_by_capability[s.capability_id] for s in equipped_in_domain
+        ]
+        member_names = tuple(s.name for s in raw_members)
+        if items:
+            specialisations.append(
+                CatalogSpecialisation(
+                    domain,
+                    max(item.level for item in items),
+                    round(sum(item.percent for item in items) / len(items)),
+                    member_names,
+                )
             )
-        )
+        else:
+            vaulted_specialisations.append(
+                CatalogSpecialisation(domain, 0, 0, member_names)
+            )
     specialisations.sort(key=lambda item: item.name.casefold())
+    vaulted_specialisations.sort(key=lambda item: item.name.casefold())
 
     proposals: tuple[SkillProposalItem, ...] = ()
     if include_proposals:
@@ -371,7 +386,11 @@ def collect_skills(
             )
         )
     return SkillsSnapshot(
-        equipped, parked, proposals, specialisations=tuple(specialisations)
+        equipped,
+        parked,
+        proposals,
+        specialisations=tuple(specialisations),
+        vaulted_specialisations=tuple(vaulted_specialisations),
     )
 
 

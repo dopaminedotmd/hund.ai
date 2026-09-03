@@ -507,6 +507,161 @@ def render_skills(
     )
 
 
+def _spec_left_items(
+    snapshot: SkillsSnapshot,
+) -> tuple[tuple[CatalogSpecialisation, bool], ...]:
+    """Left-panel spec list: active specialisations then vaulted ones (Gate 3 §2.4)."""
+    return tuple(
+        [(item, True) for item in snapshot.specialisations]
+        + [(item, False) for item in snapshot.vaulted_specialisations]
+    )
+
+
+def _spec_member_items(
+    snapshot: SkillsSnapshot, spec: CatalogSpecialisation
+) -> tuple[SkillItem, ...]:
+    """Resolve a specialisation's member names to skill rows, equipped first."""
+    all_skills = snapshot.equipped + snapshot.parked
+    by_name = {item.name: item for item in all_skills}
+    present = [by_name[name] for name in spec.members if name in by_name]
+    position = {item.name: index for index, item in enumerate(all_skills)}
+    present.sort(
+        key=lambda item: (
+            0 if item.vault_state == "equipped" else 1,
+            position[item.name],
+        )
+    )
+    return tuple(present)
+
+
+def render_specialisation_management(
+    snapshot: SkillsSnapshot,
+    *,
+    spec_cursor: int,
+    member_cursor: int,
+    focus: str = "left",
+    width: int,
+    height: int,
+    scroll: int = 0,
+    ascii_only: bool = False,
+) -> str:
+    """Gate 3 §2.4: two-pane specialisation window with live member preview.
+
+    Left pane: active + vaulted specialisations and per-spec stats. Right pane:
+    the selected spec's member skills (equipped first), updated live as the
+    left cursor moves.
+    """
+    left_items = _spec_left_items(snapshot)
+    if not left_items:
+        lines = ["", "(No specialisations yet.)"]
+        return fullscreen_frame(
+            "SPECIALISATION", lines, width=width, height=height,
+            footer="[←] Back · [Esc/q] Close", scroll=scroll, ascii_only=ascii_only,
+        )
+    total = len(left_items)
+    spec, active_flag = left_items[spec_cursor % total]
+    members = _spec_member_items(snapshot, spec)
+    equipped_count = sum(1 for item in members if item.vault_state == "equipped")
+
+    divider = "|" if ascii_only else "│"
+    cursor = 0
+    left: list[str] = []
+    # Active specialisations are selectable first, then vaulted ones.
+    left.extend(["", _section(f"SPECIALISATIONS ({len(snapshot.specialisations)})", 30)])
+    for item in snapshot.specialisations:
+        marker = "❯ ● " if cursor == spec_cursor % total else "  ○ "
+        left.append(f"{marker}{_clip(item.name, 16):<16} L{item.level} {item.percent:>3}%")
+        cursor += 1
+    vaulted_n = len(snapshot.vaulted_specialisations)
+    left.extend(["", _section(f"VAULT ({vaulted_n})", 30)])
+    for item in snapshot.vaulted_specialisations:
+        marker = "❯ ● " if cursor == spec_cursor % total else "  ○ "
+        left.append(f"{marker}{_clip(item.name, 16):<16} [parked]")
+        cursor += 1
+    if not vaulted_n:
+        left.append("(No vaulted specialisations)")
+    left.extend(["", _section("STATS", 30)])
+    if active_flag:
+        left.append(f"Level {spec.level} · {spec.percent}% · {len(members)} member skills")
+    else:
+        left.append(f"Parked · {len(members)} member skills")
+    left.append(f"Active {equipped_count} · Parked {len(members) - equipped_count}")
+
+    # Member rows in the right column, two lines per member (bar below).
+    right: list[str] = []
+    right.append("")
+    right.append(_section(f"MEMBER SKILLS ({len(members)})", 30))
+    if not members:
+        right.append("(No member skills)")
+    for index, item in enumerate(members):
+        selected = focus == "right" and index == member_cursor % max(len(members), 1)
+        sel = "❯ " if selected else "  "
+        tag = "" if item.vault_state == "equipped" else "  [parked]"
+        right.append(f"{sel}✓ {_clip(item.name, 15):<15} L{item.level}  {item.percent:>3}%{tag}")
+        right.append(f"    {render_bar(item.percent, 10)}")
+
+    lines: list[str] = []
+    inner = max(max(20, width - 1) - 6, 16)
+    if inner >= 56:
+        left_w = max(30, (inner - 3) // 2)
+        right_w = max(10, inner - left_w - 3)
+        count = max(len(left), len(right))
+        for index in range(count):
+            a = left[index] if index < len(left) else ""
+            b = right[index] if index < len(right) else ""
+            lines.append(
+                _clip(a, left_w).ljust(left_w) + f" {divider} " + _clip(b, right_w)
+            )
+    else:
+        lines.extend(left)
+        lines.append("")
+        lines.extend(right)
+
+    title = "SPECIALISATION" if focus == "left" else f"SPECIALISATION · {spec.name}"
+    meta = f"L{spec.level} · {spec.percent}%" if active_flag else "parked"
+    if focus == "left":
+        footer = (
+            "<- Back * [Esc/q] Close * ^v Browse * Enter Manage Members"
+            if ascii_only
+            else "[←] Back · [Esc/q] Close · ↑↓ Browse · Enter Manage Members"
+        )
+    else:
+        footer = (
+            "[Enter] Toggle active/parked * [r] Park * <- Back to specs"
+            if ascii_only
+            else "[Enter] Toggle active/parked · [r] Park · [←] Back to specs"
+        )
+    return fullscreen_frame(
+        title, lines, width=width, height=height,
+        meta=meta, footer=footer, scroll=scroll, ascii_only=ascii_only,
+    )
+
+
+def render_spec_member_remove_modal(
+    skill_name: str, spec_name: str, *, width: int, ascii_only: bool = False
+) -> str:
+    """Gate 3 §2.4: confirm dialog for parking (removing from active) a member.
+
+    Membership is domain-derived, so removal parks the skill: it leaves the
+    spec's active set and moves to Vault while staying a member of the domain.
+    """
+    return modal_frame(
+        "REMOVE MEMBER",
+        [
+            "",
+            f"Park {skill_name}?",
+            f"It is currently an active member of {spec_name}.",
+            "It will move to the Vault and no longer count as active.",
+            "",
+            "[y] Yes · [n] No",
+        ],
+        width=min(52, width),
+        terminal_width=width,
+        footer="",
+        ascii_only=ascii_only,
+    )
+
+
 def tool_detail_lines(tool: ToolItem) -> list[str]:
     schema = json.dumps(tool.parameters, indent=2, sort_keys=True)
     return [
