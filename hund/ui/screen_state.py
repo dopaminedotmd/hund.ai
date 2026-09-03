@@ -48,6 +48,7 @@ class ScreenController:
     panel_focus: dict[str, str] = field(default_factory=dict)  # per destination: "left"|"right"
     edit_mode: bool = False
     edit_buffer_text: str = ""
+    edit_cursor: int = 0  # char offset into edit_buffer_text
 
     def open_destination(self, destination: DestinationView) -> bool:
         if self.overlay is OverlayView.CONFIRM:
