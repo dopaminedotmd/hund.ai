@@ -242,6 +242,7 @@ class OpenAICompatibleClient(ProviderClient):
         msg = choice.get("message", {})
         usage = data.get("usage", {}) or {}
         raw_text = msg.get("content") or ""
+        reasoning_text = msg.get("reasoning_content") or msg.get("reasoning") or ""
         filtered_text = filter_leaked_protocol(raw_text)
         self.last_result = CompletionResult(
             text=filtered_text,
@@ -252,7 +253,14 @@ class OpenAICompatibleClient(ProviderClient):
             total_tokens=usage.get("total_tokens", 0),
             latency_ms=latency_ms,
             raw=data,
+            reasoning_content=reasoning_text,
         )
+        if reasoning_text:
+            try:
+                from ..store.sqlite import log_request_reasoning
+                log_request_reasoning(reasoning_text, run_id=getattr(self, "current_run_id", None))
+            except Exception:
+                pass
         return self.last_result
 
     @staticmethod
@@ -277,6 +285,7 @@ class OpenAICompatibleClient(ProviderClient):
         self._require_key()
         url = f"{self.base_url}/chat/completions"
         tool_acc: dict[int, dict] = {}
+        reasoning_acc: list[str] = []
         finish = "stop"
         pt = ct = tt = 0
         t0 = time.perf_counter()
@@ -313,6 +322,9 @@ class OpenAICompatibleClient(ProviderClient):
                         choices = chunk.get("choices") or []
                         if choices:
                             delta = choices[0].get("delta", {}) or {}
+                            r_piece = delta.get("reasoning_content") or delta.get("reasoning")
+                            if r_piece:
+                                reasoning_acc.append(r_piece)
                             if delta.get("content"):
                                 filtered_chunk = protocol_filter.feed(delta["content"])
                                 if filtered_chunk:
@@ -343,6 +355,7 @@ class OpenAICompatibleClient(ProviderClient):
         except httpx.HTTPError as e:
             raise RuntimeError(f"provider HTTP error: {e}") from e
 
+        reasoning_str = "".join(reasoning_acc)
         self.last_result = CompletionResult(
             text="",
             tool_calls=[tool_acc[i] for i in sorted(tool_acc)],
@@ -351,4 +364,11 @@ class OpenAICompatibleClient(ProviderClient):
             completion_tokens=ct,
             total_tokens=tt,
             latency_ms=int((time.perf_counter() - t0) * 1000),
+            reasoning_content=reasoning_str,
         )
+        if reasoning_str:
+            try:
+                from ..store.sqlite import log_request_reasoning
+                log_request_reasoning(reasoning_str, run_id=getattr(self, "current_run_id", None))
+            except Exception:
+                pass

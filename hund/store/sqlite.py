@@ -167,7 +167,8 @@ CREATE TABLE IF NOT EXISTS requests (
     prompt_tokens INTEGER DEFAULT 0,
     completion_tokens INTEGER DEFAULT 0,
     latency_ms INTEGER DEFAULT 0,
-    run_id TEXT
+    run_id TEXT,
+    reasoning_content TEXT
 );
 """
 
@@ -246,6 +247,45 @@ def _migrate_requests(conn: sqlite3.Connection) -> None:
     if "run_id" not in existing:
         conn.execute("ALTER TABLE requests ADD COLUMN run_id TEXT")
         conn.commit()
+    if "reasoning_content" not in existing:
+        conn.execute("ALTER TABLE requests ADD COLUMN reasoning_content TEXT")
+        conn.commit()
+
+
+def log_request_reasoning(
+    reasoning: str,
+    *,
+    run_id: str | None = None,
+    db_path: Path | None = None,
+) -> None:
+    """Log reasoning_content separately to logs/requests.db."""
+    if not reasoning:
+        return
+    try:
+        conn = connect_requests(db_path)
+        if run_id:
+            conn.execute(
+                "UPDATE requests SET reasoning_content = ? WHERE run_id = ? AND (reasoning_content IS NULL OR reasoning_content = '')",
+                (reasoning, run_id),
+            )
+        else:
+            row = conn.execute("SELECT id FROM requests ORDER BY created_at DESC LIMIT 1").fetchone()
+            if row:
+                conn.execute(
+                    "UPDATE requests SET reasoning_content = ? WHERE id = ?",
+                    (reasoning, row[0]),
+                )
+            else:
+                import uuid
+                from datetime import datetime, timezone
+                conn.execute(
+                    "INSERT INTO requests (id, created_at, task_class, reasoning_content) VALUES (?, ?, ?, ?)",
+                    (str(uuid.uuid4()), datetime.now(timezone.utc).isoformat(), "reasoning", reasoning),
+                )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
 
 
 def connect_tool_events(db_path: Path | None = None) -> sqlite3.Connection:

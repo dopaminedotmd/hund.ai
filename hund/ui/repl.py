@@ -43,6 +43,18 @@ async def _amain() -> int:
     state.theme_name = getattr(rt.cfg, "theme", "marshmallow")
     state.extra["model"] = model_name
     state.extra["token_limit"] = getattr(rt.cfg.provider, "context_window", 64_000)
+    init_tokens = 0
+    try:
+        from ..store.sqlite import connect_requests
+        with connect_requests() as conn:
+            row = conn.execute(
+                "SELECT prompt_tokens FROM requests WHERE prompt_tokens > 0 ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            if row and row[0]:
+                init_tokens = int(row[0])
+    except Exception:
+        pass
+    state.extra["tokens"] = init_tokens
     state.extra["workspace"] = Path(str(rt.workspace)).name or "workspace"
 
     init_stats = refresh_stats(state)
