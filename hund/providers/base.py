@@ -30,6 +30,7 @@ class CompletionResult:
     total_tokens: int = 0
     latency_ms: int = 0
     raw: Any = None
+    reasoning_content: str = ""
 
 
 class ProviderClient(ABC):

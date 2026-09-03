@@ -3680,10 +3680,21 @@ def create_fullscreen_app(
                 _restore_frozen_system_prompt(messages, frozen)
                 sink.set_authoring_mode(False)
                 last_res = getattr(getattr(rt, "client", None), "last_result", None)
-                if last_res and getattr(last_res, "total_tokens", 0) > 0:
-                    state.extra["tokens"] = last_res.total_tokens
+                if last_res and getattr(last_res, "prompt_tokens", 0) > 0:
+                    state.extra["tokens"] = last_res.prompt_tokens
                 else:
-                    state.extra["tokens"] = estimate_tokens(messages)
+                    try:
+                        from ..store.sqlite import connect_requests
+                        with connect_requests() as conn:
+                            row = conn.execute(
+                                "SELECT prompt_tokens FROM requests WHERE prompt_tokens > 0 ORDER BY created_at DESC LIMIT 1"
+                            ).fetchone()
+                            if row and row[0]:
+                                state.extra["tokens"] = int(row[0])
+                            else:
+                                state.extra["tokens"] = estimate_tokens(messages)
+                    except Exception:
+                        state.extra["tokens"] = estimate_tokens(messages)
                 refresh_stats(state)
                 _reflow_borders()
                 turn_running[0] = False
