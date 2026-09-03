@@ -760,6 +760,17 @@ _SWEDISH_WORDS_PATTERN = re.compile(
 )
 
 
+# Track 2: trivial shaping-answer words that carry no content profile.
+# Scope answers and internal action markers are skipped by key, not by word.
+_SHAPING_NEUTRAL_WORDS = frozenset({
+    "yes", "no", "ok", "okay", "skip", "none", "other", "default", "unknown",
+    "auto", "both", "all", "with", "that", "this", "the", "and", "for", "not",
+    "use", "make", "want", "need", "like", "prefer", "please", "keep", "just",
+    "only", "into", "from", "when", "then", "than", "them", "they", "dont",
+    "dont", "does", "done", "also", "some", "any",
+})
+
+
 class AuthoringCallBudgetExceeded(RuntimeError):
     """An authoring attempt exceeded its per-run LLM call budget (Track 19)."""
 
@@ -1182,6 +1193,64 @@ def run_deterministic_quality_checks(
                 failures.append(msg)
         else:
             checks.append(QualityGateCheck("grounded_versions", True))
+
+    # 10. Tools & safety consistency with steps (Track 2)
+    from .factory import detect_file_edit_tools
+
+    declared_tools = set(skill.required_tools or ())
+    declares_write = bool({"write_file", "edit_file"} & declared_tools)
+    steps_edit_files = bool(
+        detect_file_edit_tools(" ".join(skill.steps or ()), skill.when_to_use or "")
+    )
+    if steps_edit_files and (not declares_write or skill.safety_level != "confirm_for_write"):
+        msg = (
+            "Steps create/write/edit files, so required_tools must include "
+            "write_file/edit_file and safety_level must be confirm_for_write "
+            f"(current safety_level: {skill.safety_level!r})."
+        )
+        checks.append(QualityGateCheck("tools_safety_consistency", False, msg))
+        failures.append(msg)
+    elif declares_write and skill.safety_level != "confirm_for_write":
+        msg = (
+            "required_tools include write tools but safety_level is not "
+            f"'confirm_for_write' (current: {skill.safety_level!r})."
+        )
+        checks.append(QualityGateCheck("tools_safety_consistency", False, msg))
+        failures.append(msg)
+    else:
+        checks.append(QualityGateCheck("tools_safety_consistency", True))
+
+    # 11. Shaping answers reflected in content (Track 2)
+    if shaping_answers:
+        content_text = " ".join(
+            [skill.when_to_use or "", " ".join(skill.steps or ())]
+        ).casefold()
+        reflection_failed = False
+        for key, value in shaping_answers.items():
+            # Scope answers are routing metadata; action markers are internal.
+            if key == "scope" or key == "mini_draft_action" or key.endswith("_action"):
+                continue
+            v = str(value or "").strip()
+            tokens = [
+                w
+                for w in re.findall(r"[A-Za-z]{2,}", v)
+                if w.casefold() not in _SHAPING_NEUTRAL_WORDS
+            ]
+            if not tokens:
+                continue  # trivial answers carry no content profile
+            # The most distinctive tokens (longest two) must leave a trace.
+            distinctive = sorted(tokens, key=len, reverse=True)[:2]
+            if not any(t.casefold() in content_text for t in distinctive):
+                msg = (
+                    f"Shaping answer for '{key}' is not reflected in "
+                    f"when_to_use or steps; revise to honor '{v[:60]}'."
+                )
+                checks.append(QualityGateCheck("shaping_reflection", False, msg))
+                failures.append(msg)
+                reflection_failed = True
+                break
+        if not reflection_failed:
+            checks.append(QualityGateCheck("shaping_reflection", True))
 
     return QualityGateResult(
         passed=(len(failures) == 0),

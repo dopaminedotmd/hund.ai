@@ -145,6 +145,38 @@ def test_prompt_injection_neutralized_in_published_skill(tmp_path: Path):
     assert "<system>" not in content.lower()
 
 
+def test_file_editing_steps_cannot_pass_quality_as_read_only():
+    """Track 2: file-editing steps published as read_only fail the deterministic
+    quality gate, so such a draft can never reach publication."""
+    from hund.skills.authoring import run_deterministic_quality_checks
+
+    skill = Skill(
+        schema_version=1,
+        name="read-only-html-skill",
+        domain="general",
+        status="draft",
+        triggers=("read only html",),
+        when_to_use="When building html pages with hero sections for static sites.",
+        steps=(
+            "Create an html page with the hero markup.",
+            "Save the page to the output folder.",
+        ),
+        required_tools=(),
+        forbidden_actions=tuple(sorted(BANNED_ACTIONS)),
+        safety_level="read_only",
+        verification=("Page renders the hero section.", "Markup file exists on disk."),
+        examples=("Hero page saved as html.",),
+        version="1.0.0",
+        capability_id="general/read-only-html-skill",
+        scope="project",
+    )
+    draft = SkillDraft(action="CREATE", skill=skill)
+    result = run_deterministic_quality_checks(draft)
+    assert not result.passed
+    assert any("confirm_for_write" in f for f in result.failures)
+    assert any("write_file" in f for f in result.failures)
+
+
 def test_banned_action_bypass_denied(tmp_path: Path):
     gate = FastPublicationGate()
     skill = Skill(

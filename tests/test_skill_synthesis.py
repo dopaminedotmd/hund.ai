@@ -346,3 +346,71 @@ def test_skill_naming_filters_buzzwords_and_generic_verbs_track6_v2():
     assert "varldsklass" not in name_shaped
     assert "sidor" not in name_shaped
 
+
+# --- Track 2: file-edit detection recall + shared source (Masterplan A STEG 3) ---
+
+@pytest.mark.parametrize("phrase", [
+    "Create a file with html content.",
+    "create file",
+    "Build an html page with a hero section.",
+    "Write the config file for the deployment.",
+    "Save a file with the generated output.",
+    "Update the document with the new sections.",
+    "Overwrite the page with the final markup.",
+    "Generate a markdown file from the notes.",
+    "Write the results to disk.",
+    "skapa en fil med html",
+    "skapa html-sida",
+    "uppdatera filen med nytt innehåll",
+    "Use write_file to store the output.",
+])
+def test_file_edit_detection_covers_articles_and_implicit_objects(phrase: str):
+    """Track 2: article forms and implicit file objects upgrade to write tools."""
+    from hund.skills.factory import detect_file_edit_tools
+
+    assert detect_file_edit_tools(phrase) == {"write_file", "edit_file"}
+
+
+@pytest.mark.parametrize("phrase", [
+    "Read the document and summarize the key points.",
+    "Open the page in a browser and inspect the layout.",
+    "Review the config for deprecated options.",
+    "Discuss the design with the team.",
+    "Make a decision about the release.",
+    "",
+])
+def test_file_edit_detection_stays_fail_closed(phrase: str):
+    """Track 2: non-writing phrasings never upgrade to write tools."""
+    from hund.skills.factory import detect_file_edit_tools
+
+    assert detect_file_edit_tools(phrase) == set()
+
+
+def test_build_from_proposal_detects_implicit_file_objects_public_path():
+    """Track 2: 'build an html page' steps yield write tools via the public path."""
+    proposal = LocalSkillProposal(
+        name="html-pages",
+        domain="design",
+        intent="html pages",
+        scope="project",
+        steps=(
+            "Build an html page with a hero section.",
+            "Save the page and verify the rendered output.",
+        ),
+        required_tools=(),
+        when_to_use="When building html pages with hero sections for static sites.",
+        triggers=("html page",),
+        verification=("Page renders the hero section.", "Markup file exists on disk."),
+        examples=("Hero page saved as html.",),
+    )
+    resolution = ScopeResolution(
+        status="RESOLVED",
+        target_name="html-pages",
+        target_scope="project",
+        action="CREATE",
+    )
+    draft = SkillFactory().build_from_proposal(proposal, resolution)
+    assert "write_file" in draft.skill.required_tools
+    assert "edit_file" in draft.skill.required_tools
+    assert draft.skill.safety_level == "confirm_for_write"
+

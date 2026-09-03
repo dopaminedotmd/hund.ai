@@ -55,12 +55,28 @@ class _ShapingClient:
                 "issues": [],
             })
         else:
+            # Track 2: the mock synthesis honors the shaping answers so the
+            # shaping-reflection quality check passes (content must reflect the
+            # user's concrete choices, not a generic checklist).
+            shaping_answers: dict[str, str] = {}
+            try:
+                payload = json.loads(messages[1].content)
+                shaping_answers = (payload.get("untrusted_data") or {}).get("shaping_answers") or {}
+            except Exception:
+                shaping_answers = {}
+            steps = [
+                "Define target audience and campaign message.",
+                "Execute outreach and monitor response rates.",
+            ]
+            answer_tokens = " ".join(
+                v for k, v in shaping_answers.items()
+                if k != "scope" and not k.endswith("_action")
+            )
+            if answer_tokens.strip():
+                steps.append(f"Apply the selected shaping choices: {answer_tokens}.")
             content = json.dumps({
                 "when_to_use": "When executing targeted marketing workflows.",
-                "steps": [
-                    "Define target audience and campaign message.",
-                    "Execute outreach and monitor response rates.",
-                ],
+                "steps": steps,
                 "triggers": ["marketing", "b2b outreach"],
                 "verification": [
                     "Audience segment matches intended campaign criteria.",

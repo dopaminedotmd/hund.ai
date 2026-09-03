@@ -446,3 +446,195 @@ def test_shaping_answers_derive_technical_name_and_confirm_for_write(tmp_path: P
     assert draft.skill.safety_level == "confirm_for_write"
 
 
+# --- Track 2: shaping reflection + tools/safety consistency (Masterplan A STEG 3) ---
+
+
+def _quality_draft(
+    steps: tuple[str, ...],
+    *,
+    when_to_use: str = "When evaluating quality checks for skill drafts.",
+    required_tools: tuple[str, ...] = (),
+    safety_level: str = "read_only",
+):
+    from hund.skills.authoring import SkillDraft
+    from hund.skills.model import BANNED_ACTIONS, Skill
+
+    skill = Skill(
+        schema_version=1,
+        name="quality-check-skill",
+        domain="general",
+        status="draft",
+        triggers=("quality check",),
+        when_to_use=when_to_use,
+        steps=tuple(steps),
+        required_tools=tuple(required_tools),
+        forbidden_actions=tuple(sorted(BANNED_ACTIONS)),
+        safety_level=safety_level,
+        verification=("Outcome matches expectations.", "All binary checks pass."),
+        examples=("Quality draft evaluated.",),
+        version="1.0.0",
+        capability_id="general/quality-check-skill",
+        scope="project",
+    )
+    return SkillDraft(action="CREATE", skill=skill)
+
+
+def test_quality_check_fails_file_editing_steps_as_read_only(tmp_path: Path):
+    """Track 2: file-editing steps with read_only safety must fail the gate."""
+    from hund.skills.authoring import run_deterministic_quality_checks
+
+    draft = _quality_draft(
+        (
+            "Create an html page with the hero markup.",
+            "Verify the page in a browser.",
+        ),
+        required_tools=(),
+        safety_level="read_only",
+    )
+    result = run_deterministic_quality_checks(draft)
+    assert not result.passed
+    consistency = [c for c in result.checks if c.name == "tools_safety_consistency"]
+    assert consistency and not consistency[0].passed
+    assert any("confirm_for_write" in f for f in result.failures)
+
+
+def test_quality_check_passes_consistent_write_skill(tmp_path: Path):
+    """Track 2: file-editing steps with write tools and confirm_for_write pass."""
+    from hund.skills.authoring import run_deterministic_quality_checks
+
+    draft = _quality_draft(
+        ("Create an html page with the hero markup.", "Verify the page in a browser."),
+        required_tools=("write_file", "edit_file"),
+        safety_level="confirm_for_write",
+    )
+    result = run_deterministic_quality_checks(draft)
+    consistency = [c for c in result.checks if c.name == "tools_safety_consistency"]
+    assert consistency and consistency[0].passed
+
+
+def test_quality_check_fails_generic_checklist_when_shaping_specified(tmp_path: Path):
+    """Track 2: a generic checklist that ignores the minimal/ui shaping answers fails."""
+    from hund.skills.authoring import run_deterministic_quality_checks
+
+    draft = _quality_draft(
+        (
+            "Inspect the workspace for relevant patterns.",
+            "Apply the standard checklist to the request.",
+        ),
+    )
+    result = run_deterministic_quality_checks(
+        draft, shaping_answers={"style": "minimal", "content": "ui"}
+    )
+    assert not result.passed
+    reflection = [c for c in result.checks if c.name == "shaping_reflection"]
+    assert reflection and not reflection[0].passed
+    assert any("minimal" in f or "ui" in f for f in result.failures)
+
+
+def test_quality_check_passes_when_shaping_answers_are_reflected(tmp_path: Path):
+    """Track 2: steps that honor the shaping profile pass the reflection check."""
+    from hund.skills.authoring import run_deterministic_quality_checks
+
+    draft = _quality_draft(
+        (
+            "Apply minimal typography to the layout.",
+            "Verify the ui hierarchy on the rendered page.",
+        ),
+        when_to_use="When designing minimal ui layouts for static pages.",
+    )
+    result = run_deterministic_quality_checks(
+        draft, shaping_answers={"style": "minimal", "content": "ui"}
+    )
+    reflection = [c for c in result.checks if c.name == "shaping_reflection"]
+    assert reflection and reflection[0].passed
+    assert result.passed
+
+
+def test_two_shaping_profiles_produce_distinct_drafts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Track 2 snapshot: minimal vs ui shaping profiles yield different content."""
+    from hund.skills.authoring import (
+        AuthoringState,
+        apply_shaping_answers,
+        create_authoring_session,
+        get_authoring_registry,
+        transition_session,
+    )
+    from hund.skills.authoring_runtime import _build_ready
+
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
+
+    class _ProfileClient:
+        def complete(self, messages, tools=None, **kwargs):
+            all_text = " ".join(str(m.content) for m in messages)
+            if "quality review" in all_text:
+                content = json.dumps({"approved": True, "score": 0.95, "issues": []})
+            else:
+                data = json.loads(messages[1].content)["untrusted_data"]
+                answers = " ".join(
+                    str(v) for v in data.get("shaping_answers", {}).values()
+                ).casefold()
+                if "minimal" in answers:
+                    payload = {
+                        "when_to_use": "When producing minimal typography layouts for static pages.",
+                        "steps": [
+                            "Apply minimal typography with deliberate tracking.",
+                            "Keep only the essential sections visible.",
+                        ],
+                        "triggers": ["minimal layout"],
+                        "verification": [
+                            "Page shows minimal typography hierarchy.",
+                            "No decorative sections remain.",
+                        ],
+                        "examples": ["Minimal page rendered with essential sections."],
+                    }
+                else:
+                    payload = {
+                        "when_to_use": "When designing ui interfaces for interactive product pages.",
+                        "steps": [
+                            "Design the ui component hierarchy with intentional spacing.",
+                            "Align the interface elements on a visible grid.",
+                        ],
+                        "triggers": ["ui design"],
+                        "verification": [
+                            "Interface elements align to the grid.",
+                            "Component hierarchy reads clearly.",
+                        ],
+                        "examples": ["Product interface reviewed with clear hierarchy."],
+                    }
+                content = json.dumps(payload)
+            return CompletionResult(
+                text=content, prompt_tokens=10, completion_tokens=5
+            )
+
+    drafts = {}
+    for profile, shaping in (("minimal", {"style": "minimal"}), ("ui", {"content": "ui"})):
+        reg = get_authoring_registry()
+        reg.clear()
+        intent = _intent(capability=f"{profile} static page design", target_scope="project")
+        session = create_authoring_session(intent, registry=reg)
+        session = transition_session(session, AuthoringState.SHAPING, registry=reg)
+        session = apply_shaping_answers(session, shaping, registry=reg)
+        res = _build_ready(
+            session,
+            workspace=tmp_path,
+            registered_tools={"read_file"},
+            registry=reg,
+            client=_ProfileClient(),
+            run_id=f"run-profile-{profile}",
+        )
+        assert res.handled is True
+        sess = reg.get(session.session_id)
+        assert sess is not None
+        assert sess.state == AuthoringState.READY, (
+            f"profile {profile} failed: {sess.failure_reason}"
+        )
+        drafts[profile] = sess.draft.skill
+
+    assert drafts["minimal"].when_to_use != drafts["ui"].when_to_use
+    assert drafts["minimal"].steps != drafts["ui"].steps
+    assert "minimal" in " ".join(drafts["minimal"].steps).casefold()
+    assert "ui" in " ".join(drafts["ui"].steps).casefold()
+
+
