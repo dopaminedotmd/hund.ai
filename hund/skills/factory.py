@@ -34,6 +34,56 @@ def _sanitize_triggers(triggers: Iterable[str]) -> tuple[str, ...]:
     return tuple(sanitized)
 
 
+
+# --- Track 2: shared file-edit detection (single source of truth) ---
+# Covers tool names, English verb + optional article/attribute + file-like
+# object ("create a file", "build an html page", "update the document"),
+# writing to disk, and Swedish mini-draft/legacy variants ("skapa en fil").
+# Fail-closed: unrecognized phrasings yield NO write upgrade; the
+# tools/safety consistency quality check catches mismatches instead.
+_FILE_EDIT_VERB = (
+    r"(?:create|write|edit|modify|save|update|overwrite|generate|build|"
+    r"produce|make|append)"
+)
+_FILE_EDIT_ARTICLE = r"(?: an?| the| this| that| any| each| every| your)?"
+_FILE_EDIT_OBJECT = (
+    r"(?:html|css|js|javascript|json|yaml|yml|markdown|md|text|pdf|csv|"
+    r"config|script|module|package)?[ -]?"
+    r"(?:files?|pages?|documents?|dokument)"
+)
+_FILE_EDIT_PATTERNS = (
+    # Explicit tool names, e.g. "use write_file".
+    re.compile(r"\b(?:write|edit)_files?\b"),
+    # Verb + article + implicit file object, e.g. "build an html page".
+    re.compile(rf"\b{_FILE_EDIT_VERB}{_FILE_EDIT_ARTICLE} {_FILE_EDIT_OBJECT}\b"),
+    # Writing output to disk, e.g. "write the results to disk".
+    re.compile(r"\b(?:write|save|output|dump)\w*\b[^.]{0,40}\bto disk\b"),
+    # Swedish variants for mini-draft/legacy paths, e.g. "skapa en fil",
+    # "skapa html-sida", "uppdatera filen".
+    re.compile(
+        r"\b(?:skapa|skriv|ändra|uppdatera|spara|generera|bygg|redigera)\S*"
+        r"(?: en| ett| den| det| denna)? ?(?:html-?)?"
+        r"(?:fil|sid|dokument)\w*\b"
+    ),
+)
+
+
+def detect_file_edit_tools(*texts: str) -> set[str]:
+    """Return {'write_file', 'edit_file'} when the texts describe file editing.
+
+    Single source of truth shared by SkillFactory.build,
+    SkillFactory.build_from_proposal, and the authoring runtime quality loop
+    (Track 2). Fail-closed: unrecognized phrasings return an empty set.
+    """
+    joined = " ".join(t for t in texts if t)
+    normalized = " ".join(joined.split()).casefold()
+    if not normalized:
+        return set()
+    if any(pattern.search(normalized) for pattern in _FILE_EDIT_PATTERNS):
+        return {"write_file", "edit_file"}
+    return set()
+
+
 class SkillFactory:
     """Generate CREATE/UPDATE drafts without storage authority."""
 
@@ -65,14 +115,12 @@ class SkillFactory:
         }))
         steps_tuple = tuple(unit.statement for unit in units)
         tools_set = set(tools)
-        steps_text = " ".join(steps_tuple + (f"When the task intent is {opportunity.intent}.",)).casefold()
-        file_edit_markers = (
-            "write_file", "edit_file", "write file", "edit file", "modify file",
-            "create file", "save file", "update file", "overwrite file",
-            "skriv fil", "skapa fil", "ändra fil", "uppdatera fil",
+        tools_set.update(
+            detect_file_edit_tools(
+                *steps_tuple,
+                f"When the task intent is {opportunity.intent}.",
+            )
         )
-        if any(marker in steps_text for marker in file_edit_markers):
-            tools_set.update({"write_file", "edit_file"})
 
         tools = tuple(sorted(tools_set))
         if any(t in {"write_file", "edit_file"} for t in tools):
@@ -141,14 +189,7 @@ class SkillFactory:
 
         tools = set(proposal.required_tools)
         steps = tuple(proposal.steps)
-        steps_text = " ".join(steps + (proposal.when_to_use,)).casefold()
-        file_edit_markers = (
-            "write_file", "edit_file", "write file", "edit file", "modify file",
-            "create file", "save file", "update file", "overwrite file",
-            "skriv fil", "skapa fil", "ändra fil", "uppdatera fil",
-        )
-        if any(marker in steps_text for marker in file_edit_markers):
-            tools.update({"write_file", "edit_file"})
+        tools.update(detect_file_edit_tools(*steps, proposal.when_to_use))
 
         tools_tuple = tuple(sorted(tools))
         if any(t in {"write_file", "edit_file"} for t in tools_tuple):

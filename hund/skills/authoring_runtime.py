@@ -36,7 +36,7 @@ from .authoring import (
     transition_session,
 )
 from .contracts import ResearchChoice, ResearchGrant
-from .factory import SkillFactory
+from .factory import SkillFactory, detect_file_edit_tools
 from .loader import load_builtins, load_domain_skills
 from .scope import compute_workspace_key, resolve_scope_and_overlap
 from .shaping import MiniDraftData
@@ -673,14 +673,7 @@ def _build_ready(
             )
 
         req_tools = set()
-        steps_text = " ".join(tuple(steps) + (when_to_use,)).casefold()
-        file_edit_markers = (
-            "write_file", "edit_file", "write file", "edit file", "modify file",
-            "create file", "save file", "update file", "overwrite file",
-            "skriv fil", "skapa fil", "ändra fil", "uppdatera fil",
-        )
-        if any(marker in steps_text for marker in file_edit_markers):
-            req_tools.update({"write_file", "edit_file"})
+        req_tools.update(detect_file_edit_tools(*steps, when_to_use))
 
         common = dict(
             name=target_name,
