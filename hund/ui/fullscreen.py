@@ -126,6 +126,7 @@ from .screen_render import (
     render_usage,
     render_system,
     render_doctor,
+    skill_definition_text,
 )
 from .snapshots import collect_skills, collect_stats, collect_tools, collect_usage
 from ..config import CustomEndpoint
@@ -4200,6 +4201,32 @@ def create_fullscreen_app(
             _close_destination()
         elif res != "none":
             _invalidate()
+
+    # Gate 3 §2.5.1: [c] copies the whole exact skill definition.
+    @kb.add("c", filter=destination_active & ~modal_active)
+    @kb.add("C", filter=destination_active & ~modal_active)
+    def _skill_detail_copy(event):
+        if screens.destination is not DestinationView.SKILLS:
+            return
+        detail_name = screens.detail.get("skills")
+        if not detail_name or screens.detail.get("skills_spec"):
+            return
+        snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+        if snapshot is None:
+            return
+        item = next(
+            (candidate for candidate in snapshot.equipped + snapshot.parked if candidate.name == detail_name),
+            None,
+        )
+        if item is None:
+            return
+        from .clipboard import copy_text
+
+        if copy_text(skill_definition_text(item)):
+            screens.status = f"Copied {item.name} definition to clipboard."
+        else:
+            screens.status = "Clipboard unavailable."
+        _invalidate()
 
     # Gate 3 §2.4: Left mirrors Backspace while a destination is open.
     @kb.add("left", filter=destination_active & ~modal_active)
