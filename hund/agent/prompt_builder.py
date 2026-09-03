@@ -178,7 +178,7 @@ def build_system_prompt(
         parts.append(f"- RAM: {profile.total_ram_gb:.1f}GB")
 
     # Shell
-    parts.append(f"- Shell: {profile.shell}")
+    parts.append(f"- Shell: {profile.shell or 'okänd'}")
 
     # Verktyg
     parts.append(
@@ -190,9 +190,10 @@ def build_system_prompt(
 
     # Beteenderegler baserade på hårdvara
     rules = capability_rules(profile)
+    parts.append("")
+    parts.append("## Beteenderegler baserade på din miljö")
+    parts.append("- Verifiera via terminal om osäker på miljö eller shell, gissa aldrig. Kalla aldrig CMD 'PowerShell'.")
     if rules:
-        parts.append("")
-        parts.append("## Beteenderegler baserade på din miljö")
         parts.extend(f"- {r}" for r in rules)
 
 

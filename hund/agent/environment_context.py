@@ -6,9 +6,13 @@ from typing import Literal
 from ..stats.environment_snapshot import EnvironmentSnapshot, create_environment_snapshot
 
 
-def get_canonical_snapshot(*, force_fresh: bool = False) -> EnvironmentSnapshot:
+def get_canonical_snapshot(
+    workspace: Path | str | None = None,
+    *,
+    force_fresh: bool = False,
+) -> EnvironmentSnapshot:
     """Retrieve the single authoritative environment snapshot."""
-    return create_environment_snapshot(force_fresh=force_fresh)
+    return create_environment_snapshot(workspace=workspace, force_fresh=force_fresh)
 
 
 def serialize_environment_facts(

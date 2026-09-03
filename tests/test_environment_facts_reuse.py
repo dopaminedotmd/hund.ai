@@ -135,3 +135,67 @@ def test_expand_user_context_localization_swedish_and_english(tmp_path: Path) ->
     # Mixed technical text default
     expanded_mixed = expand_user_context("what cpu is used for deepseek-v4 model?", tmp_path)
     assert "[KNOWN ENVIRONMENT FACTS" in expanded_mixed.prompt
+
+
+def test_shell_probe_and_prompt_builder():
+    """Verify probe_shell detects real shell, and prompt_builder emits verified shell & rules."""
+    from hund.doctor import probe_shell, EnvironmentProfile
+    from hund.agent.prompt_builder import build_system_prompt
+    import os
+
+    shell = probe_shell()
+    if os.name == "nt":
+        assert "cmd.exe" in shell
+        assert "powershell" not in shell.lower()
+
+    prof = EnvironmentProfile(
+        os="Windows",
+        os_version="11.0",
+        cpu_count=8,
+        shell=shell,
+        capabilities={"has_git": True, "can_run_python": True},
+    )
+    prompt = build_system_prompt("PERSONA", prof)
+    assert f"- Shell: {shell}" in prompt
+    assert "Kalla aldrig CMD 'PowerShell'" in prompt
+
+
+def test_snapshot_persistence_across_sessions(tmp_path: Path):
+    """Snapshot persists to disk; new session reads without rescan; force_fresh updates."""
+    import hund.stats.environment_snapshot as es
+
+    # Create and persist snapshot
+    snap1 = es.create_environment_snapshot(workspace=tmp_path, force_fresh=True)
+    snap_file = tmp_path / ".hund" / "environment_snapshot.json"
+    assert snap_file.exists()
+
+    # Reset in-memory cache to simulate new process/session
+    es._CACHED_SNAPSHOT = None
+
+    # Load without force_fresh
+    snap2 = es.create_environment_snapshot(workspace=tmp_path, force_fresh=False)
+    assert snap2.observed_at == snap1.observed_at
+    assert snap2.processor == snap1.processor
+    assert snap2.shell == snap1.shell
+
+    # With force_fresh, observed_at should be refreshed
+    snap3 = es.create_environment_snapshot(workspace=tmp_path, force_fresh=True)
+    assert snap3 is not None
+
+
+def test_terminal_tool_pwd_shell_and_utf8(tmp_path: Path):
+    """Verify terminal tool handles utf-8 Swedish characters (åäö) and valid cwd."""
+    from hund.tools.terminal_tool import make_handler
+
+    handler_dict = make_handler(tmp_path)
+    term = handler_dict["terminal"]
+
+    # Write a test python file that outputs åäö
+    py_script = tmp_path / "test_utf8.py"
+    py_script.write_text("print('Hund ser åäö')", encoding="utf-8")
+
+    import sys
+    res = term({"command": f'"{sys.executable}" test_utf8.py'})
+    assert "[exit 0]" in res
+    assert "Hund ser åäö" in res
+

@@ -264,7 +264,42 @@ def _detect_hostname() -> str:
         return ""
 
 
-def profile_environment(workspace: Path | None = None) -> EnvironmentProfile:
+def probe_shell() -> str:
+    """Detect actual shell running via subprocess."""
+    try:
+        if os.name == "nt":
+            proc = subprocess.run(
+                "ver",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            out = proc.stdout.strip()
+            if "Microsoft Windows" in out or "Windows" in out:
+                return f"cmd.exe ({out})"
+            return "cmd.exe"
+        else:
+            proc = subprocess.run(
+                "echo $0",
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
+            out = proc.stdout.strip()
+            if out and not out.startswith("$"):
+                return out
+            return os.environ.get("SHELL", "bash")
+    except Exception:
+        return "okänd"
+
+
+def profile_environment(
+    workspace: Path | None = None,
+    *,
+    shell: str | None = None,
+) -> EnvironmentProfile:
     """Detektera verklig miljö — inklusive GPU, RAM, hostname, OS-detaljer."""
     from .paths import hund_home
 
@@ -292,8 +327,7 @@ def profile_environment(workspace: Path | None = None) -> EnvironmentProfile:
         gpu_vram_mb=gpu_vram,
         total_ram_gb=total_ram_gb,
         python_impl=platform.python_implementation(),
-        shell=os.environ.get("SHELL", "")
-        or ("powershell" if os.name == "nt" else "bash"),
+        shell=shell or probe_shell(),
         has_git=_which("git"),
         has_python=_which("python") or _which("python3"),
         has_uv=_which("uv"),
