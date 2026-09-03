@@ -254,7 +254,27 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
 
     rule = "--" if ascii_only else "──"
     skills_header = f"{rule} ACTIVE SKILLS {rule}"
-    specialisations_header = f"{rule} SPECIALISATIONS (0/6) {rule}"
+
+    # Gate 3 QA: start screen shows the ACTIVE specialisations (equipped
+    # domains), same model as the /skills catalog — never a static "(0/6)".
+    active_spec_names: dict[str, int] = {}
+    for skill in active_skills:
+        if skill.domain and skill.domain != "general":
+            active_spec_names[skill.domain] = active_spec_names.get(skill.domain, 0) + 1
+    spec_names = sorted(active_spec_names)
+    specialisations_header = f"{rule} SPECIALISATIONS ({len(spec_names)}/6) {rule}"
+
+    def specialisation_lines() -> list[str]:
+        if not spec_names:
+            return [row("No active specialisations")]
+        out: list[str] = []
+        for domain in spec_names[:6]:
+            members = [s.name for s in active_skills if s.domain == domain]
+            label = f"● {domain}"
+            if members:
+                label += " (" + ", ".join(members[:3]) + ")"
+            out.append(row(label))
+        return out
 
     command_separator = " * " if ascii_only else " · "
     commands_text = command_separator.join(("commands: /skills", "/stats", "/theme", "/model", "/clear", "/exit"))
@@ -308,7 +328,7 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
                 elif i == 1:
                     r_str = "(use /skills to equip)"
             lines.append(split_row(l_str, r_str))
-        lines.extend([empty, row(specialisations_header), row("No active specialisations")])
+        lines.extend([empty, row(specialisations_header), *specialisation_lines()])
     else:
         # Preserve the wide view's ten-cell XP geometry whenever it fits.
         bar_w = max(4, min(10, W - 27))
@@ -326,7 +346,7 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
         else:
             lines.append(row("(no active skills)"))
             lines.append(row("(use /skills to equip)"))
-        lines.extend([empty, row(specialisations_header), row("No active specialisations")])
+        lines.extend([empty, row(specialisations_header), *specialisation_lines()])
 
     lines.extend([
         empty,

@@ -2212,9 +2212,35 @@ def create_fullscreen_app(
             )
         return ""
 
+    def _screen_mouse_handler(mouse_event: MouseEvent) -> Any:
+        """Mouse wheel scrolls destination views (Gate 3 QA fix).
+
+        In the in-place editor the wheel moves the cursor by lines instead of
+        scrolling a fixed viewport (the viewport auto-follows the cursor).
+        """
+        et = mouse_event.event_type
+        if et not in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
+            return None
+        if screens.edit_mode and screens.destination is DestinationView.SKILLS:
+            from .skill_editor import move_down, move_up
+
+            for _ in range(3):
+                screens.edit_cursor = (
+                    move_up(screens.edit_buffer_text, screens.edit_cursor)
+                    if et == MouseEventType.SCROLL_UP
+                    else move_down(screens.edit_buffer_text, screens.edit_cursor)
+                )
+        else:
+            key = screens.destination.value
+            delta = -3 if et == MouseEventType.SCROLL_UP else 3
+            screens.scroll_by(key, delta, 10_000)
+        _invalidate()
+        return None
+
     screen_window = Window(
         content=FormattedTextControl(lambda: _semantic_screen_fragments(_screen_text())),
         wrap_lines=False,
+        mouse_handler=_screen_mouse_handler,
     )
     screen_container = ConditionalContainer(
         screen_window,

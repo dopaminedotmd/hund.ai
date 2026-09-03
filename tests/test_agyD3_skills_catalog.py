@@ -123,7 +123,8 @@ def test_render_skills_detail_still_reachable_from_catalog_snapshot():
     snap = _snapshot()
     detail = render_skills(snap, width=80, height=24, detail_name="shopify-liquid")
     assert "SKILL DETAIL · shopify-liquid" in detail
-    assert '"steps"' in detail and '"verification"' in detail
+    assert "name: shopify-liquid" in detail
+    assert "(no procedure steps declared)" in detail
     assert "[←] Back" in detail
     # Catalog group headers must not leak into the detail view.
     assert "VAULT (2)" not in detail

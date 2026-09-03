@@ -463,8 +463,50 @@ def skill_definition_text(skill: SkillItem) -> str:
 
 
 def skill_detail_lines(skill: SkillItem) -> list[str]:
-    """Gate 3 §2.5.1: the exact, complete skill definition — no curation."""
-    return ["", *skill_definition_text(skill).splitlines()]
+    """Gate 3 §2.5.1 read view: every field, human-readable — nothing curated away.
+
+    The exact machine definition stays available via skill_definition_text
+    (JSON), which [c] copies and the in-place editor edits.
+    """
+    lines = [
+        "",
+        f"name: {skill.name}",
+        f"domain: {skill.domain or 'general'}",
+        f"scope: {skill.scope}",
+        f"version: {skill.version}",
+        f"capability: {skill.capability_id or '—'}",
+        f"safety: {skill.safety_level}",
+        f"lifecycle: {skill.lifecycle_state} · vault: [{skill.vault_state}]",
+        f"xp: {skill.xp} XP · level: {skill.level} · {skill.tier} · progress: {skill.percent}%",
+        "",
+        "when_to_use:",
+        "  " + (skill.when_to_use or "—"),
+        "",
+        "triggers:",
+    ]
+    lines.extend(f"  - {trigger}" for trigger in skill.triggers)
+    if not skill.triggers:
+        lines.append("  (none declared)")
+    lines.extend(["", "tools:"])
+    lines.extend(f"  - {tool}" for tool in skill.tools)
+    if not skill.tools:
+        lines.append("  (none declared)")
+    lines.extend(["", "steps:"])
+    lines.extend(f"  {index}. {step}" for index, step in enumerate(skill.steps, 1))
+    if not skill.steps:
+        lines.append("  (no procedure steps declared)")
+    lines.extend(["", "verification:"])
+    lines.extend(f"  - {rule}" for rule in skill.verification)
+    if not skill.verification:
+        lines.append("  (none declared)")
+    lines.extend(["", "limitations:"])
+    lines.extend(f"  - {limitation}" for limitation in skill.limitations)
+    if not skill.limitations:
+        lines.append("  (none declared)")
+    if skill.provenance:
+        lines.extend(["", "provenance:"])
+        lines.extend(f"  - {reference}" for reference in skill.provenance)
+    return lines
 
 
 def render_skill_editor(
@@ -479,12 +521,14 @@ def render_skill_editor(
 ) -> str:
     """Gate 3 §2.5.2: in-place editing view in the same window.
 
-    The buffer is rendered with an insert-block cursor spliced at the current
-    offset; the viewport auto-follows so the cursor line stays visible.
+    Lines are cropped horizontally around the cursor (never wrapped) so the
+    block cursor always sits on the exact visible column; the viewport
+    auto-follows so the cursor line stays visible.
     """
     from .skill_editor import offset_to_line_col, split_lines
 
     content_rows = max(height - 3, 1)
+    inner = max(max(20, width - 1) - 6, 16)
     raw_lines = split_lines(text)
     line, col = offset_to_line_col(text, cursor)
     # One content row is reserved for the cursor/status line.
@@ -495,13 +539,31 @@ def render_skill_editor(
     elif line >= effective + capacity:
         effective = max(0, line - capacity + 1)
 
+    # Horizontal crop keeps the cursor column visible on its own line.
+    cursor_col = min(col, len(raw_lines[line]) if raw_lines else 0)
+    h_scroll = max(0, cursor_col - inner + 6)
+    if h_scroll:
+        h_scroll = min(h_scroll, (len(raw_lines[line]) if raw_lines else 0) - 1)
+
+    def crop(row_text: str) -> str:
+        shown = row_text[h_scroll:]
+        prefix = "…" if h_scroll else ""
+        if len(shown) + len(prefix) > inner:
+            shown = shown[: inner - len(prefix) - 1] + "…"
+        return prefix + shown
+
     visible: list[str] = []
     for index in range(effective, min(effective + capacity, len(raw_lines))):
         row_text = raw_lines[index]
         if index == line:
-            col = min(col, len(row_text))
-            row_text = row_text[:col] + "█" + row_text[col:]
-        visible.append(row_text)
+            row_text = row_text[:cursor_col] + "█" + row_text[cursor_col:]
+            rendered = crop(row_text)
+            # Ensure the marker itself is never cropped away.
+            if "█" not in rendered:
+                rendered = rendered[: inner - 1] + "█"
+            visible.append(rendered)
+        else:
+            visible.append(crop(row_text))
     visible.extend([""] * (capacity - len(visible)))
     visible.append(f"[Line {line + 1}, Col {col + 1} · EDIT · Mouse Scroll]")
 
@@ -541,11 +603,12 @@ def render_skills(
         lines.extend(["", status])
 
     if detail:
-        # Gate 3 §2.5.1: dedicated title + meta; [c] copies the definition.
+        # Gate 3 §2.5.1: dedicated title + meta; [e] enters the in-place editor,
+        # [c] copies the full machine definition (JSON).
         footer = (
-            "<- Back * [c] Copy All * [Esc/q] Close * ^v Scroll"
+            "<- Back * [e] Edit Mode * [c] Copy All * [Esc/q] Close * ^v Scroll"
             if ascii_only
-            else "[←] Back · [c] Copy All · [Esc/q] Close · ↑↓ Scroll"
+            else "[←] Back · [e] Edit Mode · [c] Copy All · [Esc/q] Close · ↑↓ Scroll"
         )
         return fullscreen_frame(
             f"SKILL DETAIL · {detail.name}", lines, width=width, height=height,
