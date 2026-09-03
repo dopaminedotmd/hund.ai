@@ -42,6 +42,10 @@ class ScreenController:
     status: str = ""
     chat_cursor: int = 0
     input_text: str = ""
+    # agyD/0 (Gate 3): specialisation two-pane + in-place editor state.
+    panel_focus: dict[str, str] = field(default_factory=dict)  # per destination: "left"|"right"
+    edit_mode: bool = False
+    edit_buffer_text: str = ""
 
     def open_destination(self, destination: DestinationView) -> bool:
         if self.overlay is OverlayView.CONFIRM:
@@ -82,6 +86,15 @@ class ScreenController:
         if self.overlay is not OverlayView.NONE:
             self.overlay = OverlayView.NONE
             return "overlay"
+        if self.edit_mode:
+            self.edit_mode = False
+            return "edit"
+        if (
+            self.destination is DestinationView.SKILLS
+            and self.panel_focus.get(self.destination.value, "left") == "right"
+        ):
+            self.panel_focus[self.destination.value] = "left"
+            return "panel"
         if self.detail.get(self.destination.value):
             self.detail[self.destination.value] = None
             return "detail"
@@ -111,6 +124,15 @@ class ScreenController:
         if self.overlay is not OverlayView.NONE:
             self.overlay = OverlayView.NONE
             return "overlay"
+        if self.edit_mode:
+            self.edit_mode = False
+            return "edit"
+        if (
+            self.destination is DestinationView.SKILLS
+            and self.panel_focus.get(self.destination.value, "left") == "right"
+        ):
+            self.panel_focus[self.destination.value] = "left"
+            return "panel"
         if self.detail.get(self.destination.value):
             self.detail[self.destination.value] = None
             return "detail"
