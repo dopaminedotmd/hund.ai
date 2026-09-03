@@ -105,6 +105,7 @@ from .confirmation import confirmation_options, prompt_edits
 from .mascot import MascotMachine, mirror_art
 from .screen_state import DestinationView, OverlayView, ScreenController
 from .screen_render import (
+    catalog_selectables,
     fullscreen_frame,
     render_auth_add_modal,
     render_auth_custom_wizard_modal,
@@ -4232,10 +4233,7 @@ def create_fullscreen_app(
         key = screens.destination.value
         snapshot = screen_snapshots.get(key)
         if screens.destination is DestinationView.SKILLS and snapshot is not None:
-            screens.move(
-                key, -1,
-                len(snapshot.equipped) + len(snapshot.parked) + len(snapshot.proposals),
-            )
+            screens.move(key, -1, len(catalog_selectables(snapshot)))
             screens.scroll_by(key, -1, 10_000)
         elif screens.destination is DestinationView.TOOLS and snapshot is not None:
             screens.move(key, -1, len(snapshot.tools))
@@ -4249,10 +4247,7 @@ def create_fullscreen_app(
         key = screens.destination.value
         snapshot = screen_snapshots.get(key)
         if screens.destination is DestinationView.SKILLS and snapshot is not None:
-            screens.move(
-                key, 1,
-                len(snapshot.equipped) + len(snapshot.parked) + len(snapshot.proposals),
-            )
+            screens.move(key, 1, len(catalog_selectables(snapshot)))
             screens.scroll_by(key, 1, 10_000)
         elif screens.destination is DestinationView.TOOLS and snapshot is not None:
             screens.move(key, 1, len(snapshot.tools))
@@ -4288,13 +4283,16 @@ def create_fullscreen_app(
         snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
         if snapshot is None:
             return
-        offset = len(snapshot.equipped) + len(snapshot.parked)
+        entries = catalog_selectables(snapshot)
         selected = screens.selected.get(DestinationView.SKILLS.value, 0)
-        if selected < offset or (selected - offset) >= len(snapshot.proposals):
+        if not (0 <= selected < len(entries)):
+            return
+        kind, index = entries[selected]
+        if kind != "proposal" or not (0 <= index < len(snapshot.proposals)):
             return
         from hund.learning.skill_proposals import SkillProposalStore
 
-        item = snapshot.proposals[selected - offset]
+        item = snapshot.proposals[index]
         if SkillProposalStore().unsuppress(item.candidate_id):
             screens.status = f"Re-enabled {item.name}."
             screen_snapshots[DestinationView.SKILLS.value] = collect_skills(
@@ -4316,12 +4314,24 @@ def create_fullscreen_app(
             snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
             if snapshot is None:
                 return
-            all_skills = snapshot.equipped + snapshot.parked
+            # Shared catalog model (Gate 3 §2.3): selection is an index into
+            # catalog_selectables, so Enter can distinguish skill vs spec rows.
+            entries = catalog_selectables(snapshot)
             selected = screens.selected.get(DestinationView.SKILLS.value, 0)
-            if 0 <= selected < len(all_skills):
-                skill = all_skills[selected]
-                screens.detail["skills"] = skill.name
-                _invalidate()
+            if not (0 <= selected < len(entries)):
+                return
+            kind, index = entries[selected]
+            if kind in ("skill", "vault"):
+                pool = snapshot.equipped if kind == "skill" else snapshot.parked
+                if 0 <= index < len(pool):
+                    screens.detail["skills"] = pool[index].name
+                    _invalidate()
+            elif kind == "spec":
+                # ponytail: two-pane specialisation management lands in Gate 3
+                # step D4; D3 keeps the dispatch slot reserved.
+                if 0 <= index < len(snapshot.specialisations):
+                    screens.status = "Specialisation management opens in the next build step."
+                    _invalidate()
         elif screens.destination is DestinationView.TOOLS:
             if screens.detail.get("tools"):
                 screens.detail["tools"] = None
