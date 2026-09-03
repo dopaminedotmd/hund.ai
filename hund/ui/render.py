@@ -243,11 +243,12 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
         attr_data.append((abbr, name, pct))
 
     # Only audited Skill XP is eligible for atomic-skill proficiency display.
+    # Full projection (no limit) so specialisation rows can aggregate every
+    # equipped member; the ACTIVE SKILLS columns slice top rows below.
     try:
         skill_data = project_active_skill_xp(
             active_skills,
             db_path=db_path,
-            limit=5,
         )
     except Exception:
         skill_data = ()
@@ -267,13 +268,34 @@ def build_startup_banner(rt, width: int = 80, *, db_path=None) -> str:
     def specialisation_lines() -> list[str]:
         if not spec_names:
             return [row("No active specialisations")]
+        # agyD/9 QA: specialisations on the start page get the same level +
+        # progress bar visual language as active skills (max member level,
+        # mean member progress), reusing the already-computed XP projection.
+        projection_by_capability = {
+            proj.capability_id: proj for proj in skill_data
+        }
+        bar_cells = 10 if W >= 72 else max(4, min(10, W - 27))
+        # Keep the fixed tail (level+bar+pct) inside the content width so the
+        # trailing "%" never gets clipped on narrow screens.
+        tail_cells = 11 + bar_cells
+        domain_pad = max(4, min(16, (W - 6) - tail_cells))
         out: list[str] = []
         for domain in spec_names[:6]:
-            members = [s.name for s in active_skills if s.domain == domain]
-            label = f"● {domain}"
-            if members:
-                label += " (" + ", ".join(members[:3]) + ")"
-            out.append(row(label))
+            members = [s for s in active_skills if s.domain == domain]
+            projections = [
+                projection_by_capability[getattr(s, "capability_id", "") or s.name]
+                for s in members
+                if (getattr(s, "capability_id", "") or s.name) in projection_by_capability
+            ]
+            if projections:
+                level = max(proj.level for proj in projections)
+                pct = round(
+                    sum(proj.progress_percent for proj in projections) / len(projections)
+                )
+            else:
+                level, pct = 1, 0
+            bar = progress_bar(pct, bar_cells)
+            out.append(row(f"● {domain:<{domain_pad}} L{level} {bar} {pct:>3}%"))
         return out
 
     command_separator = " * " if ascii_only else " · "

@@ -107,6 +107,7 @@ from .screen_state import DestinationView, OverlayView, ScreenController
 from .screen_render import (
     _spec_left_items,
     _spec_member_items,
+    catalog_click_selection,
     catalog_selectables,
     fullscreen_frame,
     render_auth_add_modal,
@@ -128,6 +129,7 @@ from .screen_render import (
     render_doctor,
     render_skill_editor,
     skill_definition_text,
+    skill_detail_lines,
 )
 from .snapshots import collect_skills, collect_stats, collect_tools, collect_usage
 from ..config import CustomEndpoint
@@ -2072,6 +2074,7 @@ def create_fullscreen_app(
                     cursor=screens.edit_cursor,
                     width=width, height=height,
                     scroll=screens.scroll.get(key, 0),
+                    status=screens.status,
                     ascii_only=getattr(rt.cfg, "ascii_ui", False),
                 )
             if screens.detail.get(f"{key}_spec"):
@@ -2213,12 +2216,47 @@ def create_fullscreen_app(
         return ""
 
     def _screen_mouse_handler(mouse_event: MouseEvent) -> Any:
-        """Mouse wheel scrolls destination views (Gate 3 QA fix).
+        """Mouse drives destination views (Gate 3 QA fixes).
 
-        In the in-place editor the wheel moves the cursor by lines instead of
-        scrolling a fixed viewport (the viewport auto-follows the cursor).
+        Wheel scrolls views / moves the editor cursor by lines. agyD/9 QA:
+        MOUSE_DOWN selects the clicked /skills catalog row and places the
+        editor cursor at the clicked character (no text change).
         """
         et = mouse_event.event_type
+        if et == MouseEventType.MOUSE_DOWN:
+            if screens.destination is not DestinationView.SKILLS:
+                return None
+            x, y = mouse_event.position.x, mouse_event.position.y
+            if screens.edit_mode and screens.detail.get("skills"):
+                from .skill_editor import click_to_offset
+
+                offset = click_to_offset(
+                    screens.edit_buffer_text,
+                    screens.edit_cursor,
+                    width=_app_width(),
+                    height=_app_height(),
+                    scroll=screens.scroll.get(DestinationView.SKILLS.value, 0),
+                    x=x,
+                    y=y,
+                )
+                if offset is not None:
+                    screens.edit_cursor = offset
+                    _invalidate()
+                return None
+            if not screens.detail.get("skills") and not screens.detail.get("skills_spec"):
+                snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+                if snapshot is not None:
+                    index = catalog_click_selection(
+                        snapshot,
+                        width=_app_width(),
+                        height=_app_height(),
+                        scroll=screens.scroll.get(DestinationView.SKILLS.value, 0),
+                        y=y,
+                    )
+                    if index is not None:
+                        screens.selected[DestinationView.SKILLS.value] = index
+                        _invalidate()
+            return None
         if et not in (MouseEventType.SCROLL_UP, MouseEventType.SCROLL_DOWN):
             return None
         if screens.edit_mode and screens.destination is DestinationView.SKILLS:
@@ -4328,6 +4366,21 @@ def create_fullscreen_app(
             doctor_review_fixes[0] = not doctor_review_fixes[0]
             _invalidate()
 
+    # agyD/9 QA: explicit Activate/Park keys — [a] equips the selected skill,
+    # [p] parks it (with the same confirm flow as [r]). Enter never toggles
+    # parked state anymore (it opens the skill inspect instead).
+    @kb.add("a", filter=destination_active & ~modal_active)
+    @kb.add("A", filter=destination_active & ~modal_active)
+    def _skill_activate(event):
+        _skill_activate_park(activate=True)
+        _invalidate()
+
+    @kb.add("p", filter=destination_active & ~modal_active)
+    @kb.add("P", filter=destination_active & ~modal_active)
+    def _skill_park(event):
+        _skill_activate_park(activate=False)
+        _invalidate()
+
     @kb.add("backspace", filter=overlay_active & ~modal_input_active & ~confirm_active)
     def _overlay_nav_back(event):
         res = screens.step_back()
@@ -4428,6 +4481,70 @@ def create_fullscreen_app(
                 screens.selected["skills_member"] = position
         screens.status = msg
 
+    def _item_from_selection(snapshot):
+        """The skill under the current cursor, across every SKILLS subview."""
+        if _skills_spec_open():
+            if screens.panel_focus.get("skills", "left") != "right":
+                return None
+            found = _skills_management_selection(snapshot)
+            if not found:
+                return None
+            _spec, _active, members, member_index = found
+            if not members:
+                return None
+            return members[member_index]
+        detail_name = screens.detail.get("skills")
+        if detail_name:
+            return next(
+                (item for item in snapshot.equipped + snapshot.parked if item.name == detail_name),
+                None,
+            )
+        entries = catalog_selectables(snapshot)
+        selected = screens.selected.get(DestinationView.SKILLS.value, 0)
+        if not (0 <= selected < len(entries)):
+            return None
+        kind, index = entries[selected]
+        if kind in ("skill", "vault"):
+            pool = snapshot.equipped if kind == "skill" else snapshot.parked
+            if 0 <= index < len(pool):
+                return pool[index]
+        return None
+
+    def _skill_activate_park(*, activate: bool) -> None:
+        """[a] equips / [p] parks the selected skill (agyD/9 QA)."""
+        snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+        if snapshot is None:
+            return
+        item = _item_from_selection(snapshot)
+        if item is None:
+            return
+        if activate and item.vault_state == "equipped":
+            screens.status = f"{item.name} is already active."
+            return
+        if not activate and item.vault_state != "equipped":
+            screens.status = f"{item.name} is already parked."
+            return
+        if not activate:
+            # Park goes through the same confirm modal as [r].
+            spec_name = ""
+            if _skills_spec_open():
+                found = _skills_management_selection(snapshot)
+                if found:
+                    spec_name = found[0].name
+            spec_member_remove["skill"] = item.name
+            spec_member_remove["spec"] = spec_name or (item.domain or "")
+            screens.open_overlay(OverlayView.SPEC_MEMBER_REMOVE)
+            return
+        from ..skills.vault import SkillVault
+
+        sid = _skills_member_scoped_id(item, getattr(rt, "workspace", None))
+        ok, msg = SkillVault().equip(sid)
+        if ok:
+            _reload_skills_snapshot()
+            screens.status = f"Activated {item.name}."
+        else:
+            screens.status = msg
+
     # ---- Gate 3 §2.5.2: in-place skill editor ----
     def _edit_current_name() -> str:
         return str(screens.detail.get("skills") or "")
@@ -4454,19 +4571,18 @@ def create_fullscreen_app(
         )
         if item is None:
             return
-        text = skill_definition_text(item)
-        # Prefer the real on-disk definition for full fidelity while editing.
+        # agyD/9 QA: edit the SAME human-readable text as the read view —
+        # never raw JSON. Save parses the text back and merges it onto the
+        # real on-disk skill (base_dict) so untouched fields survive.
+        text = "\n".join(skill_detail_lines(item))
         from ..skills.vault import SkillVault
 
         real = SkillVault().find_skill(name, workspace=getattr(rt, "workspace", None))
-        if real is not None:
-            import json
-
-            text = json.dumps(real.to_dict(), indent=2, ensure_ascii=False)
         screens.edit_buffer_text = text
         screens.edit_cursor = 0
         screens.edit_mode = True
         edit_state["original"] = text
+        edit_state["base_dict"] = real.to_dict() if real is not None else None
         edit_state["discard_pending"] = False
         screens.status = ""
 
@@ -4502,7 +4618,8 @@ def create_fullscreen_app(
         if real is not None and real.immutable:
             screens.status = f"'{name}' is a constitutional skill and cannot be edited."
             return
-        skill, msg = parse_and_validate(screens.edit_buffer_text, name)
+        base = real.to_dict() if real is not None else None
+        skill, msg = parse_and_validate(screens.edit_buffer_text, name, base=base)
         if skill is None:
             screens.status = msg
             return
@@ -4515,6 +4632,9 @@ def create_fullscreen_app(
         edit_state["discard_pending"] = False
         screens.edit_cursor = 0
         screens.status = "Skill saved successfully"
+        # Scroll to the end so the confirmation line (appended under the
+        # detail) is actually visible — it was silently below the fold.
+        screens.scroll[DestinationView.SKILLS.value] = 10**9
 
     def _edit_external() -> None:
         """Ctrl+O: edit a temp copy in $EDITOR/notepad; reload on exit."""
@@ -4775,14 +4895,30 @@ def create_fullscreen_app(
     def _destination_enter(event):
         if screens.destination is DestinationView.SKILLS:
             if _skills_spec_open():
-                # Gate 3 §2.4: Enter moves left -> right, then toggles members.
+                # Gate 3 §2.4: Enter on the LEFT moves focus to the members
+                # panel. agyD/9 QA: Enter on a member opens its skill inspect —
+                # it no longer toggles active/parked ([a]/[p] do that now).
                 if screens.panel_focus.get("skills", "left") == "left":
                     screens.panel_focus["skills"] = "right"
                     screens.selected["skills_member"] = 0
                 else:
                     snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
-                    if snapshot is not None:
-                        _toggle_spec_member(snapshot)
+                    if snapshot is None:
+                        _invalidate()
+                        return
+                    found = _skills_management_selection(snapshot)
+                    if not found:
+                        _invalidate()
+                        return
+                    _spec, _active, members, member_index = found
+                    if not members:
+                        _invalidate()
+                        return
+                    item = members[member_index]
+                    screens.detail["skills"] = item.name
+                    screens.detail["skills_spec"] = None
+                    screens.panel_focus["skills"] = "left"
+                    screens.selected["skills_member"] = 0
                 _invalidate()
                 return
             if screens.detail.get("skills"):

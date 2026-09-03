@@ -229,7 +229,9 @@ def test_banner_breakpoint_preserves_full_percentages(monkeypatch) -> None:
     for width in (42, 50, 59, 60, 72, 79, 80, 120):
         banner = build_startup_banner(rt, width=width)
         assert all(cell_width(line) == width for line in banner.splitlines())
-        assert banner.count("100%") == 6, f"W={width}\n{banner}"
+        # 5 base stats + active skill row + specialisation row (agyD/9 added
+        # level/progress bars to start-page specialisations).
+        assert banner.count("100%") == 7, f"W={width}\n{banner}"
         stats_section = banner.split("── BASE STATS", 1)[1]
         if width < 72:
             assert " │  " not in stats_section
