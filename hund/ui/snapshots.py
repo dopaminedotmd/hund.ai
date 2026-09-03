@@ -77,10 +77,26 @@ class SkillProposalItem:
 
 
 @dataclass(frozen=True)
+class CatalogSpecialisation:
+    """Specialisation row for the /skills catalog (Gate 3 §2.3).
+
+    Derived from the skill vault by domain: a specialisation is the set of
+    domain skills (equipped or parked) sharing one domain, shown with its
+    member skill names as non-selectable `└` rows.
+    """
+
+    name: str
+    level: int
+    percent: int
+    members: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class SkillsSnapshot:
     equipped: tuple[SkillItem, ...]
     parked: tuple[SkillItem, ...]
     proposals: tuple[SkillProposalItem, ...] = ()
+    specialisations: tuple[CatalogSpecialisation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -276,7 +292,9 @@ def collect_skills(
     from ..skills.vault import SkillVault
 
     vault = SkillVault(home=home)
-    equipped_skills = tuple(vault.get_active_skills(workspace=workspace))
+    all_domain = tuple(vault.get_domain_skills(workspace=workspace))
+    equipped_skills = tuple(s for s in all_domain if s.vault_state == "equipped")
+    parked_skills = tuple(s for s in all_domain if s.vault_state == "vaulted")
     projection_by_capability = {
         row.capability_id: row
         for row in project_active_skill_xp(
@@ -309,9 +327,31 @@ def collect_skills(
         )
 
     equipped = tuple(convert(skill) for skill in equipped_skills)
-    parked = tuple(
-        convert(skill) for skill in vault.list_vaulted(workspace=workspace)
-    )
+    parked = tuple(convert(skill) for skill in parked_skills)
+
+    # Gate 3 §2.3: specialisations = equipped domains with member names from
+    # every skill (equipped or parked) sharing that domain.
+    equipped_by_capability = {item.capability_id: item for item in equipped}
+    domains_in_order: dict[str, list[Any]] = {}
+    for skill in equipped_skills:
+        if skill.domain and skill.domain != "general":
+            domains_in_order.setdefault(skill.domain, []).append(skill)
+    specialisations: list[CatalogSpecialisation] = []
+    for domain, raw_members in domains_in_order.items():
+        items = [equipped_by_capability[s.capability_id] for s in raw_members]
+        member_names = tuple(
+            s.name for s in all_domain if s.domain == domain
+        )
+        specialisations.append(
+            CatalogSpecialisation(
+                domain,
+                max(item.level for item in items),
+                round(sum(item.percent for item in items) / len(items)),
+                member_names,
+            )
+        )
+    specialisations.sort(key=lambda item: item.name.casefold())
+
     proposals: tuple[SkillProposalItem, ...] = ()
     if include_proposals:
         from ..learning.skill_proposals import ProposalState, SkillProposalStore
@@ -330,7 +370,9 @@ def collect_skills(
                 proposal_states
             )
         )
-    return SkillsSnapshot(equipped, parked, proposals)
+    return SkillsSnapshot(
+        equipped, parked, proposals, specialisations=tuple(specialisations)
+    )
 
 
 def collect_tools() -> ToolsSnapshot:

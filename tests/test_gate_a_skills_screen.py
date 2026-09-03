@@ -57,17 +57,19 @@ class TestSkillsScreenTruthfulLabels:
     def test_screen_title_is_skills_not_specializations(self):
         snap = self._create_snapshot()
         rendered = render_skills(snap, width=80, height=24)
-        assert "SKILLS" in rendered
+        assert "SKILLS (1)" in rendered
         assert "SPECIALIZATIONS" not in rendered
 
     def test_section_headers_are_truthful(self):
         snap = self._create_snapshot()
         lines = skills_lines(snap, width=80, selected=0)
         text = "\n".join(lines)
-        assert "EQUIPPED SKILLS" in text
-        assert "EQUIPPED SPECIALIZATIONS" not in text
-        assert "VAULT · PARKED" in text
-        assert "SKILL SEEDS" in text
+        assert "SKILLS (1)" in text
+        assert "VAULT (1)" in text
+        assert "PROPOSALS (1)" in text
+        assert "SPECIALISATIONS (0)" in text
+        assert "EQUIPPED SKILLS" not in text
+        assert "SKILL SEEDS" not in text
 
     def test_skill_detail_render_and_back_contract(self):
         snap = self._create_snapshot()

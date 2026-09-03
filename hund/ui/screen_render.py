@@ -13,7 +13,9 @@ from ..stats.environment_snapshot import EnvironmentSnapshot
 from ..stats.tiers import render_bar
 from .command_spec import get_categorized_commands
 from .snapshots import (
+    CatalogSpecialisation,
     SkillItem,
+    SkillProposalItem,
     SkillsSnapshot,
     StatsSnapshot,
     ToolItem,
@@ -333,56 +335,100 @@ def render_stats(
     )
 
 
-def _skill_row(skill: SkillItem, selected: bool, compact: bool) -> str:
-    marker = "❯ ●" if selected else "  ○"
+def _vault_tag(item: SkillItem) -> str:
+    return "active" if item.vault_state == "equipped" else "parked"
+
+
+def catalog_selectables(snapshot: SkillsSnapshot) -> tuple[tuple[str, int], ...]:
+    """Ordered selectable (kind, index) entries for the /skills catalog.
+
+    Shared source of truth between skills_lines (highlighting) and fullscreen
+    navigation (count + Enter dispatch) — Gate 3 §2.3. Spec member `└` rows are
+    informational and never consume a selectable slot, so they are absent here.
+    """
+    entries: list[tuple[str, int]] = []
+    entries.extend(("skill", index) for index in range(len(snapshot.equipped)))
+    entries.extend(("spec", index) for index in range(len(snapshot.specialisations)))
+    entries.extend(("vault", index) for index in range(len(snapshot.parked)))
+    entries.extend(("proposal", index) for index in range(len(snapshot.proposals)))
+    return tuple(entries)
+
+
+def _catalog_skill_row(skill: SkillItem, selected: bool, compact: bool) -> str:
+    marker = "❯ ● " if selected else "  ○ "
     if compact:
-        return f"{marker} {_clip(skill.name, 17):<17} Lv.{skill.level} {skill.percent:>3}%"
+        return (
+            f"{marker}{_clip(skill.name, 15):<15} "
+            f"L{skill.level} {skill.percent:>3}%  [{_vault_tag(skill)}]"
+        )
     return (
-        f"{marker} {_clip(skill.name, 20):<20} {render_bar(skill.percent, 10)} "
-        f"{skill.tier:<11} {skill.percent:>3}% [{skill.vault_state}]"
+        f"{marker}{_clip(skill.name, 17):<17} {render_bar(skill.percent, 10)} "
+        f"L{skill.level} {skill.percent:>3}%  [{_vault_tag(skill)}]"
     )
 
 
+def _catalog_spec_row(spec: CatalogSpecialisation, selected: bool, compact: bool) -> str:
+    marker = "❯ ● " if selected else "  ○ "
+    if compact:
+        return (
+            f"{marker}{_clip(spec.name, 15):<15} L{spec.level} {spec.percent:>3}%"
+        )
+    return (
+        f"{marker}{_clip(spec.name, 17):<17} L{spec.level} "
+        f"{render_bar(spec.percent, 10)} {spec.percent:>3}%  [active]"
+    )
+
+
+def _catalog_proposal_row(proposal: SkillProposalItem, selected: bool) -> str:
+    marker = "❯ ● " if selected else "  ○ "
+    return f"{marker}{_clip(proposal.name, 18):<18} ◇ {proposal.state}"
+
+
 def skills_lines(snapshot: SkillsSnapshot, width: int, selected: int) -> list[str]:
-    all_skills = snapshot.equipped + snapshot.parked
-    inner_w = max(width - 5, 16)
-    lines = ["", _section(
-        f"EQUIPPED SKILLS ({len(snapshot.equipped)})",
-        inner_w,
-    )]
-    if snapshot.equipped:
-        lines.extend(
-            _skill_row(skill, index == selected, width < 60)
-            for index, skill in enumerate(snapshot.equipped)
-        )
-    else:
-        lines.append("No skills equipped.")
-    lines.extend(["", _section(f"VAULT · PARKED ({len(snapshot.parked)})", inner_w)])
-    offset = len(snapshot.equipped)
-    if snapshot.parked:
-        lines.extend(
-            _skill_row(skill, offset + index == selected, width < 60)
-            for index, skill in enumerate(snapshot.parked)
-        )
-    else:
-        lines.append("No parked skills.")
-    proposal_offset = offset + len(snapshot.parked)
-    lines.extend([
-        "",
-        _section(
-            f"SKILL SEEDS ({len(snapshot.proposals)} QUIET CANDIDATES)",
-            inner_w,
-        ),
-    ])
-    if snapshot.proposals:
-        for index, proposal in enumerate(snapshot.proposals):
-            marker = "❯" if proposal_offset + index == selected else " "
-            lines.append(
-                f"{marker} {_clip(proposal.name, 28):<28} "
-                f"[{proposal.state}] · {proposal.scope}"
-            )
-    else:
-        lines.append("No queued or suppressed proposals.")
+    """Gate 3 §2.3: four-group catalog (SKILLS / SPECIALISATIONS / VAULT / PROPOSALS).
+
+    Row order and selectable increments must stay in sync with
+    catalog_selectables(): one `cursor` step per selectable row, none for
+    section headers, spec `└` member rows, or empty placeholders.
+    """
+    compact = width < 60
+    # Fullscreen frame inner width: frame_w = max(20, width - 1), two border
+    # cells plus two spaces of padding on each side -> width - 7 at >= 27 cols.
+    inner_w = max(max(20, width - 1) - 6, 16)
+    lines: list[str] = []
+    cursor = 0
+
+    lines.extend(["", _section(f"SKILLS ({len(snapshot.equipped)})", inner_w)])
+    for item in snapshot.equipped:
+        lines.append(_catalog_skill_row(item, cursor == selected, compact))
+        cursor += 1
+    if not snapshot.equipped:
+        lines.append("(No active skills equipped.)")
+
+    lines.extend(
+        ["", _section(f"SPECIALISATIONS ({len(snapshot.specialisations)})", inner_w)]
+    )
+    for spec in snapshot.specialisations:
+        lines.append(_catalog_spec_row(spec, cursor == selected, compact))
+        if spec.members:
+            lines.append("      └ " + " · ".join(spec.members))
+        cursor += 1
+    if not snapshot.specialisations:
+        lines.append("(No specialisations yet.)")
+
+    lines.extend(["", _section(f"VAULT ({len(snapshot.parked)})", inner_w)])
+    for item in snapshot.parked:
+        lines.append(_catalog_skill_row(item, cursor == selected, compact))
+        cursor += 1
+    if not snapshot.parked:
+        lines.append("(No parked skills.)")
+
+    lines.extend(["", _section(f"PROPOSALS ({len(snapshot.proposals)})", inner_w)])
+    for proposal in snapshot.proposals:
+        lines.append(_catalog_proposal_row(proposal, cursor == selected))
+        cursor += 1
+    if not snapshot.proposals:
+        lines.append("(No skill proposals.)")
     return lines
 
 
@@ -429,28 +475,34 @@ def render_skills(
     status: str = "",
     ascii_only: bool = False,
 ) -> str:
-    all_skills = snapshot.equipped + snapshot.parked
-    detail = next((item for item in all_skills if item.name == detail_name), None)
+    detail = next(
+        (
+            item
+            for item in snapshot.equipped + snapshot.parked
+            if item.name == detail_name
+        ),
+        None,
+    )
     lines = skill_detail_lines(detail) if detail else skills_lines(snapshot, width, selected)
     if status:
         lines.extend(["", status])
 
     if detail:
-        footer = "[←] Back · [Esc/q] Close"
+        footer = (
+            "<- Back * [Esc/q] Close"
+            if ascii_only
+            else "[←] Back · [Esc/q] Close"
+        )
     else:
-        offset = len(snapshot.equipped) + len(snapshot.parked)
-        if selected >= offset and (selected - offset) < len(snapshot.proposals):
-            prop = snapshot.proposals[selected - offset]
-            if prop.state in ("suppressed", "deferred", "declined"):
-                footer = "[←] Back · [Esc/q] Close · ↑↓ Select · [u] Unsuppress"
-            else:
-                footer = "[←] Back · [Esc/q] Close · ↑↓ Select"
-        else:
-            footer = "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect"
+        footer = (
+            "<- Back * [Esc/q] Close * ^v Select * Enter Inspect/Manage * [n] New"
+            if ascii_only
+            else "[←] Back · [Esc/q] Close · ↑↓ Select · Enter Inspect/Manage · [n] New"
+        )
 
     return fullscreen_frame(
         "SKILLS", lines, width=width, height=height,
-        meta=f"[{len(snapshot.equipped)} equipped]",
+        meta=f"[{len(snapshot.equipped) + len(snapshot.parked)} skills]",
         footer=footer, scroll=scroll, ascii_only=ascii_only,
     )
 
