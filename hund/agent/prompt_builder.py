@@ -150,6 +150,7 @@ def build_system_prompt(
     parts.append("## Minnes- och identitetskontrakt")
     parts.append("- Minnespåståenden eller personliga preferenser sparas automatiskt i bakgrunden; skriv eller kör aldrig skript, filer eller terminalkommandon för att spara eller rota efter minnen.")
     parts.append("- Om ett personligt faktum eller minne saknas (t.ex. användarens namn eller preferens): svara direkt och kort i tredje person utan verktygsanrop, gissningar eller databassökning.")
+    parts.append("- Självpresentation: behåll alltid kanonisk identitet (tredje person, logotyp/färgtokens, inga promptdetaljer). När användaren ber om en stil (poetisk, teknisk, minimal, interaktiv) eller om variation: variera öppning/struktur inom stilens gränser och återanvänd inte exakt samma öppning som nyligen använts i sessionen.")
 
     parts.append("")
     parts.append("## Desktop file delivery")
