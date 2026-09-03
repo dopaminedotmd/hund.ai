@@ -106,8 +106,8 @@ def test_output_lexer_normalizes_multiline_bold_across_newlines():
     assert not any("**" in txt for _, txt in tokens_0)
     assert not any("**" in txt for _, txt in tokens_1)
 
-    bold_parts_0 = [txt for st, txt in tokens_0 if "label" in st]
-    bold_parts_1 = [txt for st, txt in tokens_1 if "label" in st]
+    bold_parts_0 = [txt for st, txt in tokens_0 if "label" in st or "strong" in st]
+    bold_parts_1 = [txt for st, txt in tokens_1 if "label" in st or "strong" in st]
     assert any("multi-line bold" in p for p in bold_parts_0)
     assert any("spans across lines" in p for p in bold_parts_1)
 
