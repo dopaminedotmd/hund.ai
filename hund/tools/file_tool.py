@@ -96,6 +96,7 @@ class FileChangeResult(str):
     binary: bool
     error: str | None
     change_id: int
+    note: str
 
     def __new__(
         cls,
@@ -110,6 +111,7 @@ class FileChangeResult(str):
         binary: bool = False,
         error: str | None = None,
         change_id: int | None = None,
+        note: str = "",
     ) -> FileChangeResult:
         if status == "failed":
             text = f"[error] {error or 'file operation failed'}"
@@ -119,6 +121,8 @@ class FileChangeResult(str):
             text = f"ändrade {path}"
         else:
             text = f"skrev {len(committed_content_or_diff)} bytes -> {path}"
+        if note and status in ("created", "modified"):
+            text += "\n" + note
 
         instance = super().__new__(cls, text)
         object.__setattr__(instance, "operation", str(operation))
@@ -133,6 +137,7 @@ class FileChangeResult(str):
         object.__setattr__(instance, "error", str(error) if error is not None else None)
         cid = change_id if change_id is not None else next(_CHANGE_ID_COUNTER)
         object.__setattr__(instance, "change_id", int(cid))
+        object.__setattr__(instance, "note", str(note))
         return instance
 
     def __repr__(self) -> str:
@@ -171,6 +176,7 @@ class FileChangeResult(str):
             "binary": self.binary,
             "error": self.error,
             "change_id": self.change_id,
+            "note": self.note,
         }
 
     @classmethod
@@ -187,6 +193,7 @@ class FileChangeResult(str):
             binary=bool(data.get("binary", False)),
             error=data.get("error"),
             change_id=data.get("change_id"),
+            note=data.get("note", ""),
         )
 
 
@@ -382,6 +389,53 @@ def make_handlers(workspace: Path) -> dict:
         content = args.get("content", "")
         lang = _detect_language(path_str)
 
+        def _html_artifact_note(html_content: str) -> str:
+            """Static well-formedness note for generated HTML (agyC/2, Spår 12).
+
+            Parse-level invariants only. Visual/layout correctness needs a real
+            browser — the note says so instead of ever claiming 'parse ok'.
+            """
+            from html.parser import HTMLParser
+
+            errors: list[str] = []
+
+            class _Checker(HTMLParser):
+                def __init__(self) -> None:
+                    super().__init__(convert_charrefs=True)
+                    self.stack: list[str] = []
+
+                def handle_starttag(self, tag, attrs) -> None:
+                    if tag not in (
+                        "br", "hr", "img", "input", "meta", "link", "source",
+                        "wbr", "area", "base", "col", "embed", "param", "track",
+                    ):
+                        self.stack.append(tag)
+
+                def handle_endtag(self, tag) -> None:
+                    if self.stack and self.stack[-1] == tag:
+                        self.stack.pop()
+                    elif tag in self.stack:
+                        while self.stack and self.stack[-1] != tag:
+                            errors.append(f"unclosed <{self.stack.pop()}>")
+                        if self.stack:
+                            self.stack.pop()
+                    else:
+                        errors.append(f"stray </{tag}>")
+
+            try:
+                checker = _Checker()
+                checker.feed(html_content)
+                for tag in checker.stack:
+                    errors.append(f"unclosed <{tag}>")
+            except Exception as exc:
+                errors.append(f"parse error: {exc}")
+            if not errors:
+                return (
+                    "[html static check: well-formed. Visual/layout correctness "
+                    "requires a real browser — do not claim visual ok without it.]"
+                )
+            return "[html static check: " + "; ".join(errors[:5]) + "]"
+
         try:
             p = _resolve(ws, path_str)
         except Exception as exc:
@@ -488,6 +542,12 @@ def make_handlers(workspace: Path) -> dict:
         final_preview = redacted_preview_res.text
         redacted = bool(redacted_preview_res.blocked_fields or "[REDACTED" in final_preview or final_preview != preview)
 
+        # agyC/2 (Spår 12): static well-formedness note carried on the result
+        # string only (diff/preview stay clean for UI counts).
+        html_note = ""
+        if status in ("created", "modified") and path_str.lower().endswith((".html", ".htm")):
+            html_note = _html_artifact_note(content)
+
         res = FileChangeResult(
             operation="write_file",
             path=path_str,
@@ -498,6 +558,7 @@ def make_handlers(workspace: Path) -> dict:
             truncated=truncated,
             redacted=redacted,
             binary=False,
+            note=html_note,
         )
         _record_latest_file_change(res)
         return res
