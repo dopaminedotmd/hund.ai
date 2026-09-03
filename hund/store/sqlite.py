@@ -168,7 +168,8 @@ CREATE TABLE IF NOT EXISTS requests (
     completion_tokens INTEGER DEFAULT 0,
     latency_ms INTEGER DEFAULT 0,
     run_id TEXT,
-    reasoning_content TEXT
+    reasoning_content TEXT,
+    tool_calls_emitted INTEGER DEFAULT 0
 );
 """
 
@@ -179,7 +180,11 @@ CREATE TABLE IF NOT EXISTS tool_events (
     tool TEXT,
     risk TEXT,
     outcome TEXT,                -- ran|approved|declined|blocked|error
-    success INTEGER DEFAULT 0    -- 1 om tool körde utan fel
+    success INTEGER DEFAULT 0,   -- 1 om tool körde utan fel
+    run_id TEXT,
+    session_id TEXT,
+    latency_ms INTEGER DEFAULT 0,
+    risk_class TEXT
 );
 """
 
@@ -250,6 +255,26 @@ def _migrate_requests(conn: sqlite3.Connection) -> None:
     if "reasoning_content" not in existing:
         conn.execute("ALTER TABLE requests ADD COLUMN reasoning_content TEXT")
         conn.commit()
+    if "tool_calls_emitted" not in existing:
+        conn.execute("ALTER TABLE requests ADD COLUMN tool_calls_emitted INTEGER DEFAULT 0")
+        conn.commit()
+
+
+def _migrate_tool_events(conn: sqlite3.Connection) -> None:
+    """Idempotent migrations for tool_events (agyB/5)."""
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(tool_events)")
+    }
+    for column, ddl in (
+        ("run_id", "TEXT"),
+        ("session_id", "TEXT"),
+        ("latency_ms", "INTEGER DEFAULT 0"),
+        ("risk_class", "TEXT"),
+    ):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE tool_events ADD COLUMN {column} {ddl}")
+    conn.commit()
 
 
 def log_request_reasoning(
@@ -292,7 +317,9 @@ def connect_tool_events(db_path: Path | None = None) -> sqlite3.Connection:
     """logs/tool_events.db — verktygsanrop, risk, outcome."""
     from ..paths import tool_events_db_path as default_path
 
-    return _open(db_path or default_path(), TOOL_EVENTS_SCHEMA)
+    conn = _open(db_path or default_path(), TOOL_EVENTS_SCHEMA)
+    _migrate_tool_events(conn)
+    return conn
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
