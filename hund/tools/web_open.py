@@ -410,6 +410,15 @@ class WebOpenService:
                 )
             return ToolResult(ToolStatus.EMPTY, ToolKind.WEB_PAGE)
 
+        # Content quality signal: detect nav-only pages (e.g. JS-skeleton with only links)
+        link_count = sum(1 for r in regions if r.url is not None)
+        non_link_count = len(regions) - link_count
+        if len(regions) >= 4 and link_count / len(regions) > 0.6 and non_link_count < 2:
+            return self._error(
+                ToolStatus.NAV_SKELETON,
+                "sidan innehåller huvudsakligen navigation — källan har inget läsbart innehåll",
+            )
+
         page = PageState(uuid.uuid4().hex[:12], current, title, regions, self.clock())
         self.page_store.put(page)
         for region in regions:

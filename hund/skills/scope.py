@@ -180,6 +180,11 @@ _STOP_WORDS = {
     "skriver", "skriva", "skriv", "write", "writes", "writing", "author", "authoring",
     "skapa", "skapar", "create", "creates", "creating", "bygga", "bygger", "build", "builds", "building",
     "designa", "designar", "designs", "designing", "utforma", "utformar", "generera", "genererar",
+    # Aesthetic quality adjectives — no domain signal, pollute technical slugs
+    "snygg", "snyggt", "snygga", "snyggare", "snyggast", "snyggaste",
+    "fin", "fint", "fina", "finare", "finast", "finaste",
+    "vacker", "vackert", "vackra", "vackrare", "vackrast", "vackraste",
+    "stilig", "stiligt", "stiliga", "elegant", "eleganta",
 }
 
 _MARKETING_BUZZWORDS = frozenset({
@@ -252,6 +257,10 @@ def derive_technical_skill_name(
             if val:
                 for word in re.findall(r"[a-z0-9åäöéèü_-]+", val):
                     slug_w = _slug(word)
+                    # _slug's all-filtered sentinel would re-enter here split
+                    # into "learned"+"skill" and pollute the derived name.
+                    if slug_w == "learned-skill":
+                        continue
                     for part in slug_w.split("-"):
                         if (
                             part

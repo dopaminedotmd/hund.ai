@@ -95,10 +95,23 @@ def test_xp_events_audit_trail_and_recalculation(xp_db: Path) -> None:
     assert current["xp"] == 6
 
 
-def test_commit_controller_xp_integration(tmp_path: Path) -> None:
+def test_commit_controller_xp_integration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from hund.domains import registry as domain_registry
+    from hund.learning import commit_controller as cc_mod
+
     db_file = tmp_path / "knowledge_and_xp.db"
     kdb.ensure_knowledge_tables(db_file)
     domain_xp._ensure_table(db_file)
+
+    # The commit path canonicalizes scope ids against the domain registry.
+    # Register 'python' in this test's own DB and pin the registry to it so
+    # the test never depends on the developer's real profile registry.
+    domain_registry.register("python", db_path=db_file)
+    monkeypatch.setattr(
+        cc_mod,
+        "get_registry",
+        lambda: domain_registry.DomainRegistry(db_path=db_file),
+    )
 
     controller = CommitController(db_path=db_file, home=tmp_path)
 

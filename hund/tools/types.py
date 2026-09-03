@@ -166,6 +166,7 @@ class ToolStatus(str, Enum):
     UNSUPPORTED_CONTENT = "unsupported_content"
     SSRF_BLOCKED = "ssrf_blocked"
     NETWORK_ERROR = "network_error"
+    NAV_SKELETON = "nav_skeleton"
 
 
 class ToolKind(str, Enum):
@@ -267,6 +268,13 @@ class ToolResult:
         if self.status == ToolStatus.DECLINED:
             msg = redact_text(self.public_error or "declined by user").text
             return f"[declined] {msg}"
+
+        if self.status == ToolStatus.NAV_SKELETON:
+            msg = redact_text(
+                self.public_error
+                or "sidan innehåller huvudsakligen navigation — källan har inget läsbart innehåll"
+            ).text
+            return f"[nav_skeleton] {msg}"
 
         if self.status == ToolStatus.JAVASCRIPT_REQUIRED:
             msg = redact_text(

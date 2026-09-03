@@ -638,3 +638,27 @@ def test_two_shaping_profiles_produce_distinct_drafts(
     assert "ui" in " ".join(drafts["ui"].steps).casefold()
 
 
+
+
+def test_swedish_aesthetic_adjectives_never_reach_the_slug():
+    """Regression (2026-09-03): 'snygg-webdesign' was published verbatim.
+
+    Aesthetic adjectives carry no domain signal and must be filtered from
+    technical skill slugs the same way marketing buzzwords are.
+    """
+    from hund.skills.scope import derive_technical_skill_name
+
+    derived = derive_technical_skill_name("snygg webdesign")
+    assert "snygg" not in derived
+    assert derived == "webdesign"
+
+    shaped = derive_technical_skill_name(
+        "snygg webdesign",
+        shaping_answers={"style": "snygg", "content": "webdesign"},
+    )
+    assert "snygg" not in shaped
+    assert "learned" not in shaped
+    assert shaped == "webdesign"
+
+    fancy = derive_technical_skill_name("designa html sidor i vacker stil")
+    assert "vacker" not in fancy
