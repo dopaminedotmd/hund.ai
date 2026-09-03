@@ -867,6 +867,7 @@ def make_pt_style(skin_name: str | None = None) -> Style:
             "number": "bold " + tokens["meta_accent"],
             "bullet": "bold " + tokens["accent"],
             "label": "bold " + tokens["meta_accent"],
+            "strong": "bold " + tokens.get("primary", "#FFFFFF"),
             "code": tokens["tool"],
             "syntax_keyword": tokens.get("syntax_keyword", tokens["accent"]),
             "syntax_string": tokens.get("syntax_string", tokens["learning"]),
