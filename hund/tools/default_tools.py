@@ -7,7 +7,13 @@ from . import registry
 from .file_tool import make_handlers as file_handlers
 from .terminal_tool import make_handler as terminal_handler
 
-_PATH_PARAM = {"type": "string", "description": "Sökväg relativt workspace."}
+_PATH_PARAM = {
+    "type": "string",
+    "description": (
+        "Sökväg relativt workspace. För absoluta sökvägar utanför workspace: "
+        "use the terminal with the user-provided absolute path or request workspace switch."
+    ),
+}
 
 
 def register_defaults(workspace: Path) -> None:
@@ -17,7 +23,10 @@ def register_defaults(workspace: Path) -> None:
     specs = [
         registry.Tool(
             name="read_file",
-            description="Läs en fils innehåll (inom workspace).",
+            description=(
+                "Läs en fils innehåll (inom workspace). För absoluta sökvägar utanför workspace: "
+                "use the terminal with the user-provided absolute path or request workspace switch."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -32,7 +41,10 @@ def register_defaults(workspace: Path) -> None:
         ),
         registry.Tool(
             name="search_files",
-            description="Sök filer med glob-mönster i workspace.",
+            description=(
+                "Sök filer med glob-mönster i workspace. För absoluta sökvägar utanför workspace: "
+                "use the terminal with the user-provided absolute path or request workspace switch."
+            ),
             parameters={
                 "type": "object",
                 "properties": {"path": _PATH_PARAM, "pattern": {"type": "string"}},
@@ -43,7 +55,10 @@ def register_defaults(workspace: Path) -> None:
         ),
         registry.Tool(
             name="write_file",
-            description="Skriv/overskriv en fil i workspace.",
+            description=(
+                "Skriv/overskriv en fil i workspace. För absoluta sökvägar utanför workspace: "
+                "use the terminal with the user-provided absolute path or request workspace switch."
+            ),
             parameters={
                 "type": "object",
                 "properties": {"path": _PATH_PARAM, "content": {"type": "string"}},

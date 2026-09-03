@@ -154,6 +154,7 @@ def build_system_prompt(
     parts.append("")
     parts.append("## Desktop file delivery")
     parts.append("- For a file requested on the Desktop, first create or update it in the workspace with write_file so the user receives the file diff. Then copy that workspace file to the Desktop with one terminal command.")
+    parts.append("- Vid oklar eller ospecificerad målfil inför skapande, redigering eller radering: fråga alltid användaren först, gissa aldrig filnamn eller sökväg.")
 
     parts.append("")
     parts.append("## Din miljö (du lever här)")

@@ -84,3 +84,66 @@ def test_inline_code_and_file_paths_are_byte_preserved():
 
     assert "`Jag/min 🚀`" in final_text
     assert r"C:\Jag\min-fil🚀.txt" in final_text
+
+
+def test_strip_raw_unbalanced_asterisks_swedish_and_english():
+    """Golden: final-text without raw unbalanced '**' markers in Swedish and English."""
+    # Swedish with leaked prefix marker like **ULäst `README.md`**
+    sv_raw = "**ULäst `README.md`** och hund har verifierat ändringarna."
+    sv_fixed = repair_narrative_prose(sv_raw, language="sv")
+    assert not sv_fixed.startswith("**U")
+    assert sv_fixed.count("**") % 2 == 0
+
+    # Swedish with dangling trailing **
+    sv_dangling = "Hund har slutfört uppgiften. **"
+    sv_dangling_fixed = repair_narrative_prose(sv_dangling, language="sv")
+    assert "**" not in sv_dangling_fixed
+    assert "Hund har slutfört uppgiften." in sv_dangling_fixed
+
+    # English with unbalanced leading **
+    en_raw = "**Hund analyzed the workspace and found 3 errors."
+    en_fixed = repair_narrative_prose(en_raw, language="en")
+    assert "**" not in en_fixed
+    assert "Hund analyzed the workspace" in en_fixed
+
+    # Balanced markdown bold is preserved
+    balanced = "Hund uppdaterade **README.md** korrekt."
+    assert repair_narrative_prose(balanced, language="sv") == balanced
+
+
+def test_numeric_conflict_758_vs_833_flagged_and_repaired():
+    """758-vs-833 pattern: unacknowledged conflicting numbers are flagged in response."""
+    conflict_text = "Ordräkningen gav 758 ord mot 833 ord i sammanställningen."
+    final_text, res = validate_and_repair_response(conflict_text, language="sv")
+
+    # Violation should be recorded
+    assert any("unresolved_numeric_conflict" in v for v in res.violations)
+    # The repaired text must flag the conflict rather than presenting side-by-side quietly
+    assert "Konflikt:" in final_text or "avvikelse" in final_text.lower()
+    assert "758" in final_text and "833" in final_text
+
+
+def test_path_contract_in_default_tools_and_consistent_fallback(tmp_path):
+    """Fallback text in tool descriptions + identical tool flow across 3 invocations."""
+    from hund.tools.default_tools import _PATH_PARAM, register_defaults
+    from hund.tools import registry
+
+    # 1. Contract text in _PATH_PARAM and registered tool descriptions
+    assert "use the terminal with the user-provided absolute path or request workspace switch" in _PATH_PARAM["description"]
+
+    register_defaults(tmp_path)
+    for tool_name in ("read_file", "search_files", "write_file"):
+        tool = registry.get(tool_name)
+        assert tool is not None
+        assert "use the terminal with the user-provided absolute path or request workspace switch" in tool.description
+
+    # 2. Same absolute path outside workspace x3 -> identical result
+    outside_file = tmp_path.parent / "external_target.txt"
+    read_fn = registry.get("read_file").handler
+    res1 = read_fn({"path": str(outside_file)})
+    res2 = read_fn({"path": str(outside_file)})
+    res3 = read_fn({"path": str(outside_file)})
+
+    assert res1 == res2 == res3
+    assert "use the terminal with the user-provided absolute path or request workspace switch" in res1
+
