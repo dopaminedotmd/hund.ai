@@ -26,10 +26,11 @@ def summaries(skills: list[Skill], text: str, *, top_k: int = 3) -> list[str]:
     return [s.summary() for s in match(skills, text, top_k=top_k)]
 
 
-def instructions(skills: list[Skill], text: str, *, top_k: int = 3) -> list[str]:
+def instructions(skills: list[Skill], text: str = "", *, top_k: int = 3) -> list[str]:
     """Render structured instruction blocks for turn-local prompt injection."""
+    matched_skills = match(skills, text, top_k=top_k) if text else skills[:top_k]
     blocks: list[str] = []
-    for s in match(skills, text, top_k=top_k):
+    for s in matched_skills:
         lines = [
             f"### Active Skill: {s.name} (Scope: {s.scope}, Version: {s.version})",
             f"When to use: {s.when_to_use}",

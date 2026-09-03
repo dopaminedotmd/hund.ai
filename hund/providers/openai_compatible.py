@@ -200,12 +200,14 @@ class OpenAICompatibleClient(ProviderClient):
             raise RuntimeError("Ingen API-nyckel. Sätt HUND_API_KEY i env.")
 
     def _payload(
-        self, messages, tools, model, stream: bool
+        self, messages, tools, model, stream: bool, max_tokens: int | None = None
     ) -> dict:
         payload: dict = {
             "model": model or self.default_model,
             "messages": [_msg_to_dict(m) for m in messages],
         }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
         if tools:
             payload["tools"] = tools
         if stream:
@@ -218,15 +220,16 @@ class OpenAICompatibleClient(ProviderClient):
         messages: list[Message],
         tools: list[dict] | None = None,
         model: str | None = None,
+        max_tokens: int | None = None,
     ) -> CompletionResult:
         """Icke-streamande. För live-output, se stream()."""
         self._require_key()
         url = f"{self.base_url}/chat/completions"
         t0 = time.perf_counter()
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
         try:
             with httpx.Client(timeout=timeout) as client:
-                resp = client.post(url, json=self._payload(messages, tools, model, False), headers=self._headers())
+                resp = client.post(url, json=self._payload(messages, tools, model, False, max_tokens), headers=self._headers())
                 latency_ms = int((time.perf_counter() - t0) * 1000)
                 if resp.status_code >= 400:
                     raise RuntimeError(self._err_msg(resp))
@@ -279,7 +282,7 @@ class OpenAICompatibleClient(ProviderClient):
         t0 = time.perf_counter()
         protocol_filter = StreamProtocolFilter()
 
-        timeout = httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=10.0)
+        timeout = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
         try:
             with httpx.Client(timeout=timeout) as client:
                 with client.stream(
@@ -295,6 +298,7 @@ class OpenAICompatibleClient(ProviderClient):
                     for line in resp.iter_lines():
                         if time.monotonic() > deadline:
                             raise RuntimeError(f"provider stream timeout after {self.timeout:.0f}s")
+                        deadline = time.monotonic() + self.timeout
                         if not line or line.startswith(":"):  # keepalive-kommentar
                             continue
                         if not line.startswith("data:"):

@@ -15,8 +15,8 @@ from dataclasses import dataclass
 from ..providers.base import Message
 
 CHARS_PER_TOKEN = 4  # grov uppskattning, ej exakt tokenizer
-DEFAULT_KEEP_RECENT = 6
-DEFAULT_MAX_TOKENS = 6000
+DEFAULT_KEEP_RECENT = 12
+DEFAULT_MAX_TOKENS = 96_000
 
 _MARKER = "[KOMPRIMERAD"
 _NOTE = (
@@ -65,7 +65,7 @@ def compress(
     *,
     keep_recent: int = DEFAULT_KEEP_RECENT,
 ) -> CompressionResult:
-    """Kollapsa äldre turns; bevara system[0] + senaste keep_recent.
+    """Kollapsa äldre turns; bevara system[0] + primär task (messages[1] om role=user) + marker + recent.
 
     Om listan är kort nog returneras oförändrad (compressed=False).
     """
@@ -73,7 +73,14 @@ def compress(
         return CompressionResult(list(messages), 0, estimate_tokens(messages), False, "none")
 
     system = messages[0]
-    recent, dropped = _safe_recent_slice(messages, keep_recent)
+    has_primary = len(messages) > 1 and getattr(messages[1], "role", None) == "user"
+    primary_task = [messages[1]] if has_primary else []
+
+    recent, _ = _safe_recent_slice(messages, keep_recent)
+    if has_primary:
+        recent = [m for m in recent if m is not messages[1]]
+
+    dropped = max(0, len(messages) - 1 - len(primary_task) - len(recent))
 
     # Behåll systemprompten oförändrad (prompt cache)
     # Markören läggs som ett separat system-meddelande
@@ -83,7 +90,7 @@ def compress(
         tool_calls=[],
         tool_call_id=None,
     )
-    compacted = [system, marker] + recent
+    compacted = [system, marker] + primary_task + recent
     return CompressionResult(compacted, dropped, estimate_tokens(compacted), True, "deterministic")
 
 

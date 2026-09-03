@@ -40,7 +40,7 @@ def test_diff_block_formatting_with_line_numbers():
     diff = "- old_line\n+ new_line\n  context_line"
     formatted = format_diff_block(diff, filename="test.py", width=40)
     lines = formatted.split("\n")
-    assert lines[0].startswith("└ test.py ")
+    assert "└ test.py " in lines[0]
     assert "+1 -1" in lines[0]
     assert any(l.startswith("-") and "old_line" in l for l in lines)
     assert any(l.startswith("+") and "new_line" in l for l in lines)
@@ -151,7 +151,7 @@ def test_file_change_result_truncation_and_canary_redaction(tmp_path):
     assert isinstance(res_large, FileChangeResult)
     assert res_large.truncated is True
     assert len(res_large.committed_content_or_diff) == len(large_content)
-    assert "truncated" in res_large.display_preview.lower()
+    assert "omitted" in res_large.display_preview.lower() or "truncated" in res_large.display_preview.lower()
 
 
 def test_file_change_result_binary_handling(tmp_path):

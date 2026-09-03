@@ -360,6 +360,17 @@ def normalize_language_alias(lang: str) -> str:
     return raw
 
 
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+
+@dataclass(frozen=True)
+class ToolFlowRow:
+    text: str
+    kind: str  # "activity", "diff", "error", "summary", "substep"
+    language: str = ""
+
+
 def _sanitize_block_label(value: str, max_cells: int) -> str:
     """Return provider-controlled block metadata as safe, single-line display text."""
     clean = sanitize_display_line(str(value)).replace("\r", " ").replace("\n", " ").strip()
@@ -407,13 +418,13 @@ def format_diff_block(
     new_num = 1
     for kind, text in content_lines:
         if kind == "-":
-            prefix = f"- {old_num:>4} "
+            prefix = f"- {old_num:<4} "
             old_num += 1
         elif kind == "+":
-            prefix = f"+ {new_num:>4} "
+            prefix = f"+ {new_num:<4} "
             new_num += 1
         else:
-            prefix = f"  {new_num:>4} "
+            prefix = f"  {new_num:<4} "
             old_num += 1
             new_num += 1
         content, _ = slice_cells(text.rstrip(), max(w - cell_width(prefix), 0))
@@ -423,10 +434,18 @@ def format_diff_block(
     adds = sum(kind == "+" for kind, _ in content_lines)
     dels = sum(kind == "-" for kind, _ in content_lines)
     counts = f"  (+{adds} -{dels})"
-    filename = _sanitize_block_label(filename or "diff", max(w - cell_width("└ ") - cell_width(counts), 1))
-    lines = [f"└ {filename}{counts}", *body_lines]
+
+    # Handle narrow terminal formatting (<48 columns) without character clipping
+    header_base = f"  └ {filename or 'diff'}"
+    if w < 48 and (cell_width(header_base) + cell_width(counts)) > w:
+        safe_fn, _ = slice_cells(filename or "diff", max(w - cell_width("  └ "), 1))
+        lines = [f"  └ {safe_fn}", f"    {counts.strip()}", *body_lines]
+    else:
+        safe_fn = _sanitize_block_label(filename or "diff", max(w - cell_width("  └ ") - cell_width(counts), 1))
+        lines = [f"  └ {safe_fn}{counts}", *body_lines]
+
     if is_limited:
-        lines.append("… Diff preview limited.")
+        lines.append("  … Diff preview limited.")
     return "\n".join(lines)
 
 
@@ -434,10 +453,254 @@ def repad_diff_block(lines: list[str], width: int) -> list[str]:
     """Re-pad registered diff rows after the terminal width changes."""
     w = max(width, 24)
     return [
-        line if index == 0 or line == "… Diff preview limited."
+        line if index == 0 or line.strip() == "… Diff preview limited." or line.strip().startswith("(+")
         else slice_cells(line.rstrip(), w)[0] + " " * max(w - cell_width(slice_cells(line.rstrip(), w)[0]), 0)
         for index, line in enumerate(lines)
     ]
+
+
+def _fit_tool_line(line: str, width: int) -> str:
+    if cell_width(line) <= width:
+        return line
+    if width <= 1:
+        return "…"
+    return slice_cells(line, max(width - 1, 0))[0] + "…"
+
+
+def format_tool_flow(
+    events: Iterable[Any],
+    width: int = 80,
+    *,
+    past_intent: str = "",
+    ascii_only: bool = False,
+) -> tuple[ToolFlowRow, ...]:
+    """Shared formatter producing a unified sequence of ToolFlowRow presentation items.
+
+    Invariants:
+      - Returns immutable tuple of ToolFlowRow(text, kind, language)
+      - kind is strictly one of 'activity', 'diff', 'error', 'summary', 'substep', 'interim_border', 'interim_text'
+      - language is set only for 'diff' rows
+    """
+    ev_list = list(events)
+    if not ev_list and not past_intent:
+        return ()
+
+    w = max(width, 24)
+    rail = "|" if ascii_only else "┊"
+    running_sym = "*" if ascii_only else "⟳"
+    complete_sym = "+" if ascii_only else "✓"
+    error_sym = "x" if ascii_only else "✗"
+    summary_branch = "+-" if ascii_only else "╰─"
+    top_branch = "+-" if ascii_only else "╭─"
+    h_bar = "-" if ascii_only else "─"
+    pipe = "|" if ascii_only else "│"
+
+    rows: list[ToolFlowRow] = []
+
+    # Optional intent line
+    if past_intent:
+        intent_text = past_intent if past_intent.startswith("  ") else f"  {past_intent}"
+        rows.append(ToolFlowRow(text=_fit_tool_line(intent_text, w), kind="activity"))
+
+    if not ev_list:
+        return tuple(rows)
+
+    # Split ev_list into chunks of ("tools", [ToolActivity, ...]) and ("narration", NarrationActivity)
+    chunks: list[tuple[str, Any]] = []
+    current_tools: list[Any] = []
+    for ev in ev_list:
+        if hasattr(ev, "text") and not hasattr(ev, "tool_name"):
+            if current_tools:
+                chunks.append(("tools", list(current_tools)))
+                current_tools.clear()
+            chunks.append(("narration", ev))
+        else:
+            current_tools.append(ev)
+    if current_tools:
+        chunks.append(("tools", list(current_tools)))
+
+    # Fast-Turn Collapse constraint check (TUI Facit §5.7)
+    if len(chunks) == 1 and chunks[0][0] == "tools" and len(chunks[0][1]) == 1 and not past_intent:
+        ev = chunks[0][1][0]
+        status_val = ev.status.value if hasattr(ev.status, "value") else str(ev.status)
+        is_readonly = getattr(ev, "group", "") in {"read", "inspection", "web_read", "search", "web_search"}
+        is_safe_complete = status_val == "complete"
+        is_fast = getattr(ev, "duration_s", 0.0) <= 0.70
+        is_not_verif = getattr(ev, "group", "") != "verification"
+        is_not_error = status_val not in {"error", "blocked", "declined"}
+        no_confirm = not getattr(ev, "required_confirmation", False)
+        is_explicitly_not_security = (getattr(ev, "security_relevant", None) is False)
+        no_detail = not getattr(ev, "detail", "")
+        no_attached_diff = not getattr(ev, "attached_diff_lines", None)
+        no_attached_error = not getattr(ev, "attached_error_lines", None)
+
+        if (
+            is_readonly
+            and is_safe_complete
+            and is_fast
+            and is_not_verif
+            and is_not_error
+            and no_confirm
+            and is_explicitly_not_security
+            and no_detail
+            and no_attached_diff
+            and no_attached_error
+        ):
+            dur = getattr(ev, "duration_s", 0.0)
+            dur_str = f"{dur:.1f}s" if dur > 0 else "0.1s"
+            desc = getattr(ev, "description", "")
+            return (ToolFlowRow(text=_fit_tool_line(f"  hund {desc}.            {dur_str}", w), kind="activity"),)
+
+    for chunk_type, chunk_data in chunks:
+        if chunk_type == "narration":
+            narr_text = getattr(chunk_data, "text", "")
+            if narr_text:
+                header_prefix = f"  {top_branch} hund "
+                fill_len = max(w - cell_width(header_prefix), 1)
+                header_line = header_prefix + (h_bar * fill_len)
+                rows.append(ToolFlowRow(text=header_line, kind="interim_border"))
+
+                inner_w = max(w - 4, 10)
+                raw_lines = [l.strip() for l in narr_text.strip().splitlines() if l.strip()]
+                wrapped_lines: list[str] = []
+                for r in raw_lines:
+                    wrapped_lines.extend(wrap_cells(r, inner_w))
+                if not wrapped_lines:
+                    wrapped_lines = [""]
+                for ln in wrapped_lines:
+                    rows.append(ToolFlowRow(text=f"  {pipe} {ln}", kind="interim_text"))
+                rows.append(ToolFlowRow(text=f"  {rail}", kind="activity"))
+            continue
+
+        # Process tool events batch
+        batch_events = chunk_data
+        i = 0
+        n = len(batch_events)
+        while i < n:
+            ev = batch_events[i]
+            status_val = ev.status.value if hasattr(ev.status, "value") else str(ev.status)
+            group_name = getattr(ev, "group", "")
+            depth = getattr(ev, "subagent_depth", 0)
+            has_diff = bool(getattr(ev, "attached_diff_lines", None))
+            has_err = bool(getattr(ev, "attached_error_lines", None))
+
+            # Group consecutive completed readonly events only if no diffs/errors attached
+            if (
+                status_val == "complete"
+                and group_name in {"read", "inspection", "search", "web_read", "web_search"}
+                and not has_diff
+                and not has_err
+                and depth == 0
+            ):
+                group_events = [ev]
+                j = i + 1
+                while j < n:
+                    next_ev = batch_events[j]
+                    next_status = next_ev.status.value if hasattr(next_ev.status, "value") else str(next_ev.status)
+                    if (
+                        next_status == "complete"
+                        and getattr(next_ev, "group", "") == group_name
+                        and not getattr(next_ev, "attached_diff_lines", None)
+                        and not getattr(next_ev, "attached_error_lines", None)
+                        and getattr(next_ev, "subagent_depth", 0) == 0
+                    ):
+                        group_events.append(next_ev)
+                        j += 1
+                    else:
+                        break
+
+                if len(group_events) > 1:
+                    tot_dur = sum(getattr(e, "duration_s", 0.0) for e in group_events)
+                    if group_name in {"read", "inspection"}:
+                        desc = f"read relevant files    {len(group_events)} files"
+                    elif group_name == "search":
+                        desc = f"searched workspace     {len(group_events)} queries"
+                    elif group_name == "web_search":
+                        desc = f"searched official sources    {len(group_events)} queries"
+                    elif group_name == "web_read":
+                        desc = f"read relevant pages          {len(group_events)} sources"
+                    else:
+                        desc = f"inspected {len(group_events)} items"
+                    suffix = f" · {tot_dur:.1f}s" if tot_dur > 0 else ""
+                    row_text = f"  {rail} {complete_sym} {desc}{suffix}"
+                    rows.append(ToolFlowRow(text=_fit_tool_line(row_text, w), kind="activity"))
+                    i = j
+                    continue
+
+            # Subagent depth handling
+            if depth > 2:
+                indent = "    "
+                row_text = f"{indent}… sub-step"
+                rows.append(ToolFlowRow(text=_fit_tool_line(row_text, w), kind="substep"))
+                i += 1
+                continue
+
+            base_indent_spaces = 2 + (depth * 2)
+            indent_str = " " * base_indent_spaces
+            kind = "substep" if depth > 0 else "activity"
+
+            if status_val == "running":
+                symbol = running_sym
+            elif status_val in {"error", "blocked", "declined"}:
+                symbol = error_sym
+            else:
+                symbol = complete_sym
+
+            desc = getattr(ev, "description", "")
+            detail = getattr(ev, "detail", "")
+            if detail and status_val != "complete":
+                desc = f"{desc} — {detail}"
+
+            dur = getattr(ev, "duration_s", 0.0)
+            suffix = f" · {dur:.1f}s" if dur > 0 and status_val != "running" else ""
+            row_text = f"{indent_str}{rail} {symbol} {desc}{suffix}"
+            rows.append(ToolFlowRow(text=_fit_tool_line(row_text, w), kind=kind))
+
+            # Attached diff lines directly below their parent step
+            diff_lines = getattr(ev, "attached_diff_lines", None)
+            if diff_lines:
+                diff_lang = getattr(ev, "attached_diff_language", "") or "diff"
+                for d_line in diff_lines:
+                    rows.append(ToolFlowRow(text=d_line, kind="diff", language=diff_lang))
+
+            # Attached error lines directly below their parent step
+            error_lines = getattr(ev, "attached_error_lines", None)
+            if error_lines:
+                for e_line in error_lines:
+                    err_text = e_line if e_line.startswith("  ") else f"  {e_line}"
+                    rows.append(ToolFlowRow(text=_fit_tool_line(err_text, w), kind="error"))
+
+            i += 1
+
+        # Completion summary capsule for this batch
+        all_complete = all(
+            (e.status.value if hasattr(e.status, "value") else str(e.status)) != "running"
+            for e in batch_events
+        )
+        if batch_events and all_complete:
+            statuses = {(e.status.value if hasattr(e.status, "value") else str(e.status)) for e in batch_events}
+            total = sum(getattr(e, "duration_s", 0.0) for e in batch_events)
+            has_verification = any(getattr(e, "group", "") == "verification" for e in batch_events)
+            has_edits = any(getattr(e, "group", "") == "edit" for e in batch_events)
+            has_web = any(getattr(e, "group", "") in {"web_search", "web_read"} for e in batch_events)
+
+            if statuses & {"error", "blocked", "declined"}:
+                summary_line = f"  {summary_branch} stopped · {total:.1f}s"
+            elif has_edits and has_verification:
+                summary_line = f"  {summary_branch} change holds · {total:.1f}s"
+            elif has_verification:
+                summary_line = f"  {summary_branch} clean run · {total:.1f}s"
+            elif has_web and len(batch_events) >= 2:
+                summary_line = f"  {summary_branch} cross-checked · {total:.1f}s"
+            elif len(batch_events) >= 3:
+                summary_line = f"  {summary_branch} completed · {len(batch_events)} steps · {total:.1f}s"
+            else:
+                summary_line = f"  {summary_branch} completed · {len(batch_events)} steps · {total:.1f}s" if (has_edits or statuses == {"complete"}) and len(batch_events) >= 2 else ""
+
+            if summary_line:
+                rows.append(ToolFlowRow(text=_fit_tool_line(summary_line, w), kind="summary"))
+
+    return tuple(rows)
 
 
 def format_code_block(code: str, language: str = "", filename: str = "", width: int = 70, is_open: bool = False) -> str:
@@ -745,11 +1008,27 @@ def render_response_box_from_segments(
             diff_language = normalize_language_alias(fn.rsplit(".", 1)[-1]) if "." in fn else "diff"
             for l in block_str.split("\n"):
                 formatted_content_lines.append((sanitize_display_line(l), "diff", diff_language))
+        elif stype_str == "table":
+            for l in lines:
+                formatted_content_lines.append((sanitize_display_line(l), "table", ""))
         else:
-            prose_text = "\n".join(lines) if isinstance(lines, (list, tuple)) else str(lines)
-            wrapped = wrap_cells(prose_text, cw)
-            for l in wrapped:
-                formatted_content_lines.append((sanitize_display_line(l), "prose", ""))
+            prose_lines = lines if isinstance(lines, (list, tuple)) else str(lines).splitlines()
+            current_chunk: list[str] = []
+            for pl in prose_lines:
+                s = pl.strip()
+                if len(s) >= 2 and s.startswith("|") and s.endswith("|"):
+                    if current_chunk:
+                        wrapped = wrap_cells("\n".join(current_chunk), cw)
+                        for l in wrapped:
+                            formatted_content_lines.append((sanitize_display_line(l), "prose", ""))
+                        current_chunk = []
+                    formatted_content_lines.append((sanitize_display_line(pl), "table", ""))
+                else:
+                    current_chunk.append(pl)
+            if current_chunk:
+                wrapped = wrap_cells("\n".join(current_chunk), cw)
+                for l in wrapped:
+                    formatted_content_lines.append((sanitize_display_line(l), "prose", ""))
 
     lines = [box_top(box_w)]
     line_metadata: dict[int, tuple[str, str]] = {}
@@ -771,3 +1050,37 @@ def render_response_box_from_segments(
     lines.append(box_bottom(box_w, meta))
 
     return "\n".join(lines), line_metadata
+
+
+def render_intermediate_capsule(
+    text: str,
+    width: int = 80,
+    elapsed_s: float | None = None,
+    *,
+    ascii_only: bool = False,
+) -> str:
+    """Render an open intermediate narration panel in tree spine alignment."""
+    w = max(width, 24)
+    top_branch = "+-" if ascii_only else "╭─"
+    h_bar = "-" if ascii_only else "─"
+    pipe = "|" if ascii_only else "│"
+    rail = "|" if ascii_only else "┊"
+
+    header_prefix = f"  {top_branch} hund "
+    fill_len = max(w - cell_width(header_prefix), 1)
+    header_line = header_prefix + (h_bar * fill_len)
+
+    inner_w = max(w - 4, 10)
+    raw_lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    wrapped_lines: list[str] = []
+    for r in raw_lines:
+        wrapped_lines.extend(wrap_cells(r, inner_w))
+    if not wrapped_lines:
+        wrapped_lines = [""]
+
+    lines = [header_line]
+    for ln in wrapped_lines:
+        lines.append(f"  {pipe} {ln}")
+    lines.append(f"  {rail}")
+    return "\n".join(lines)
+

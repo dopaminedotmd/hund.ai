@@ -100,14 +100,57 @@ def test_render_in_place_stepper_preserves_diamond_rail_and_one_question():
         rendered = render_authoring_stepper(view, selected_index=1, width=width)
         assert "◆" in rendered
         assert "│" in rendered
-        assert "SKILL AUTHORING · Shaping 1/2" in rendered
+        assert "SKILL AUTHORING" in rendered
+        if width >= 60:
+            assert "SKILL AUTHORING · Supplementary Question 1 of 2" in rendered
         assert "Primary Workflow Focus" in rendered
         assert "Skill Scope" not in rendered
         assert "› Validate marketing" in rendered
         assert "↑↓ Select" in rendered
-        assert "Enter Confirm" in rendered
+        assert "Enter Continue" in rendered
         for line in rendered.splitlines():
             assert len(line) <= width + 2
+
+
+def test_render_mini_draft_stepper_and_correction_view():
+    view_mini = AuthoringView(
+        session_id="mini",
+        phase=AuthoringState.SHAPING,
+        subject="git triage",
+        title='Draft — "git triage"',
+        description="When to use: When debugging git\n\n1. Inspect git status\n2. Run git log",
+        question_key="mini_draft",
+        step_index=1,
+        step_total=1,
+        options=(
+            AuthoringOption("answer", "Continue with this draft", "continue"),
+            AuthoringOption("answer", "Correct draft (free text)", "correct"),
+        ),
+    )
+    rendered_mini = render_authoring_stepper(view_mini, width=80)
+    assert "SKILL AUTHORING · Mini-draft" in rendered_mini
+    assert 'Draft — "git triage"' in rendered_mini
+    assert "› Continue with this draft" in rendered_mini
+    assert "Correct draft (free text)" in rendered_mini
+    assert "Enter Continue" in rendered_mini
+    assert "Esc Cancel" in rendered_mini
+
+    view_corr = AuthoringView(
+        session_id="mini_corr",
+        phase=AuthoringState.SHAPING,
+        subject="git triage",
+        title="Correct draft (free text)",
+        description="Type your correction in the input field.",
+        question_key="correct_mini_draft",
+        step_index=1,
+        step_total=1,
+        options=(),
+    )
+    rendered_corr = render_authoring_stepper(view_corr, width=80)
+    assert "SKILL AUTHORING · Mini-draft" in rendered_corr
+    assert "Correct draft (free text)" in rendered_corr
+    assert "Type your answer in the input field." in rendered_corr
+    assert "Enter Continue · Esc Back" in rendered_corr
 
 
 def test_render_free_text_clarification_explains_input_behavior():
@@ -177,10 +220,11 @@ def test_render_ready_card_revision_2_actions():
     assert "[fastapi-error-envelope]" in rendered_120
     assert "SCOPE" in rendered_120
     assert "ACTION" in rendered_120
+    assert "LINEAGE" in rendered_120
     assert "Use now (pending publication)" in rendered_120
     assert "[u] Publish & use now" in rendered_120
-    assert "[v] Publish to vault" in rendered_120
-    assert "[e] Edit" in rendered_120
+    assert "[v] Save to vault" in rendered_120
+    assert "[e] Edit draft" in rendered_120
     assert "[d] Decline" in rendered_120
     assert "[f] Fix with Hund" in rendered_120
     assert "[i] Details" in rendered_120
@@ -188,15 +232,51 @@ def test_render_ready_card_revision_2_actions():
     # Normal 80 cols
     rendered_80 = render_authoring_ready(session, width=80)
     assert "SKILL READY" in rendered_80
-    assert "[u] Publish & use" in rendered_80
-    assert "[v] Vault" in rendered_80
-    assert "[f] Fix" in rendered_80
-    assert "[i] Details" in rendered_80
+    assert "LINEAGE" in rendered_80
+    assert "[u] Publish & use now" in rendered_80
+    assert "[v] Save to vault" in rendered_80
+    assert "[e] Edit draft" in rendered_80
+    assert "[d] Decline" in rendered_80
 
     # Compact 42 cols
     rendered_42 = render_authoring_ready(session, width=42)
     assert "SKILL READY" in rendered_42
+    assert "LINEAGE" in rendered_42
     assert "[u] Use now" in rendered_42
+    assert "[v] Vault" in rendered_42
+    assert "[e] Edit" in rendered_42
+
+
+def test_render_ready_stepper_view_with_lineage_and_options():
+    view = AuthoringView(
+        session_id="ready-sess",
+        phase=AuthoringState.READY,
+        subject="shopify bulk update",
+        title="Skill Ready",
+        skill_name="shopify-bulk-description-update",
+        scope="project",
+        description="Update product descriptions across Shopify products via Admin GraphQL API.",
+        lineage_text="event e-7f2a · attempt 2 · first pass: no · research: 2 sources",
+        options=(
+            AuthoringOption(action="publish_use", label="Publish & use now"),
+            AuthoringOption(action="publish_vault", label="Save to vault"),
+            AuthoringOption(action="edit", label="Edit draft"),
+            AuthoringOption(action="decline", label="Decline"),
+        ),
+    )
+    rendered = render_authoring_stepper(view, selected_index=0, width=80)
+    assert "SKILL READY · [shopify-bulk-description-update]" in rendered
+    assert "SCOPE        Project" in rendered
+    assert "LINEAGE" in rendered
+    assert "event e-7f2a" in rendered
+    assert "attempt 2" in rendered
+    assert "first pass: no" in rendered
+    assert "sources" in rendered
+    assert "› Publish & use now" in rendered
+    assert "Save to vault" in rendered
+    assert "Edit draft" in rendered
+    assert "Decline" in rendered
+    assert "Enter Confirm · Esc Cancel" in rendered
 
 
 def test_render_quality_gate_passed_and_rejection():

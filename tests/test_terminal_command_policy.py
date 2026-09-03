@@ -138,3 +138,18 @@ def test_bounded_recursive_delete_is_dangerous_but_root_delete_is_blocked(
     assert bounded.risk is RiskLevel.DANGEROUS
     assert bounded.session_allowable is False
     assert root.risk is RiskLevel.BLOCKED
+
+
+def test_terminal_tool_utf8_output_swedish_characters(tmp_path) -> None:
+    """RED/GREEN: terminal tool runs commands with UTF-8 env without cp1252 crash on Swedish characters."""
+    import sys
+    from hund.tools.terminal_tool import make_handler
+
+    tools = make_handler(tmp_path)
+    run_term = tools["terminal"]
+
+    cmd = f'"{sys.executable}" -c "print(\'räksmörgås med citron och majonnäs\')"'
+    res = run_term({"command": cmd})
+    assert "[exit 0]" in res
+    assert "räksmörgås med citron och majonnäs" in res
+

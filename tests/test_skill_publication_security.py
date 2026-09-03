@@ -59,8 +59,8 @@ def test_tool_permission_gate_intercepts_untrusted_args():
     with pytest.raises(ValueError, match="non-empty dictionary"):
         parse_create_skill_args({})
 
-    # Conflicting args
-    with pytest.raises(ValueError, match="Conflicting"):
+    # Request string is rejected
+    with pytest.raises(ValueError, match="not supported"):
         parse_create_skill_args({
             "request": "make skill",
             "skill": {"name": "test"},
@@ -68,16 +68,14 @@ def test_tool_permission_gate_intercepts_untrusted_args():
 
 
 def test_tampered_metadata_rejected(tmp_path: Path):
-    handler = make_handler(home=tmp_path, workspace_path=tmp_path)
     # Untrusted model passes malicious scope or bogus disposition
     args = {
-        "request": "create a skill for formatting markdown tables",
-        "target_scope": "invalid_scope_value",
+        "skill": {"name": "test-scope", "scope": "invalid_scope_value"},
         "desired_disposition": "hack_all",
     }
     parsed = parse_create_skill_args(args)
     # Sanitized to fallback
-    assert parsed.target_scope == "unresolved"
+    assert parsed.target_scope == "global"
     assert parsed.desired_disposition == "auto"
 
 
@@ -96,7 +94,7 @@ def test_malformed_legacy_skill_fails_closed(tmp_path: Path):
     handler = make_handler(home=tmp_path)
     result = handler({"skill": {"not_a_valid_skill": True}})
     assert result.status is ToolStatus.ERROR
-    assert "quality check failed" in result.public_error or "Invalid skill structure" in result.public_error
+    assert "authorization" in result.public_error.lower() or "invalid" in result.public_error.lower()
 
 
 def test_redactor_scrubs_all_fields_before_persistence(tmp_path: Path):

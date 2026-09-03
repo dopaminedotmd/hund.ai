@@ -169,3 +169,46 @@ def test_unsupported_and_javascript_only_content(tmp_path):
         {"url": "https://example.com/app"}, context(tmp_path, "https://example.com/app")
     )
     assert result.status is ToolStatus.JAVASCRIPT_REQUIRED
+    assert result.public_error == "sidan kräver JavaScript som inte kan köras — välj en annan källa från sökresultaten"
+    assert "[javascript_required] sidan kräver JavaScript som inte kan köras — välj en annan källa från sökresultaten" in result.to_llm_text()
+
+
+def test_fetch_exception_triggers_firefox_fallback_success(tmp_path):
+    transport = FakeTransport([RuntimeError("connection reset"), response(200, body=b"<p>recovered</p>")])
+    result = service(transport).open(
+        {"url": "https://example.com/"}, context(tmp_path, "https://example.com/")
+    )
+    assert result.status is ToolStatus.SUCCESS
+    assert [call[2] for call in transport.calls] == ["chrome", "firefox"]
+    assert "recovered" in result.payload
+
+
+def test_fetch_exception_firefox_fallback_fails(tmp_path):
+    transport = FakeTransport([RuntimeError("connection reset"), RuntimeError("fallback reset")])
+    result = service(transport).open(
+        {"url": "https://example.com/"}, context(tmp_path, "https://example.com/")
+    )
+    assert result.status is ToolStatus.NETWORK_ERROR
+    assert [call[2] for call in transport.calls] == ["chrome", "firefox"]
+    assert result.public_error == "nätverksfel — försök igen en gång eller välj annan källa"
+    assert "[network_error] nätverksfel — försök igen en gång eller välj annan källa" in result.to_llm_text()
+
+
+def test_guidance_error_messages(tmp_path):
+    # 1. Provenance blocked
+    transport = FakeTransport([])
+    ctx_empty = ToolCallContext("test", tmp_path, url_provenance=UrlProvenanceStore("test"))
+    res_blocked = service(transport).open({"url": "https://not-allowed.com/"}, ctx_empty)
+    assert res_blocked.status is ToolStatus.BLOCKED
+    assert res_blocked.public_error == "URL:en är inte i sessionens provenienslista — öppna endast URL:er från web_search-resultat eller användaren"
+    assert "[blocked] URL:en är inte i sessionens provenienslista — öppna endast URL:er från web_search-resultat eller användaren" in res_blocked.to_llm_text()
+
+    # 2. Bot challenge on 403
+    bot_transport = FakeTransport([response(403), response(403)])
+    res_bot = service(bot_transport).open(
+        {"url": "https://example.com/"}, context(tmp_path, "https://example.com/")
+    )
+    assert res_bot.status is ToolStatus.BOT_CHALLENGE
+    assert res_bot.public_error == "sajten blockerar automatisk läsning — gå vidare till nästa källa"
+    assert "[bot_challenge] sajten blockerar automatisk läsning — gå vidare till nästa källa" in res_bot.to_llm_text()
+

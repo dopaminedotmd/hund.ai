@@ -173,7 +173,7 @@ def test_skill_authoring_specialized_schema_and_rules():
     assert skill is not None
     assert skill.immutable is True
     assert "hur skapar du skills" in skill.triggers
-    assert any("Output Rule" in step or "1-3" in step for step in skill.steps)
+    assert any("distinguishes matching" in step or "2–8 concrete" in step for step in skill.steps)
     assert any("1-3" in v for v in skill.verification)
 
 

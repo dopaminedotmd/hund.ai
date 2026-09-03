@@ -41,6 +41,7 @@ class ProviderClient(ABC):
         messages: list[Message],
         tools: list[dict] | None = None,
         model: str | None = None,
+        max_tokens: int | None = None,
     ) -> CompletionResult:
         ...
 

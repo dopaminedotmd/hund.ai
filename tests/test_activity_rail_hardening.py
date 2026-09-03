@@ -85,3 +85,13 @@ def test_canonical_redaction_in_tool_descriptions():
     win_path = r"C:\Users\William\hund.ai\private_config.json"
     desc_path = describe_tool("read_file", {"path": win_path})
     assert "William" not in desc_path
+
+
+def test_terminal_heredoc_multiline_sanitized_to_single_line():
+    cmd = "python - <<'PY'\nimport sys\nprint('hello')\nPY"
+    desc = describe_tool("terminal", {"command": cmd})
+    assert "\n" not in desc
+    assert desc.startswith("ran python - <<'PY'")
+    assert "…" in desc
+    assert "import sys" not in desc
+

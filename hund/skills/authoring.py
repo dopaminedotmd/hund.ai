@@ -12,6 +12,8 @@ import tomllib
 from typing import Any, Iterable, Optional, Sequence
 import uuid
 
+from pydantic import BaseModel, Field, field_validator
+
 from ..learning.redactor import redact_text
 from .contracts import (
     PublicationAuthorization,
@@ -123,6 +125,113 @@ class ResearchSkillProposal:
     examples: tuple[str, ...] = ()
 
 
+def _clean_list_item(item: Any) -> str:
+    if item is None:
+        return ""
+    text = str(item).strip()
+    return " ".join(text.split())
+
+
+_INSTRUCTION_TERMS = re.compile(
+    r"\b(ignore|system\s+prompt|disregard|override|jailbreak|eval|exec|import\s+os)\b",
+    re.IGNORECASE,
+)
+
+
+class SynthesisCallOutput(BaseModel, extra="forbid"):
+    when_to_use: str = Field(min_length=20, max_length=300)
+    steps: list[str] = Field(min_length=2, max_length=8)
+    triggers: list[str] = Field(min_length=1, max_length=12)
+    verification: list[str] = Field(min_length=2, max_length=3)
+    examples: list[str] = Field(default_factory=list, min_length=1, max_length=2)
+
+    @field_validator("when_to_use")
+    @classmethod
+    def validate_when_to_use(cls, val: str) -> str:
+        clean = " ".join(val.split())
+        if not (20 <= len(clean) <= 300):
+            raise ValueError("when_to_use must be between 20 and 300 characters")
+        if _INSTRUCTION_TERMS.search(clean):
+            raise ValueError("when_to_use contains instruction terms")
+        return clean
+
+    @field_validator("steps")
+    @classmethod
+    def validate_steps(cls, steps: list[str]) -> list[str]:
+        cleaned = []
+        for s in steps:
+            c = " ".join(s.split())
+            if not c or len(c) > 300:
+                raise ValueError("each step must be between 1 and 300 characters")
+            if _INSTRUCTION_TERMS.search(c):
+                raise ValueError("step contains instruction terms")
+            cleaned.append(c)
+        if not (2 <= len(cleaned) <= 8):
+            raise ValueError("steps must contain between 2 and 8 concrete steps")
+        return cleaned
+
+    @field_validator("triggers")
+    @classmethod
+    def validate_triggers(cls, triggers: list[str]) -> list[str]:
+        cleaned = []
+        seen_lower = set()
+        for t in triggers:
+            c = " ".join(t.split())
+            if not c or len(c) > 120:
+                raise ValueError("each trigger must be between 1 and 120 characters")
+            if any(ord(ch) < 32 for ch in c):
+                raise ValueError("trigger must not contain control characters")
+            if not re.search(r"[\w\u00C0-\u017F]", c):
+                raise ValueError("trigger must contain at least one alphanumeric character")
+            if _INSTRUCTION_TERMS.search(c):
+                raise ValueError("trigger contains instruction terms")
+            if c.casefold() not in seen_lower:
+                seen_lower.add(c.casefold())
+                cleaned.append(c)
+        if not (1 <= len(cleaned) <= 12):
+            raise ValueError("triggers must contain between 1 and 12 unique triggers")
+        return cleaned
+
+    @field_validator("verification")
+    @classmethod
+    def validate_verification(cls, verification: list[str]) -> list[str]:
+        cleaned = []
+        for v in verification:
+            c = " ".join(v.split())
+            if not c or len(c) > 300:
+                raise ValueError("each verification check must be between 1 and 300 characters")
+            if _INSTRUCTION_TERMS.search(c):
+                raise ValueError("verification contains instruction terms")
+            cleaned.append(c)
+        if not (2 <= len(cleaned) <= 3):
+            raise ValueError("verification must contain between 2 and 3 items")
+        return cleaned
+
+    @field_validator("examples")
+    @classmethod
+    def validate_examples(cls, examples: list[str]) -> list[str]:
+        cleaned = []
+        for e in examples:
+            c = " ".join(e.split())
+            if c and len(c) <= 300 and not _INSTRUCTION_TERMS.search(c):
+                cleaned.append(c)
+        if not (1 <= len(cleaned) <= 2):
+            raise ValueError("examples must contain between 1 and 2 golden cases")
+        return cleaned
+
+
+@dataclass(frozen=True)
+class MiniDraftData:
+    when_to_use: str
+    steps: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "when_to_use": self.when_to_use,
+            "steps": list(self.steps),
+        }
+
+
 @dataclass(frozen=True)
 class SkillDraft:
     action: str  # "CREATE" | "UPDATE"
@@ -141,6 +250,10 @@ class AuthoringSession:
     desired_disposition: str = "auto"
     draft: SkillDraft | None = None
     draft_hash: str | None = None
+    mini_draft: MiniDraftData | None = None
+    mini_draft_confirmed: bool = False
+    gate_attempts: int = 0
+    batch_input_tokens: int = 0
     shaping_gaps: tuple[str, ...] = ()
     shaping_questions: tuple[ShapingQuestion, ...] = ()
     shaping_answers: dict[str, str] = field(default_factory=dict)
@@ -621,18 +734,230 @@ _BOILERPLATE_PATTERNS = (
     re.compile(r"(?i)\binspect\s+.*\s+for\s+requirements\s+relevant\s+to\b"),
     re.compile(r"(?i)\bexecute\s+.*\s+using\s+the\s+current\s+project's\s+conventions\b"),
     re.compile(r"(?i)\bwhen\s+the\s+task\s+requires\s+[a-z0-9_-]+\.?$"),
+    re.compile(r"(?i)\binspect\s+(?:the\s+)?(?:files|workspace|project|codebase)\s*(?:to\s+understand|\.|$)", re.IGNORECASE),
+    re.compile(r"(?i)\bcheck\s+(?:the\s+)?(?:files|workspace|project|codebase)\s*(?:structure|\.|$)", re.IGNORECASE),
 )
+
+_SWEDISH_WORDS_PATTERN = re.compile(
+    r"\b(och|eller|att|för|med|inte|läs|skapa|ändra|kontrollera|verifiera|kör|av|på|om|vid|som|när|detta|denna|dessa|ska|måste|använd|använda|etablera|utför|utföra|befintlig|befintliga|säkerställ|säkerställa|åtgärda|inställningar|arbetsyta|katalog|fil|filer|rapportera|resultat|användare|steg|behörigheter)\b|[åäöÅÄÖ]",
+    re.IGNORECASE,
+)
+
+
+def log_authoring_request(
+    client: Any,
+    result: Any,
+    task_class: str,
+    *,
+    run_id: str | None = None,
+    latency_ms: int = 0,
+) -> None:
+    """Log an authoring LLM call to logs/requests.db without crashing."""
+    try:
+        from ..store.sqlite import connect_requests
+        conn = connect_requests()
+        cfg = getattr(client, "cfg", None)
+        model = (
+            getattr(client, "model", None)
+            or (getattr(cfg, "provider", None) and getattr(cfg.provider, "model", None))
+            or getattr(client, "model_name", "unknown")
+            or "unknown"
+        )
+        provider = (
+            (getattr(cfg, "provider", None) and getattr(cfg.provider, "base_url", None))
+            or getattr(client, "base_url", None)
+            or "authoring_provider"
+        )
+        finish_reason = getattr(result, "finish_reason", "stop") or "stop"
+        prompt_tokens = getattr(result, "prompt_tokens", 0) or 0
+        completion_tokens = getattr(result, "completion_tokens", 0) or 0
+        lat = getattr(result, "latency_ms", None) or latency_ms or 0
+
+        conn.execute(
+            """INSERT INTO requests
+               (id, created_at, task_class, model_requested, model_actual, provider,
+                finish_reason, prompt_tokens, completion_tokens, latency_ms, run_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(uuid.uuid4()),
+                datetime.now(timezone.utc).isoformat(),
+                task_class,
+                str(model),
+                str(model),
+                str(provider),
+                str(finish_reason),
+                int(prompt_tokens),
+                int(completion_tokens),
+                int(lat),
+                run_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+
+class ReviewCallOutput(BaseModel, extra="forbid"):
+    approved: bool
+    score: float = Field(ge=0.0, le=1.0)
+    issues: list[str] = Field(default_factory=list)
+
+
+def run_llm_review_gate(
+    draft: SkillDraft,
+    *,
+    client: Any = None,
+    run_id: str | None = None,
+    research_summaries: list[str] | tuple[str, ...] | None = None,
+    user_stated_versions: set[str] | None = None,
+) -> ReviewCallOutput:
+    """Execute LLM review gate (Call 3) evaluating draft along 5 strict axes."""
+    if client is None:
+        raise ValueError("Provider client required for LLM review gate")
+
+    system_prompt = (
+        "You are Hund's canonical skill quality review gate. "
+        "Evaluate the declarative skill draft along 5 strict axes:\n"
+        "1. Scope specificity (narrow, distinct boundaries, distinguishes matching from non-matching tasks; reject conflation of incompatible variants/loaders)\n"
+        "2. Operational clarity (concrete ordered steps that change execution decisions, with conditional rules where choices diverge, and anti-pattern warnings 'Do not X; instead Y' for common pitfalls; reject vague 'inspect files' without a concrete target file or action)\n"
+        "3. Trigger appropriateness (1-12 precise triggers, Swedish aliases when useful, NO catchalls)\n"
+        "4. Verification decisiveness (2-3 binary checks decidable as pass or fail)\n"
+        "5. Anti-slop / No secrets (English canonical instructions, no secrets, no banned actions, no placeholders)\n\n"
+        "VERSION GROUNDING RULE: User-stated versions (in 'user_stated_versions') and research versions are 100% FACTUAL AND AUTHORITATIVE. "
+        "You MUST NOT reject, lower score, or question a version because it seems unfamiliar, high, futuristic, or because your training weights lack it. "
+        "NEVER claim a version is 'unrealistic', 'fabricated', 'simulated', or 'does not exist'. "
+        "Reject a version ONLY if it was completely invented out of thin air — neither user-stated nor present in research summaries.\n\n"
+        "CALIBRATION & ACCEPTANCE RULE:\n"
+        "- Your goal is quality gatekeeping, not perfectionism or pedantic nitpicking.\n"
+        "- APPROVE (approved=true, score >= 0.8) if the draft provides actionable, concrete guidance that enables Hund to reliably perform the task.\n"
+        "- Standard build commands (e.g. gradlew build/dependencies), common troubleshooting practices (e.g. inspecting build logs or cache reports), locating entry points, and reasonable trigger phrases are fully acceptable and desirable.\n"
+        "- Reject (approved=false, score < 0.7) ONLY for fatal quality defects: completely vague/empty steps, harmful or banned actions, non-English canonical text, hallucinatory ungrounded claims, or severe scope conflation.\n"
+        "- Do NOT reject for minor stylistic differences, pedantic definitions of standard developer terminology, or reasonable troubleshooting steps.\n\n"
+        "Return strictly JSON conforming to this schema with NO extra fields:\n"
+        "{\n"
+        '  "approved": boolean,\n'
+        '  "score": float between 0.0 and 1.0,\n'
+        '  "issues": ["Issue 1", ... (empty if approved)]\n'
+        "}"
+    )
+
+    skill_dict = {
+        "name": draft.skill.name,
+        "when_to_use": draft.skill.when_to_use,
+        "steps": list(draft.skill.steps),
+        "triggers": list(draft.skill.triggers),
+        "verification": list(draft.skill.verification),
+        "examples": list(draft.skill.examples),
+    }
+    prompt_payload: dict[str, Any] = {"skill_draft": skill_dict}
+    if research_summaries:
+        prompt_payload["research_summaries"] = list(research_summaries)
+    if user_stated_versions:
+        prompt_payload["user_stated_versions"] = sorted(user_stated_versions)
+    user_prompt = json.dumps(prompt_payload, ensure_ascii=False, indent=2)
+
+    from ..providers.base import Message
+    messages = [
+        Message(role="system", content=system_prompt),
+        Message(role="user", content=user_prompt),
+    ]
+
+    import time
+    t0 = time.time()
+    result = client.complete(messages, tools=None, max_tokens=2500)
+    latency_ms = int((time.time() - t0) * 1000)
+    log_authoring_request(client, result, "authoring_review", run_id=run_id, latency_ms=latency_ms)
+
+    raw_text = (getattr(result, "text", "") or getattr(result, "content", "") or "").strip()
+    if not raw_text:
+        t0 = time.time()
+        result = client.complete(messages, tools=None, max_tokens=8000)
+        latency_ms = int((time.time() - t0) * 1000)
+        log_authoring_request(client, result, "authoring_review", run_id=run_id, latency_ms=latency_ms)
+        raw_text = (getattr(result, "text", "") or getattr(result, "content", "") or "").strip()
+
+    if not raw_text:
+        finish = getattr(result, "finish_reason", "unknown")
+        raise ValueError(f"Provider review returned no JSON after retry (finish_reason={finish}).")
+
+    from .shaping import _extract_json_block
+    json_text = _extract_json_block(raw_text)
+    review = ReviewCallOutput.model_validate_json(json_text)
+
+    if user_stated_versions and review.issues:
+        clean_issues = []
+        for issue in review.issues:
+            issue_lower = issue.casefold()
+            is_version_complaint = any(
+                term in issue_lower
+                for term in (
+                    "unrealistic version",
+                    "not recognized in research",
+                    "not recognized",
+                    "not exist",
+                    "does not exist",
+                    "fabricated internally",
+                    "simulated",
+                    "dated in future",
+                    "duplicate knowledge",
+                    "no such official",
+                )
+            )
+            has_user_version = any(v.casefold() in issue_lower for v in user_stated_versions)
+            if is_version_complaint or (has_user_version and "version" in issue_lower):
+                # Spurious rejection of user-stated version
+                continue
+            clean_issues.append(issue)
+
+        if not clean_issues and not review.approved:
+            review = ReviewCallOutput(
+                approved=True,
+                score=max(review.score, 0.85),
+                issues=[],
+            )
+        elif len(clean_issues) != len(review.issues):
+            review = ReviewCallOutput(
+                approved=review.approved if clean_issues else True,
+                score=review.score if clean_issues else max(review.score, 0.85),
+                issues=clean_issues,
+            )
+
+    return review
+
 
 
 def run_deterministic_quality_checks(
     draft: SkillDraft,
     builtins: list[Skill] | None = None,
     registered_tools: set[str] | None = None,
+    existing_skills: list[Skill] | None = None,
+    *,
+    raw_prompt: str | None = None,
+    shaping_answers: dict[str, str] | None = None,
+    research_summaries: list[str] | tuple[str, ...] | None = None,
+    declared_dependencies: tuple[str, ...] | list[str] | None = None,
+    user_stated_versions: set[str] | None = None,
 ) -> QualityGateResult:
     """Execute all deterministic pre-publication quality checks on a skill draft."""
     skill = draft.skill
     checks: list[QualityGateCheck] = []
     failures: list[str] = []
+
+    # 0. Existing skill trigger or name collision
+    if existing_skills:
+        for existing in existing_skills:
+            if existing.name == skill.name:
+                msg = f"Skill name '{skill.name}' collides with existing skill."
+                checks.append(QualityGateCheck("existing_skill_collision", False, msg))
+                failures.append(msg)
+                break
+            overlap = set(skill.triggers).intersection(set(existing.triggers or ()))
+            if overlap:
+                msg = f"Trigger collision with existing skill '{existing.name}': {overlap}"
+                checks.append(QualityGateCheck("existing_skill_collision", False, msg))
+                failures.append(msg)
+                break
 
     # 1. Non-reserved identity check
     collided, suggestions = check_reserved_name_collision(skill.name, builtins=builtins)
@@ -654,6 +979,16 @@ def run_deterministic_quality_checks(
         failures.append(msg)
     else:
         checks.append(QualityGateCheck("specific_triggers", True))
+
+    # 3. Mandatory banned actions check
+    from .model import BANNED_ACTIONS
+    missing_banned = set(BANNED_ACTIONS) - set(skill.forbidden_actions or ())
+    if missing_banned:
+        msg = f"Skill is missing required constitutional banned actions: {missing_banned}"
+        checks.append(QualityGateCheck("banned_actions_included", False, msg))
+        failures.append(msg)
+    else:
+        checks.append(QualityGateCheck("banned_actions_included", True))
 
     # 3. Actionable procedure
     if not skill.steps or not any(str(s).strip() for s in skill.steps):
@@ -720,6 +1055,48 @@ def run_deterministic_quality_checks(
         failures.append(msg)
     else:
         checks.append(QualityGateCheck("secret_redaction", True))
+
+    # 8. Canonical content in English
+    canonical_text = " ".join([
+        skill.when_to_use or "",
+        " ".join(skill.steps or ()),
+        " ".join(skill.verification or ()),
+        " ".join(getattr(skill, "examples", ()) or ()),
+    ])
+    swedish_match = _SWEDISH_WORDS_PATTERN.search(canonical_text)
+    if swedish_match:
+        msg = f"Canonical skill content must be in English. Detected non-English term '{swedish_match.group(0)}'."
+        checks.append(QualityGateCheck("english_canonical_content", False, msg))
+        failures.append(msg)
+    # 9. Grounded versions check
+    _VERSION_TOKEN_RE = re.compile(r"\b\d+(?:\.\d+)+\b")
+    draft_scope_text = f"{skill.when_to_use or ''} {' '.join(skill.steps or ())}"
+    draft_versions = set(_VERSION_TOKEN_RE.findall(draft_scope_text))
+
+    if draft_versions:
+        grounded_sources: list[str] = []
+        if raw_prompt:
+            grounded_sources.append(raw_prompt)
+        if shaping_answers:
+            grounded_sources.extend(shaping_answers.values())
+        if research_summaries:
+            grounded_sources.extend(research_summaries)
+        if declared_dependencies:
+            grounded_sources.extend(declared_dependencies)
+
+        grounded_text = " ".join(str(s) for s in grounded_sources)
+        grounded_tokens = set(_VERSION_TOKEN_RE.findall(grounded_text))
+        if user_stated_versions:
+            grounded_tokens.update(user_stated_versions)
+
+        ungrounded = [v for v in sorted(draft_versions) if v not in grounded_tokens]
+        if ungrounded:
+            for bad_ver in ungrounded:
+                msg = f"version not grounded: '{bad_ver}'"
+                checks.append(QualityGateCheck("grounded_versions", False, msg))
+                failures.append(msg)
+        else:
+            checks.append(QualityGateCheck("grounded_versions", True))
 
     return QualityGateResult(
         passed=(len(failures) == 0),

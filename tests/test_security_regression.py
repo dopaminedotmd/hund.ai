@@ -231,7 +231,7 @@ class TestPowerShellBlocklist:
 class _FakeClient:
     def __init__(self, text="[SUMMERAD]"):
         self.response_text = text
-    def complete(self, messages, tools=None, model=None):
+    def complete(self, messages, tools=None, model=None, **kwargs):
         return CompletionResult(text=self.response_text)
 
 def test_compress_llm_method_is_llm():

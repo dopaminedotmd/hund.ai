@@ -280,6 +280,24 @@ def repair_narrative_prose(narrative: str, language: str = "sv") -> str:
     return repaired.strip()
 
 
+def detect_unexecuted_tool_intent(text: str, registered_tools: Sequence[str]) -> bool:
+    """Detect structural intent to execute a tool when no tool call was emitted."""
+    if not text or not registered_tools:
+        return False
+    tool_pat = r"\b(?:" + "|".join(re.escape(t) for t in registered_tools) + r")\b"
+    # Structural signals: tool name + action intent markers (SE/EN) or raw code fences
+    intent_pat = re.compile(
+        r"(?:"
+        r"(?:låt hund|hund ska|hund kör|använder|kör)\s+.*?" + tool_pat +
+        r"|(?:let me|i will|let hund|using|running)\s+.*?" + tool_pat +
+        r"|" + tool_pat + r"\s+(?:för att|to)\s+"
+        r"|```(?:bash|sh|powershell|pwsh|python)\s*\n[\s\S]*?```"
+        r")",
+        re.IGNORECASE,
+    )
+    return bool(intent_pat.search(text))
+
+
 def validate_and_repair_response(
     full_response: str,
     language: str = "sv",

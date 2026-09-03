@@ -35,6 +35,7 @@ class LocalProvider(ProviderClient):
         messages: list[Message],
         tools: list[dict] | None = None,
         model: str | None = None,
+        max_tokens: int | None = None,
     ) -> CompletionResult:
         """Send messages to local engine and get completion.
 
@@ -42,6 +43,7 @@ class LocalProvider(ProviderClient):
             messages: List of Message objects.
             tools: Not supported in local mode (ignored).
             model: Model override (defaults to 'local').
+            max_tokens: Optional cap; local engine defaults to 2048.
 
         Returns:
             CompletionResult with generated text.
@@ -72,7 +74,7 @@ class LocalProvider(ProviderClient):
         result = self._engine.complete(
             messages=msg_dicts,
             temperature=0.7,
-            max_tokens=2048,
+            max_tokens=max_tokens or 2048,
             timeout=120,
         )
 

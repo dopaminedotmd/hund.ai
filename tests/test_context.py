@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from hund.agent.context import (
+    DEFAULT_KEEP_RECENT,
+    DEFAULT_MAX_TOKENS,
     compress,
     estimate_tokens,
     maybe_compress,
@@ -30,12 +32,14 @@ def test_long_session_drops_middle_keeps_system_and_recent():
     res = compress(msgs, keep_recent=6)
     assert res.compressed is True
     assert res.dropped_turns > 0
-    # system bevarad + marker + 6 recent
+    # system bevarad + marker + initial user-turn + 6 recent
     assert res.messages[0].role == "system"
     assert res.messages[0].content.startswith("SYSTEM")
     assert res.messages[1].role == "system"
     assert res.messages[1].content.startswith("[KOMPRIMERAD")
-    assert len(res.messages) == 1 + 1 + 6
+    assert res.messages[2].role == "user"
+    assert res.messages[2].content.startswith("turn 0")
+    assert len(res.messages) == 1 + 1 + 1 + 6
     # senaste user-turnen bevarad (näst sista = user, sista = assistant)
     assert res.messages[-2].content.startswith("turn 19")
 
@@ -75,10 +79,40 @@ def test_estimate_tokens_positive_and_grows():
 def test_system_plus_recent_preserved_after_compression_order():
     msgs = _msgs(10)
     res = compress(msgs, keep_recent=4)
-    # första = system, andra = marker, sedan de 4 senaste i ordning
+    # första = system, andra = marker, tredje = primary task, sedan de 4 senaste i ordning
     assert res.messages[0].role == "system"
     assert res.messages[1].role == "system"
-    assert [m.role for m in res.messages[2:]] == ["user", "assistant", "user", "assistant"]
+    assert res.messages[2].role == "user"
+    assert res.messages[2].content.startswith("turn 0")
+    assert [m.role for m in res.messages[3:]] == ["user", "assistant", "user", "assistant"]
+
+
+def test_default_threshold_is_96k_and_keep_recent_is_12():
+    assert DEFAULT_MAX_TOKENS == 96_000
+    assert DEFAULT_KEEP_RECENT == 12
+
+
+def test_initial_user_turn_preserved_without_duplicates():
+    msgs = [
+        Message(role="system", content="SYS"),
+        Message(role="user", content="CRITICAL USER GOAL"),
+        Message(role="assistant", content="resp 1"),
+        Message(role="user", content="turn 2"),
+        Message(role="assistant", content="resp 2"),
+        Message(role="user", content="turn 3"),
+        Message(role="assistant", content="resp 3"),
+        Message(role="user", content="turn 4"),
+        Message(role="assistant", content="resp 4"),
+    ]
+    res = compress(msgs, keep_recent=2)
+    assert res.compressed is True
+    # Initial user goal must be preserved at index 2
+    assert res.messages[2].role == "user"
+    assert res.messages[2].content == "CRITICAL USER GOAL"
+    # Recent turns must not duplicate the initial user turn
+    user_contents = [m.content for m in res.messages if m.role == "user"]
+    assert user_contents.count("CRITICAL USER GOAL") == 1
+
 
 
 def test_deterministic_same_input_same_output():

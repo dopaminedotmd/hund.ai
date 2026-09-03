@@ -63,17 +63,36 @@ class SkillFactory:
             for tool in str(unit.deps.get("required_tools", "")).split(",")
             if tool.strip()
         }))
+        steps_tuple = tuple(unit.statement for unit in units)
+        tools_set = set(tools)
+        steps_text = " ".join(steps_tuple + (f"When the task intent is {opportunity.intent}.",)).casefold()
+        file_edit_markers = (
+            "write_file", "edit_file", "write file", "edit file", "modify file",
+            "create file", "save file", "update file", "overwrite file",
+            "skriv fil", "skapa fil", "ändra fil", "uppdatera fil",
+        )
+        if any(marker in steps_text for marker in file_edit_markers):
+            tools_set.update({"write_file", "edit_file"})
+
+        tools = tuple(sorted(tools_set))
+        if any(t in {"write_file", "edit_file"} for t in tools):
+            safety_level = "confirm_for_write"
+        elif tools:
+            safety_level = "confirm"
+        else:
+            safety_level = "read_only"
+
         skill = Skill(
             schema_version=1,
             name=name,
-            domain=opportunity.domain,
+            domain=opportunity.domain or "general",
             status="draft",
             triggers=_sanitize_triggers((opportunity.intent,)),
             when_to_use=f"When the task intent is {opportunity.intent}.",
-            steps=tuple(unit.statement for unit in units),
+            steps=steps_tuple,
             required_tools=tools,
             forbidden_actions=tuple(sorted(BANNED_ACTIONS)),
-            safety_level="confirm" if tools else "read_only",
+            safety_level=safety_level,
             verification=("Verify every produced result against current workspace state.",),
             lifecycle_state="draft",
             vault_state="vaulted",
@@ -98,6 +117,7 @@ class SkillFactory:
         proposal: LocalSkillProposal | ResearchSkillProposal,
         resolution: ScopeResolution,
         existing_skills: Iterable[Skill] = (),
+        created_from_event_ids: tuple[str, ...] = (),
     ) -> SkillDraft:
         """Pure factory construction of SkillDraft from authoring proposal and scope resolution."""
         action = resolution.action or "CREATE"
@@ -119,10 +139,27 @@ class SkillFactory:
             action = "CREATE"
             version = "1.0.0"
 
-        tools = tuple(sorted(set(proposal.required_tools)))
+        tools = set(proposal.required_tools)
+        steps = tuple(proposal.steps)
+        steps_text = " ".join(steps + (proposal.when_to_use,)).casefold()
+        file_edit_markers = (
+            "write_file", "edit_file", "write file", "edit file", "modify file",
+            "create file", "save file", "update file", "overwrite file",
+            "skriv fil", "skapa fil", "ändra fil", "uppdatera fil",
+        )
+        if any(marker in steps_text for marker in file_edit_markers):
+            tools.update({"write_file", "edit_file"})
+
+        tools_tuple = tuple(sorted(tools))
+        if any(t in {"write_file", "edit_file"} for t in tools_tuple):
+            safety_level = "confirm_for_write"
+        elif tools_tuple:
+            safety_level = "confirm"
+        else:
+            safety_level = "read_only"
+
         raw_triggers = proposal.triggers if proposal.triggers else (proposal.intent,)
         triggers = _sanitize_triggers(raw_triggers)
-        steps = tuple(proposal.steps)
         verification = tuple(proposal.verification) if proposal.verification else (
             "Verify produced output against requirements.",
         )
@@ -145,9 +182,9 @@ class SkillFactory:
             triggers=triggers,
             when_to_use=proposal.when_to_use,
             steps=steps,
-            required_tools=tools,
+            required_tools=tools_tuple,
             forbidden_actions=tuple(sorted(BANNED_ACTIONS)),
-            safety_level="confirm" if tools else "read_only",
+            safety_level=safety_level,
             verification=verification,
             examples=examples,
             lifecycle_state="draft",
@@ -157,6 +194,7 @@ class SkillFactory:
             scope=target_scope,
             personal_skill_xp=0,
             source_knowledge_refs=source_knowledge_refs,
+            created_from_event_ids=tuple(sorted(set(created_from_event_ids))),
         )
 
         metadata = {
