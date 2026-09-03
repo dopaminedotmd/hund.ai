@@ -467,6 +467,56 @@ def skill_detail_lines(skill: SkillItem) -> list[str]:
     return ["", *skill_definition_text(skill).splitlines()]
 
 
+def render_skill_editor(
+    name: str,
+    text: str,
+    cursor: int,
+    *,
+    width: int,
+    height: int,
+    scroll: int = 0,
+    ascii_only: bool = False,
+) -> str:
+    """Gate 3 §2.5.2: in-place editing view in the same window.
+
+    The buffer is rendered with an insert-block cursor spliced at the current
+    offset; the viewport auto-follows so the cursor line stays visible.
+    """
+    from .skill_editor import offset_to_line_col, split_lines
+
+    content_rows = max(height - 3, 1)
+    raw_lines = split_lines(text)
+    line, col = offset_to_line_col(text, cursor)
+    # One content row is reserved for the cursor/status line.
+    capacity = max(content_rows - 1, 1)
+    effective = max(0, min(scroll, max(0, len(raw_lines) - capacity)))
+    if line < effective:
+        effective = line
+    elif line >= effective + capacity:
+        effective = max(0, line - capacity + 1)
+
+    visible: list[str] = []
+    for index in range(effective, min(effective + capacity, len(raw_lines))):
+        row_text = raw_lines[index]
+        if index == line:
+            col = min(col, len(row_text))
+            row_text = row_text[:col] + "█" + row_text[col:]
+        visible.append(row_text)
+    visible.extend([""] * (capacity - len(visible)))
+    visible.append(f"[Line {line + 1}, Col {col + 1} · EDIT · Mouse Scroll]")
+
+    footer = (
+        "[Ctrl+S] Save * [Esc] Exit * [Ctrl+O] Open in $EDITOR"
+        if ascii_only
+        else "[Ctrl+S] Save · [Esc] Discard · [Ctrl+O] Open in $EDITOR"
+    )
+    return fullscreen_frame(
+        f"SKILL DETAIL · EDITING · {name}", visible,
+        width=width, height=height, meta="[EDIT]",
+        footer=footer, scroll=effective, ascii_only=ascii_only,
+    )
+
+
 def render_skills(
     snapshot: SkillsSnapshot,
     *,

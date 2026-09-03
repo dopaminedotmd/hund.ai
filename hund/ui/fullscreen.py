@@ -126,6 +126,7 @@ from .screen_render import (
     render_usage,
     render_system,
     render_doctor,
+    render_skill_editor,
     skill_definition_text,
 )
 from .snapshots import collect_skills, collect_stats, collect_tools, collect_usage
@@ -1754,6 +1755,7 @@ def create_fullscreen_app(
     model_options: list[Any] = []
     auth_target_provider: dict[str, str] = {}
     spec_member_remove: dict[str, str] = {}
+    edit_state: dict[str, Any] = {"original": "", "discard_pending": False, "editor_open": False}
     custom_wizard_data: dict[str, str] = {}
     custom_step = [0]
 
@@ -2063,6 +2065,15 @@ def create_fullscreen_app(
                 ascii_only=getattr(rt.cfg, "ascii_ui", False),
             )
         if destination is DestinationView.SKILLS:
+            if screens.edit_mode and screens.detail.get("skills"):
+                return render_skill_editor(
+                    screens.detail["skills"],
+                    screens.edit_buffer_text,
+                    cursor=screens.edit_cursor,
+                    width=width, height=height,
+                    scroll=screens.scroll.get(key, 0),
+                    ascii_only=getattr(rt.cfg, "ascii_ui", False),
+                )
             if screens.detail.get(f"{key}_spec"):
                 return render_specialisation_management(
                     snapshot,
@@ -3946,6 +3957,14 @@ def create_fullscreen_app(
         lambda: screens.destination is not DestinationView.CHAT
         and not _confirm.get("active")
         and screens.overlay is OverlayView.NONE
+        and not screens.edit_mode
+    )
+    # Gate 3 §2.5.2: in-place editor mode takes over all destination keys.
+    edit_active = Condition(
+        lambda: screens.edit_mode
+        and screens.destination is not DestinationView.CHAT
+        and not _confirm.get("active")
+        and screens.overlay is OverlayView.NONE
     )
     chat_active = Condition(
         lambda: screens.destination is DestinationView.CHAT
@@ -4143,6 +4162,11 @@ def create_fullscreen_app(
 
     @kb.add("escape", eager=True, filter=~confirm_active & ~authoring_active)
     def _escape(event):
+        # Gate 3 §2.5.2: Esc leaves the in-place editor (discard prompt if dirty).
+        if screens.edit_mode:
+            _edit_exit_requested()
+            _invalidate()
+            return
         # Overlays may now sit above a destination (spec member confirm).
         if screens.overlay is not OverlayView.NONE:
             screens.overlay = OverlayView.NONE
@@ -4370,6 +4394,249 @@ def create_fullscreen_app(
                 )
                 screens.selected["skills_member"] = position
         screens.status = msg
+
+    # ---- Gate 3 §2.5.2: in-place skill editor ----
+    def _edit_current_name() -> str:
+        return str(screens.detail.get("skills") or "")
+
+    def _edit_insert(data: str) -> None:
+        if not data:
+            return
+        if edit_state["discard_pending"]:
+            edit_state["discard_pending"] = False
+            screens.status = ""
+        text = screens.edit_buffer_text
+        offset = screens.edit_cursor
+        screens.edit_buffer_text = text[:offset] + data + text[offset:]
+        screens.edit_cursor = offset + len(data)
+
+    def _enter_edit() -> None:
+        snapshot = screen_snapshots.get(DestinationView.SKILLS.value)
+        name = _edit_current_name()
+        if not name or snapshot is None:
+            return
+        item = next(
+            (candidate for candidate in snapshot.equipped + snapshot.parked if candidate.name == name),
+            None,
+        )
+        if item is None:
+            return
+        text = skill_definition_text(item)
+        # Prefer the real on-disk definition for full fidelity while editing.
+        from ..skills.vault import SkillVault
+
+        real = SkillVault().find_skill(name, workspace=getattr(rt, "workspace", None))
+        if real is not None:
+            import json
+
+            text = json.dumps(real.to_dict(), indent=2, ensure_ascii=False)
+        screens.edit_buffer_text = text
+        screens.edit_cursor = 0
+        screens.edit_mode = True
+        edit_state["original"] = text
+        edit_state["discard_pending"] = False
+        screens.status = ""
+
+    def _edit_exit_requested() -> None:
+        if not screens.edit_mode:
+            return
+        if edit_state["discard_pending"]:
+            _edit_confirm_discard()
+            return
+        if screens.edit_buffer_text == edit_state["original"]:
+            _edit_confirm_discard()
+        else:
+            edit_state["discard_pending"] = True
+            screens.status = "Discard changes? [y/N]"
+
+    def _edit_confirm_discard() -> None:
+        screens.edit_mode = False
+        edit_state["discard_pending"] = False
+        edit_state["original"] = screens.edit_buffer_text
+        screens.edit_cursor = 0
+        screens.status = ""
+
+    def _edit_cancel_discard() -> None:
+        edit_state["discard_pending"] = False
+        screens.status = ""
+
+    def _edit_save() -> None:
+        from ..skills.vault import SkillVault
+        from .skill_editor import parse_and_validate, save_skill
+
+        name = _edit_current_name()
+        real = SkillVault().find_skill(name, workspace=getattr(rt, "workspace", None))
+        if real is not None and real.immutable:
+            screens.status = f"'{name}' is a constitutional skill and cannot be edited."
+            return
+        skill, msg = parse_and_validate(screens.edit_buffer_text, name)
+        if skill is None:
+            screens.status = msg
+            return
+        ok, msg = save_skill(skill, workspace=getattr(rt, "workspace", None))
+        if not ok:
+            screens.status = msg
+            return
+        _reload_skills_snapshot()
+        screens.edit_mode = False
+        edit_state["discard_pending"] = False
+        screens.edit_cursor = 0
+        screens.status = "Skill saved successfully"
+
+    def _edit_external() -> None:
+        """Ctrl+O: edit a temp copy in $EDITOR/notepad; reload on exit."""
+        import subprocess
+        import tempfile
+
+        if edit_state["editor_open"]:
+            return
+        path = Path(tempfile.gettempdir()) / f"hund-skill-{_edit_current_name()}.json"
+        path.write_text(screens.edit_buffer_text, encoding="utf-8")
+        editor = os.environ.get("EDITOR", "").strip() or (
+            "notepad.exe" if os.name == "nt" else "vi"
+        )
+        edit_state["editor_open"] = True
+
+        def _run() -> None:
+            try:
+                subprocess.run([editor, str(path)])
+                if path.exists():
+                    text = path.read_text(encoding="utf-8")
+                    if text != screens.edit_buffer_text:
+                        screens.edit_buffer_text = text
+                        screens.edit_cursor = min(screens.edit_cursor, len(text))
+                        screens.status = "Reloaded from external editor."
+                        edit_state["discard_pending"] = False
+            finally:
+                edit_state["editor_open"] = False
+            _invalidate()
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    @kb.add("e", filter=destination_active & ~modal_active)
+    @kb.add("E", filter=destination_active & ~modal_active)
+    def _skill_edit_mode(event):
+        if (
+            screens.destination is DestinationView.SKILLS
+            and screens.detail.get("skills")
+            and not screens.detail.get("skills_spec")
+        ):
+            _enter_edit()
+            _invalidate()
+
+    edit_discard_pending = Condition(
+        lambda: screens.edit_mode and edit_state.get("discard_pending", False)
+    )
+
+    @kb.add("y", filter=edit_active & edit_discard_pending)
+    @kb.add("Y", filter=edit_active & edit_discard_pending)
+    def _edit_discard_yes(event):
+        _edit_confirm_discard()
+        _invalidate()
+
+    @kb.add("n", filter=edit_active & edit_discard_pending)
+    @kb.add("N", filter=edit_active & edit_discard_pending)
+    def _edit_discard_no(event):
+        _edit_cancel_discard()
+        _invalidate()
+
+    @kb.add("enter", filter=edit_active)
+    def _edit_newline(event):
+        _edit_insert("\n")
+        _invalidate()
+
+    @kb.add("backspace", filter=edit_active)
+    def _edit_backspace(event):
+        text = screens.edit_buffer_text
+        offset = screens.edit_cursor
+        if offset > 0:
+            screens.edit_buffer_text = text[: offset - 1] + text[offset:]
+            screens.edit_cursor = offset - 1
+        _invalidate()
+
+    @kb.add("delete", filter=edit_active)
+    def _edit_delete(event):
+        text = screens.edit_buffer_text
+        offset = screens.edit_cursor
+        if offset < len(text):
+            screens.edit_buffer_text = text[:offset] + text[offset + 1 :]
+        _invalidate()
+
+    @kb.add("left", filter=edit_active)
+    def _edit_left(event):
+        screens.edit_cursor = max(0, screens.edit_cursor - 1)
+        _invalidate()
+
+    @kb.add("right", filter=edit_active)
+    def _edit_right(event):
+        screens.edit_cursor = min(len(screens.edit_buffer_text), screens.edit_cursor + 1)
+        _invalidate()
+
+    @kb.add("up", filter=edit_active)
+    def _edit_up(event):
+        from .skill_editor import move_up
+
+        screens.edit_cursor = move_up(screens.edit_buffer_text, screens.edit_cursor)
+        _invalidate()
+
+    @kb.add("down", filter=edit_active)
+    def _edit_down(event):
+        from .skill_editor import move_down
+
+        screens.edit_cursor = move_down(screens.edit_buffer_text, screens.edit_cursor)
+        _invalidate()
+
+    @kb.add("home", filter=edit_active)
+    def _edit_home(event):
+        from .skill_editor import line_start
+
+        screens.edit_cursor = line_start(screens.edit_buffer_text, screens.edit_cursor)
+        _invalidate()
+
+    @kb.add("end", filter=edit_active)
+    def _edit_end(event):
+        from .skill_editor import line_end
+
+        screens.edit_cursor = line_end(screens.edit_buffer_text, screens.edit_cursor)
+        _invalidate()
+
+    @kb.add("c-w", filter=edit_active)
+    def _edit_word_back(event):
+        from .skill_editor import word_back_start
+
+        start = word_back_start(screens.edit_buffer_text, screens.edit_cursor)
+        text = screens.edit_buffer_text
+        screens.edit_buffer_text = text[:start] + text[screens.edit_cursor :]
+        screens.edit_cursor = start
+        _invalidate()
+
+    @kb.add("c-s", filter=edit_active)
+    def _edit_save_key(event):
+        _edit_save()
+        _invalidate()
+
+    @kb.add("c-o", filter=edit_active)
+    def _edit_external_key(event):
+        _edit_external()
+        _invalidate()
+
+    @kb.add("c-v", filter=edit_active)
+    @kb.add(Keys.ControlV, filter=edit_active)
+    @kb.add(Keys.Insert, filter=edit_active)
+    @kb.add(Keys.BracketedPaste, filter=edit_active)
+    def _edit_paste(event):
+        from .clipboard import paste_text
+
+        data = getattr(event, "data", None) or paste_text()
+        _edit_insert(data)
+        _invalidate()
+
+    @kb.add(Keys.Any, filter=edit_active)
+    def _edit_type(event):
+        data = getattr(event, "data", "") or event.key
+        if data and not data.startswith("<"):
+            _edit_insert(data)
+        _invalidate()
 
     @kb.add("up", filter=destination_active & ~modal_active)
     def _screen_up(event):
